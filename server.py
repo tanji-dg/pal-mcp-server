@@ -78,6 +78,7 @@ log_level = (get_env("LOG_LEVEL", "DEBUG") or "DEBUG").upper()
 # Create timezone-aware formatter
 
 
+
 class LocalTimeFormatter(logging.Formatter):
     def formatTime(self, record, datefmt=None):
         """Override to use local timezone instead of UTC"""
@@ -542,15 +543,12 @@ def configure_providers():
 
     # Require at least one valid provider
     if not valid_providers:
-        raise ValueError(
-            "At least one API configuration is required. Please set either:\n"
-            "- GEMINI_API_KEY for Gemini models\n"
-            "- OPENAI_API_KEY for OpenAI models\n"
-            "- XAI_API_KEY for X.AI GROK models\n"
-            "- DIAL_API_KEY for DIAL models\n"
-            "- OPENROUTER_API_KEY for OpenRouter (multiple models)\n"
-            "- CUSTOM_API_URL for local models (Ollama, vLLM, etc.)"
+        logger.warning(
+            "No valid API providers (Gemini, OpenAI, etc.) configured. "
+            "Direct AI tools (chat, planner, codereview, etc.) will be unavailable. "
+            "The server will continue in 'bridge-only' mode, supporting 'clink' for external CLIs."
         )
+        return
 
     logger.info(f"Available providers: {', '.join(valid_providers)}")
 
@@ -617,14 +615,12 @@ def configure_providers():
     if IS_AUTO_MODE:
         available_models = ModelProviderRegistry.get_available_models(respect_restrictions=True)
         if not available_models:
-            logger.error(
-                "Auto mode is enabled but no models are available after applying restrictions. "
-                "Please check your OPENAI_ALLOWED_MODELS and GOOGLE_ALLOWED_MODELS settings."
+            logger.warning(
+                "Auto mode is enabled but no models are available. "
+                "Direct AI tools will be unavailable, but 'clink' tools for external CLIs will still work."
             )
-            raise ValueError(
-                "No models available for auto mode due to restrictions. "
-                "Please adjust your allowed model settings or disable auto mode."
-            )
+        else:
+            logger.debug(f"Auto mode initialized with {len(available_models)} available models")
 
 
 @server.list_tools()

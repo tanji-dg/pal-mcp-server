@@ -17,8 +17,22 @@ class GeminiJSONParser(BaseParser):
         if not stdout.strip():
             raise ParserError("Gemini CLI returned empty stdout while JSON output was expected")
 
+        # Check for authentication requirement before attempting to parse JSON
+        if "accounts.google.com" in stdout or "authorize the application" in stdout:
+            raise ParserError(
+                "Gemini CLI requires authentication. Please run 'gemini prompt \"test\"' "
+                "directly in your terminal to complete the login process. "
+                "Ensure that the HOME environment variable is correctly set in your MCP config."
+            )
+
+        # Robustly extract JSON from potentially mixed stdout (e.g. YOLO warnings)
+        json_str = stdout
+        brace_index = stdout.find("{")
+        if brace_index != -1:
+            json_str = stdout[brace_index:]
+
         try:
-            payload: dict[str, Any] = json.loads(stdout)
+            payload: dict[str, Any] = json.loads(json_str)
         except json.JSONDecodeError as exc:  # pragma: no cover - defensive logging
             raise ParserError(f"Failed to decode Gemini CLI JSON output: {exc}") from exc
 
