@@ -48,6 +48,17 @@ Set verbosity with `LOG_LEVEL` in your `.env` file:
 LOG_LEVEL=INFO
 ```
 
+## Timezone
+
+By default, logs use the system's local time. You can explicitly set a timezone using the `TZ` environment variable in your `.env` file:
+
+```env
+# Example for Japan Standard Time (JST)
+TZ=Asia/Tokyo
+```
+
+On Linux/Unix systems, this will ensure all log timestamps use the specified timezone.
+
 - **DEBUG**: Detailed information for debugging
 - **INFO**: General operational messages (default)
 - **WARNING**: Warning messages

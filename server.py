@@ -75,6 +75,13 @@ from utils.env import env_override_enabled, get_env  # noqa: E402
 # Can be controlled via LOG_LEVEL environment variable (DEBUG, INFO, WARNING, ERROR)
 log_level = (get_env("LOG_LEVEL", "DEBUG") or "DEBUG").upper()
 
+# Ensure timezone is correctly applied on Unix systems if TZ is set
+# This allows users to set TZ=Asia/Tokyo in their .env file for JST logs
+tz_env = get_env("TZ")
+if tz_env and hasattr(time, "tzset"):
+    os.environ["TZ"] = tz_env
+    time.tzset()
+
 # Create timezone-aware formatter
 
 
