@@ -60,6 +60,7 @@ class BaseCLIAgent:
         system_prompt: str | None = None,
         files: Sequence[str],
         images: Sequence[str],
+        output_callback: callable[[str], None] | None = None,
     ) -> AgentOutput:
         # Files and images are already embedded into the prompt by the tool; they are
         # accepted here only to keep parity with SimpleTool callers.
@@ -120,9 +121,47 @@ class BaseCLIAgent:
         except FileNotFoundError as exc:
             raise CLIAgentError(f"Executable not found for CLI '{self.client.name}': {exc}") from exc
 
+        # Write prompt to stdin
+        if process.stdin:
+            try:
+                process.stdin.write(prompt.encode("utf-8"))
+                await process.stdin.drain()
+                process.stdin.close()
+            except Exception as exc:
+                self._logger.warning(f"Failed to write to stdin: {exc}")
+
+        # Stream output while buffering for final result
+        stdout_buffer = []
+        stderr_buffer = []
+
+        async def _read_stream(stream, buffer, log_level):
+            while True:
+                line = await stream.readline()
+                if not line:
+                    break
+                decoded_line = line.decode("utf-8", errors="replace")
+                buffer.append(decoded_line)
+                # Log output in real-time for debugging/monitoring
+                # Use a specific prefix to make it easy to grep
+                if decoded_line.strip():
+                    self._logger.debug(f"[CLI OUTPUT] {decoded_line.rstrip()}")
+                    if output_callback:
+                        try:
+                            # Pass the raw line; the callback can decide how to filter/format
+                            if asyncio.iscoroutinefunction(output_callback):
+                                await output_callback(decoded_line)
+                            else:
+                                output_callback(decoded_line)
+                        except Exception as e:
+                            self._logger.warning(f"Output callback failed: {e}")
+
         try:
-            stdout_bytes, stderr_bytes = await asyncio.wait_for(
-                process.communicate(prompt.encode("utf-8")),
+            await asyncio.wait_for(
+                asyncio.gather(
+                    _read_stream(process.stdout, stdout_buffer, logging.DEBUG),
+                    _read_stream(process.stderr, stderr_buffer, logging.DEBUG),
+                    process.wait(),
+                ),
                 timeout=self.client.timeout_seconds,
             )
         except asyncio.TimeoutError as exc:
@@ -133,10 +172,10 @@ class BaseCLIAgent:
                 returncode=None,
             ) from exc
 
+        stdout_text = "".join(stdout_buffer)
+        stderr_text = "".join(stderr_buffer)
         duration = time.monotonic() - start_time
         return_code = process.returncode
-        stdout_text = stdout_bytes.decode("utf-8", errors="replace")
-        stderr_text = stderr_bytes.decode("utf-8", errors="replace")
 
         if output_file_path and output_file_path.exists():
             output_file_content = output_file_path.read_text(encoding="utf-8", errors="replace")

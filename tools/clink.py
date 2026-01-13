@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from mcp.types import TextContent
+from mcp.types import TextContent, LoggingLevel
 from pydantic import BaseModel, Field
 
 from clink import get_registry
@@ -203,6 +203,22 @@ class CLinkTool(SimpleTool):
             logger.exception("Failed to prepare clink prompt")
             self._raise_tool_error(f"Failed to prepare prompt: {exc}")
 
+        # Prepare output callback for real-time notifications
+        request_context = arguments.get("_request_context")
+        
+        async def _notification_callback(line: str):
+            if request_context and line.strip():
+                try:
+                    # Clean up line for display
+                    msg = line.strip()
+                    # Only send meaningful lines (skip empty/pure whitespace)
+                    await request_context.session.send_log_message(
+                        level="info",
+                        data=f"[{client_config.name}] {msg}",
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to send notification: {e}")
+
         agent = create_agent(client_config)
         try:
             result = await agent.run(
@@ -211,6 +227,7 @@ class CLinkTool(SimpleTool):
                 system_prompt=system_prompt_text if system_prompt_text.strip() else None,
                 files=absolute_file_paths,
                 images=images,
+                output_callback=_notification_callback if request_context else None,
             )
         except CLIAgentError as exc:
             metadata = self._build_error_metadata(client_config, exc)

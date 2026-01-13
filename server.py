@@ -71,22 +71,27 @@ from tools.models import ToolOutput  # noqa: E402
 from tools.shared.exceptions import ToolExecutionError  # noqa: E402
 from utils.env import env_override_enabled, get_env  # noqa: E402
 
-# Configure logging for server operations
-# Can be controlled via LOG_LEVEL environment variable (DEBUG, INFO, WARNING, ERROR)
-log_level = (get_env("LOG_LEVEL", "DEBUG") or "DEBUG").upper()
-
 # Ensure timezone is correctly applied on Unix systems if TZ is set
 # This allows users to set TZ=Asia/Tokyo in their .env file for JST logs
+# MUST be done before any logging configuration
 tz_env = get_env("TZ")
 if tz_env and hasattr(time, "tzset"):
     os.environ["TZ"] = tz_env
     time.tzset()
+
+# Configure logging for server operations
+# Can be controlled via LOG_LEVEL environment variable (DEBUG, INFO, WARNING, ERROR)
+log_level = (get_env("LOG_LEVEL", "DEBUG") or "DEBUG").upper()
 
 # Create timezone-aware formatter
 
 
 
 class LocalTimeFormatter(logging.Formatter):
+    def __init__(self, fmt=None, datefmt=None, style="%"):
+        super().__init__(fmt, datefmt, style)
+        self.converter = time.localtime
+
     def formatTime(self, record, datefmt=None):
         """Override to use local timezone instead of UTC"""
         ct = self.converter(record.created)
@@ -750,7 +755,11 @@ async def handle_call_tool(name: str, arguments: dict[str, Any]) -> list[TextCon
         4. Multiple tools can collaborate using same thread ID
     """
     logger.info(f"MCP tool call: {name}")
-    logger.debug(f"MCP tool arguments: {list(arguments.keys())}")
+    logger.debug(f"MCP tool arguments keys: {list(arguments.keys())}")
+    if log_level == "DEBUG":
+        # Log full arguments for session debugging (excluding large potential secrets if necessary, 
+        # but useful for full prompt/context inspection)
+        logger.debug(f"MCP tool full arguments: {arguments}")
 
     # Log to activity file for monitoring
     try:
@@ -848,6 +857,14 @@ async def handle_call_tool(name: str, arguments: dict[str, Any]) -> list[TextCon
         model_context = ModelContext(model_name, model_option)
         arguments["_model_context"] = model_context
         arguments["_resolved_model_name"] = model_name
+        
+        # Inject request context for tools that support notifications (e.g., clink)
+        try:
+            # Access the current request context from the server instance context var
+            arguments["_request_context"] = server.request_context
+        except Exception as e:
+            logger.debug(f"Could not inject request context: {e}")
+
         logger.debug(
             f"Model context created for {model_name} with {model_context.capabilities.context_window} token capacity"
         )
@@ -867,6 +884,9 @@ async def handle_call_tool(name: str, arguments: dict[str, Any]) -> list[TextCon
         # Execute tool with pre-resolved model context
         result = await tool.execute(arguments)
         logger.info(f"Tool '{name}' execution completed")
+        
+        if log_level == "DEBUG":
+            logger.debug(f"Tool '{name}' result content: {result}")
 
         # Log completion to activity file
         try:
@@ -1194,8 +1214,13 @@ async def reconstruct_thread_context(arguments: dict[str, Any]) -> dict[str, Any
                     fallback_model = available_models[0]
 
             if fallback_model is None:
-                raise ValueError(
-                    "Conversation continuation failed: no available models detected for context reconstruction."
+                # In bridge-only mode (no API keys), we may have no available models.
+                # But we still need a model context for token calculation.
+                # Use a safe default for token counting purposes.
+                fallback_model = "gemini-2.5-flash"
+                logger.debug(
+                    f"[CONVERSATION_DEBUG] No models available. Using hard fallback '{fallback_model}' "
+                    "for token calculation only."
                 )
 
             logger.debug(
