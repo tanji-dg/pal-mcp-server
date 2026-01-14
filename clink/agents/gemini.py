@@ -15,7 +15,17 @@ class GeminiAgent(BaseCLIAgent):
     """Gemini-specific behaviour."""
 
     def __init__(self, client: ResolvedCLIClient):
-        super().__init__(client)
+        # Prefer the local built version if it exists in the source tree
+        from config import PROJECT_ROOT
+
+        local_built_script = PROJECT_ROOT / "gemini-cli" / "gemini-built.sh"
+        if local_built_script.exists() and client.executable == ["gemini"]:
+            # Create a modified client with the local path
+            # We use model_copy to keep the original client object immutable where possible
+            modified_client = client.model_copy(update={"executable": [str(local_built_script)]})
+            super().__init__(modified_client)
+        else:
+            super().__init__(client)
 
     def _build_command(self, *, role: ResolvedCLIRole, system_prompt: str | None) -> list[str]:
         """Prioritize certain flags like --model for Gemini CLI."""
