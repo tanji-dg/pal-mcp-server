@@ -17,6 +17,33 @@ class GeminiAgent(BaseCLIAgent):
     def __init__(self, client: ResolvedCLIClient):
         super().__init__(client)
 
+    def _build_command(self, *, role: ResolvedCLIRole, system_prompt: str | None) -> list[str]:
+        """Prioritize certain flags like --model for Gemini CLI."""
+        base = super()._build_command(role=role, system_prompt=system_prompt)
+
+        # Reorder to put --model or -m first if present
+        model_flag = None
+        model_value = None
+        other_args = []
+
+        # Start from index 1 to skip the executable
+        it = iter(range(1, len(base)))
+        for i in it:
+            arg = base[i]
+            if arg in ("--model", "-m") and i + 1 < len(base):
+                model_flag = arg
+                model_value = base[i + 1]
+                next(it)  # Skip the value
+            else:
+                other_args.append(arg)
+
+        final = [base[0]]
+        if model_flag:
+            final.extend([model_flag, model_value])
+        final.extend(other_args)
+
+        return final
+
     def _recover_from_error(
         self,
         *,

@@ -8,7 +8,28 @@ constants used throughout the application.
 Configuration values can be overridden by environment variables where appropriate.
 """
 
+import os
+from pathlib import Path
 from utils.env import get_env
+
+def get_project_root() -> Path:
+    """
+    Get the project root directory reliably.
+    Works whether running from source or installed as a package.
+    """
+    # 1. Check if we're in a source tree (looking for server.py)
+    # Start from the current file's directory
+    base = Path(__file__).resolve().parent
+    if (base / "server.py").exists():
+        return base
+    
+    # 2. Check if we're in a subdirectory of the source tree (e.g. clink/constants.py)
+    # This shouldn't be needed for config.py, but good for completeness
+    
+    # 3. Fallback to current working directory
+    return Path.cwd()
+
+PROJECT_ROOT = get_project_root()
 
 # Version and metadata
 # These values are used in server responses and for tracking releases

@@ -57,6 +57,7 @@ from config import (  # noqa: E402
     DEFAULT_MODEL,
     DEFAULT_THINKING_MODE_THINKDEEP,
     LOCALE,
+    PROJECT_ROOT,
     __version__,
 )
 from tools import (  # noqa: E402
@@ -130,7 +131,7 @@ root_logger.setLevel(getattr(logging, log_level, logging.INFO))
 
 try:
     # Create logs directory in project root
-    log_dir = Path(__file__).parent / "logs"
+    log_dir = PROJECT_ROOT / "logs"
     log_dir.mkdir(exist_ok=True)
 
     # Use PID in log filenames to allow multiple server instances without conflict

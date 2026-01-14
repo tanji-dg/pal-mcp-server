@@ -32,13 +32,13 @@ PALは、MCP (Model Context Protocol) サーバーとして動作し、主に **
 - **ブランチ**: `feat/enhance-cli-integration` (独自修正を含むローカルブランチ)
 - **ビルド**: 修正を反映させるには、ディレクトリ内で `npm run build` が必須。
 
-### ラッパースクリプト (`gemini-cli/gemini-built.sh`)
-- **役割**: PALから呼び出される際のエントリポイント。
-- **引数の優先順位**: `yargs` の仕様により、位置引数（プロンプト）の前にフラグ（`--model` 等）を置く必要がある。このスクリプトは引数を解析し、特定のフラグを先頭に移動させてから `node` を実行する。
+### 統合構造
+- **実行コマンド**: インストールされた `gemini` コマンドを直接使用します。
+- **引数の優先順位**: `gemini-cli` は、特定のフラグ（`--model` 等）をプロンプトの前に置く必要があります。
 
 ---
 
-## 4. リアルタイム JSON 対応 (進行中のタスク)
+## 4. リアルタイム JSON 対応 (完了)
 
 ### 目標
 Gemini CLIの `-o stream-json` モードをサポートし、生成中の思考プロセスやツール呼び出しをリアルタイムでユーザーに通知する。
@@ -70,7 +70,7 @@ tail -f logs/mcp_server_*.log | grep "CLI RAW"
 
 ### Gemini CLI の直接テスト
 ```bash
-echo "Hello" | ./gemini-cli/gemini-built.sh -o stream-json --yolo
+echo "Hello" | gemini -o stream-json --yolo
 ```
 
 ---

@@ -1,6 +1,6 @@
 {
   "name": "gemini",
-  "command": "/home/htanji/proj/pal-mcp-server/gemini-cli/gemini-built.sh",
+  "command": "gemini",
   "additional_args": [
     "--yolo",
     "--exit-on-error"
