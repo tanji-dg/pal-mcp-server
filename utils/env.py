@@ -64,13 +64,19 @@ def env_override_enabled() -> bool:
 
 
 def get_env(key: str, default: str | None = None) -> str | None:
-    """Retrieve environment variables respecting PAL_MCP_FORCE_ENV_OVERRIDE."""
+    """Retrieve environment variables respecting PAL_MCP_FORCE_ENV_OVERRIDE.
+    
+    If override is enabled, it first looks in the .env file. If the key is not
+    found in the .env file, it falls back to system environment variables.
+    """
 
     if env_override_enabled():
         if key in _DOTENV_VALUES:
             value = _DOTENV_VALUES[key]
-            return value if value is not None else default
-        return default
+            if value is not None:
+                return value
+        # If not in .env or value is None, fall back to os.environ
+        return os.getenv(key, default)
 
     return os.getenv(key, default)
 

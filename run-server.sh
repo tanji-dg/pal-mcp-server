@@ -2577,17 +2577,30 @@ show_version() {
 
 # Follow logs
 follow_logs() {
-    local log_path="$LOG_DIR/$LOG_FILE"
-
     echo "Following server logs (Ctrl+C to stop)..."
+    echo "Searching for the most recent log file in $LOG_DIR..."
     echo ""
 
-    # Create logs directory and file if they don't exist
+    # Create logs directory if it doesn't exist
     mkdir -p "$LOG_DIR"
-    touch "$log_path"
+
+    # Find the most recently modified log file matching the mcp_server_*.log pattern
+    local recent_log
+    recent_log=$(ls -t "$LOG_DIR"/mcp_server_*.log 2>/dev/null | head -n 1)
+
+    if [[ -z "$recent_log" ]]; then
+        # Fallback to legacy name if no PID-based logs found
+        recent_log="$LOG_DIR/$LOG_FILE"
+        if [[ ! -f "$recent_log" ]]; then
+            touch "$recent_log"
+        fi
+    fi
+
+    echo "Tailing: $recent_log"
+    echo ""
 
     # Follow the log file
-    tail -f "$log_path"
+    tail -f "$recent_log"
 }
 
 # ----------------------------------------------------------------------------

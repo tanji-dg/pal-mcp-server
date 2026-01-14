@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import re
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from mcp.types import TextContent, LoggingLevel
+from mcp.types import TextContent
 from pydantic import BaseModel, Field
 
 from clink import get_registry
@@ -205,19 +207,74 @@ class CLinkTool(SimpleTool):
 
         # Prepare output callback for real-time notifications
         request_context = arguments.get("_request_context")
-        
+
+        # Track last notification to avoid spamming the UI
+        state = {"last_msg": "", "last_time": 0.0}
+        MIN_INTERVAL = 0.5  # seconds
+
+        # ANSI escape sequence pattern for stripping color codes
+        ansi_escape = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
+
         async def _notification_callback(line: str):
-            if request_context and line.strip():
-                try:
-                    # Clean up line for display
-                    msg = line.strip()
-                    # Only send meaningful lines (skip empty/pure whitespace)
-                    await request_context.session.send_log_message(
-                        level="info",
-                        data=f"[{client_config.name}] {msg}",
-                    )
-                except Exception as e:
-                    logger.warning(f"Failed to send notification: {e}")
+            if not request_context:
+                return
+            msg = line.strip()
+            if not msg:
+                return
+
+            # Always log raw output to server debug log for diagnostic purposes
+            logger.debug(f"CLI RAW: [{client_config.name}] {msg}")
+
+            try:
+                content = None
+                # 1. codex (JSON) format handling
+                if msg.startswith("{") and msg.endswith("}"):
+                    try:
+                        data = json.loads(msg)
+                        # Extract meaningful events to show as status (started or completed)
+                        if data.get("type") in ["item.started", "item.completed"]:
+                            item = data.get("item", {})
+                            label = item.get("type")
+
+                            if label == "command_execution":
+                                status_prefix = "🛠️ Executing" if data["type"] == "item.started" else "✅ Executed"
+                                content = f"{status_prefix}: {item.get('command')}"
+                            elif label == "reasoning":
+                                status_prefix = "🧠 Thinking" if data["type"] == "item.started" else "🧠 Thought"
+                                content = f"{status_prefix}: {item.get('text')}"
+                    except json.JSONDecodeError:
+                        pass
+
+                # 2. gemini (Text) format handling - filter for important milestones
+                else:
+                    important_keywords = [
+                        "Loading extension:",
+                        "Error executing tool",
+                        "Error when talking to Gemini API",
+                        "Executing tool",
+                    ]
+                    if any(k in msg for k in important_keywords):
+                        content = msg
+
+                # Apply rate-limiting and deduplication
+                if content:
+                    # Strip ANSI codes to prevent TUI corruption in the host
+                    clean_content = ansi_escape.sub("", content)
+
+                    now = time.monotonic()
+                    if clean_content != state["last_msg"] or (now - state["last_time"]) > MIN_INTERVAL:
+                        state["last_msg"] = clean_content
+                        state["last_time"] = now
+
+                        # Log the notification we are about to send for server-side monitoring
+                        logger.info(f"MCP NOTIFICATION: [{client_config.name}] {clean_content}")
+
+                        await request_context.session.send_log_message(
+                            level="info",
+                            data=f"[{client_config.name}] {clean_content}",
+                        )
+            except Exception as e:
+                logger.warning(f"Failed to send notification: {e}")
 
         agent = create_agent(client_config)
         try:
@@ -445,10 +502,22 @@ class CLinkTool(SimpleTool):
             "cli_name": client.name,
             "return_code": exc.returncode,
         }
+
+        # Limit the size of captured output in errors to avoid breaking the UI
+        MAX_ERROR_OUTPUT = 4000
+
         if exc.stdout:
-            metadata["stdout"] = exc.stdout.strip()
+            stdout = exc.stdout.strip()
+            if len(stdout) > MAX_ERROR_OUTPUT:
+                stdout = stdout[:MAX_ERROR_OUTPUT] + f"\n... (truncated {len(stdout) - MAX_ERROR_OUTPUT} chars)"
+            metadata["stdout"] = stdout
+
         if exc.stderr:
-            metadata["stderr"] = exc.stderr.strip()
+            stderr = exc.stderr.strip()
+            if len(stderr) > MAX_ERROR_OUTPUT:
+                stderr = stderr[:MAX_ERROR_OUTPUT] + f"\n... (truncated {len(stderr) - MAX_ERROR_OUTPUT} chars)"
+            metadata["stderr"] = stderr
+
         return metadata
 
     def _raise_tool_error(self, message: str, metadata: dict[str, Any] | None = None) -> None:

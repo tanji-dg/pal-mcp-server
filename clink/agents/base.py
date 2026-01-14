@@ -239,12 +239,12 @@ class BaseCLIAgent:
 
     def _build_environment(self) -> dict[str, str]:
         env = os.environ.copy()
-        
+
         # Ensure critical variables for CLI credentials/config are preserved
         for key in ["HOME", "USER", "PATH", "SHELL", "LANG"]:
             if key not in env and key in os.environ:
                 env[key] = os.environ[key]
-                
+
         env.update(self.client.env)
         return env
 

@@ -28,6 +28,16 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any, Optional
 
+from utils.env import env_override_enabled, get_env  # noqa: E402
+
+# Ensure timezone is correctly applied on Unix systems if TZ is set
+# This allows users to set TZ=Asia/Tokyo in their .env file for JST logs
+# MUST be done before any logging configuration or other imports
+tz_env = get_env("TZ")
+if tz_env and hasattr(time, "tzset"):
+    os.environ["TZ"] = tz_env
+    time.tzset()
+
 from mcp.server import Server  # noqa: E402
 from mcp.server.models import InitializationOptions  # noqa: E402
 from mcp.server.stdio import stdio_server  # noqa: E402
@@ -45,6 +55,8 @@ from mcp.types import (  # noqa: E402
 
 from config import (  # noqa: E402
     DEFAULT_MODEL,
+    DEFAULT_THINKING_MODE_THINKDEEP,
+    LOCALE,
     __version__,
 )
 from tools import (  # noqa: E402
@@ -69,22 +81,12 @@ from tools import (  # noqa: E402
 )
 from tools.models import ToolOutput  # noqa: E402
 from tools.shared.exceptions import ToolExecutionError  # noqa: E402
-from utils.env import env_override_enabled, get_env  # noqa: E402
-
-# Ensure timezone is correctly applied on Unix systems if TZ is set
-# This allows users to set TZ=Asia/Tokyo in their .env file for JST logs
-# MUST be done before any logging configuration
-tz_env = get_env("TZ")
-if tz_env and hasattr(time, "tzset"):
-    os.environ["TZ"] = tz_env
-    time.tzset()
 
 # Configure logging for server operations
 # Can be controlled via LOG_LEVEL environment variable (DEBUG, INFO, WARNING, ERROR)
 log_level = (get_env("LOG_LEVEL", "DEBUG") or "DEBUG").upper()
 
 # Create timezone-aware formatter
-
 
 
 class LocalTimeFormatter(logging.Formatter):
@@ -111,8 +113,10 @@ root_logger = logging.getLogger()
 root_logger.handlers.clear()
 
 # Create and configure stderr handler explicitly
+# Set level to ERROR by default to avoid TUI corruption in MCP hosts like Claude Code
+stderr_level = (get_env("STDERR_LOG_LEVEL", "ERROR") or "ERROR").upper()
 stderr_handler = logging.StreamHandler(sys.stderr)
-stderr_handler.setLevel(getattr(logging, log_level, logging.INFO))
+stderr_handler.setLevel(getattr(logging, stderr_level, logging.ERROR))
 stderr_handler.setFormatter(LocalTimeFormatter(log_format))
 root_logger.addHandler(stderr_handler)
 
@@ -129,10 +133,13 @@ try:
     log_dir = Path(__file__).parent / "logs"
     log_dir.mkdir(exist_ok=True)
 
+    # Use PID in log filenames to allow multiple server instances without conflict
+    current_pid = os.getpid()
+
     # Main server log with size-based rotation (20MB max per file)
     # This ensures logs don't grow indefinitely and are properly managed
     file_handler = RotatingFileHandler(
-        log_dir / "mcp_server.log",
+        log_dir / f"mcp_server_{current_pid}.log",
         maxBytes=20 * 1024 * 1024,  # 20MB max file size
         backupCount=5,  # Keep 10 rotated files (100MB total)
         encoding="utf-8",
@@ -144,7 +151,7 @@ try:
     # Create a special logger for MCP activity tracking with size-based rotation
     mcp_logger = logging.getLogger("mcp_activity")
     mcp_file_handler = RotatingFileHandler(
-        log_dir / "mcp_activity.log",
+        log_dir / f"mcp_activity_{current_pid}.log",
         maxBytes=10 * 1024 * 1024,  # 20MB max file size
         backupCount=2,  # Keep 5 rotated files (20MB total)
         encoding="utf-8",
@@ -153,22 +160,28 @@ try:
     mcp_file_handler.setFormatter(LocalTimeFormatter("%(asctime)s - %(message)s"))
     mcp_logger.addHandler(mcp_file_handler)
     mcp_logger.setLevel(logging.INFO)
-    # Ensure MCP activity also goes to stderr
-    mcp_logger.propagate = True
+    # Ensure MCP activity only goes to the dedicated file, not to stderr/main log
+    mcp_logger.propagate = False
 
     # Log setup info directly to root logger since logger isn't defined yet
-    logging.info(f"Logging to: {log_dir / 'mcp_server.log'}")
-    logging.info(f"Process PID: {os.getpid()}")
+    logging.info(f"Logging to: {log_dir / f'mcp_server_{current_pid}.log'}")
+    logging.info(f"Process PID: {current_pid}")
 
 except Exception as e:
     print(f"Warning: Could not set up file logging: {e}", file=sys.stderr)
 
 logger = logging.getLogger(__name__)
 
+# Log environment and timezone configuration for debugging
+tz_env = get_env("TZ")
+logger.info(f"Timezone configuration: TZ={tz_env or '[NOT SET]'}")
+if hasattr(time, "tzset"):
+    logger.debug(f"System timezone info: tzname={time.tzname}")
+
 # Log PAL_MCP_FORCE_ENV_OVERRIDE configuration for transparency
 if env_override_enabled():
     logger.info("PAL_MCP_FORCE_ENV_OVERRIDE enabled - .env file values will override system environment variables")
-    logger.debug("Environment override prevents conflicts between different AI tools passing cached API keys")
+    logger.debug(f"Current .env values: {list(get_all_env().keys())}")
 else:
     logger.debug("PAL_MCP_FORCE_ENV_OVERRIDE disabled - system environment variables take precedence")
 
@@ -757,7 +770,7 @@ async def handle_call_tool(name: str, arguments: dict[str, Any]) -> list[TextCon
     logger.info(f"MCP tool call: {name}")
     logger.debug(f"MCP tool arguments keys: {list(arguments.keys())}")
     if log_level == "DEBUG":
-        # Log full arguments for session debugging (excluding large potential secrets if necessary, 
+        # Log full arguments for session debugging (excluding large potential secrets if necessary,
         # but useful for full prompt/context inspection)
         logger.debug(f"MCP tool full arguments: {arguments}")
 
@@ -857,7 +870,7 @@ async def handle_call_tool(name: str, arguments: dict[str, Any]) -> list[TextCon
         model_context = ModelContext(model_name, model_option)
         arguments["_model_context"] = model_context
         arguments["_resolved_model_name"] = model_name
-        
+
         # Inject request context for tools that support notifications (e.g., clink)
         try:
             # Access the current request context from the server instance context var
@@ -884,7 +897,7 @@ async def handle_call_tool(name: str, arguments: dict[str, Any]) -> list[TextCon
         # Execute tool with pre-resolved model context
         result = await tool.execute(arguments)
         logger.info(f"Tool '{name}' execution completed")
-        
+
         if log_level == "DEBUG":
             logger.debug(f"Tool '{name}' result content: {result}")
 
@@ -1491,6 +1504,14 @@ async def main():
     # Log startup message
     logger.info("PAL MCP Server starting up...")
     logger.info(f"Log level: {log_level}")
+    
+    # Log key environment variables for diagnostics
+    logger.info("Configuration summary:")
+    logger.info(f"  DEFAULT_MODEL: {DEFAULT_MODEL}")
+    logger.info(f"  LOCALE: {LOCALE or '[DEFAULT (English)]'}")
+    logger.info(f"  DEFAULT_THINKING_MODE: {DEFAULT_THINKING_MODE_THINKDEEP}")
+    logger.info(f"  DISABLED_TOOLS: {get_env('DISABLED_TOOLS') or '[NONE]'}")
+    logger.info(f"  TZ: {get_env('TZ') or '[NOT SET]'}")
 
     # Note: MCP client info will be logged during the protocol handshake
     # (when handle_list_tools is called)
@@ -1502,9 +1523,6 @@ async def main():
         logger.info("Model mode: AUTO (CLI will select the best model for each task)")
     else:
         logger.info(f"Model mode: Fixed model '{DEFAULT_MODEL}'")
-
-    # Import here to avoid circular imports
-    from config import DEFAULT_THINKING_MODE_THINKDEEP
 
     logger.info(f"Default thinking mode (ThinkDeep): {DEFAULT_THINKING_MODE_THINKDEEP}")
 

@@ -10,16 +10,44 @@ from clink.agents.claude import ClaudeAgent
 from clink.models import ResolvedCLIClient, ResolvedCLIRole
 
 
+class DummyStreamWriter:
+    def __init__(self, parent):
+        self.parent = parent
+
+    def write(self, data):
+        if self.parent.stdin_data is None:
+            self.parent.stdin_data = b""
+        self.parent.stdin_data += data
+
+    async def drain(self):
+        pass
+
+    def close(self):
+        pass
+
+
 class DummyProcess:
     def __init__(self, *, stdout: bytes = b"", stderr: bytes = b"", returncode: int = 0):
-        self._stdout = stdout
-        self._stderr = stderr
+        self.stdout = asyncio.StreamReader()
+        self.stderr = asyncio.StreamReader()
+        self.stdin = DummyStreamWriter(self)
+        self.stdout.feed_data(stdout)
+        self.stdout.feed_eof()
+        self.stderr.feed_data(stderr)
+        self.stderr.feed_eof()
         self.returncode = returncode
         self.stdin_data: bytes | None = None
 
-    async def communicate(self, input_data):
-        self.stdin_data = input_data
-        return self._stdout, self._stderr
+    async def communicate(self, input_data=None):
+        if input_data:
+            self.stdin_data = input_data
+        return b"", b""
+
+    async def wait(self):
+        return self.returncode
+
+    def kill(self):
+        pass
 
 
 @pytest.fixture()

@@ -1,8 +1,9 @@
 {
   "name": "gemini",
-  "command": "gemini",
+  "command": "/home/htanji/proj/pal-mcp-server/gemini-cli/gemini-built.sh",
   "additional_args": [
-    "--yolo"
+    "--yolo",
+    "--exit-on-error"
   ],
   "env": {},
   "roles": {
@@ -17,6 +18,13 @@
     "codereviewer": {
       "prompt_path": "systemprompts/clink/default_codereviewer.txt",
       "role_args": []
+    },
+    "flash3": {
+      "prompt_path": "systemprompts/clink/default.txt",
+      "role_args": [
+        "--model",
+        "gemini-3-flash-preview"
+      ]
     }
   }
 }
