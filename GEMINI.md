@@ -47,7 +47,7 @@ Gemini CLIの `-o stream-json` モードをサポートし、生成中の思考�
 1.  **`tools/clink.py` の `_notification_callback`**:
     - `stdout` から流れてくる JSON チャンクをパースする。
     - `{"type":"message", "content":"...", "delta":true}` から思考プロセスを抽出。
-    - `{"type":"tool_call", ...}` から実行中のツール名を抽出。
+    - `{"type":"tool_use", ...}` および `{"type":"tool_result", ...}` からツール実行状況を抽出。`tool_id` を用いてツール名を追跡する。
 2.  **`clink/parsers/gemini.py` (GeminiJSONParser)**:
     - 実行完了後、`stdout` には複数の JSON オブジェクトが蓄積されている。
     - `line.split("\n")` で分割し、最後に出現する `type: "result"` のオブジェクトを最終回答として採用するロジックが必要。
@@ -76,6 +76,6 @@ echo "Hello" | ./gemini-cli/gemini-built.sh -o stream-json --yolo
 ---
 
 ## 6. 次のステップ (ToDo)
-- [ ] `feat/clink-stream-json` ブランチでの実装を完了させる。
-- [ ] 複数の JSON オブジェクトが混在する `stdout` のパースが、既存のパーサーを壊さないか確認する。
-- [ ] `Codex` など他の CLI における JSON イベント形式との整合性を保つ。
+- [x] `feat/clink-stream-json` ブランチでの実装を完了させる。
+- [x] 複数の JSON オブジェクトが混在する `stdout` のパースが、既存のパーサーを壊さないか確認する。
+- [x] `Codex` など他の CLI における JSON イベント形式との整合性を保つ。

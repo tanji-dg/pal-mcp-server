@@ -828,7 +828,14 @@ async def handle_call_tool(name: str, arguments: dict[str, Any]) -> list[TextCon
         # Consensus tool handles its own model configuration validation
         # No special handling needed at server level
 
-        # Skip model resolution for tools that don't require models (e.g., planner)
+        # Inject request context for tools that support notifications (e.g., clink)
+        try:
+            # Access the current request context from the server instance context var
+            arguments["_request_context"] = server.request_context
+        except Exception as e:
+            logger.debug(f"Could not inject request context: {e}")
+
+        # Skip model resolution for tools that don't require models (e.g., clink)
         if not tool.requires_model():
             logger.debug(f"Tool {name} doesn't require model resolution - skipping model validation")
             # Execute tool directly without model context
@@ -870,13 +877,6 @@ async def handle_call_tool(name: str, arguments: dict[str, Any]) -> list[TextCon
         model_context = ModelContext(model_name, model_option)
         arguments["_model_context"] = model_context
         arguments["_resolved_model_name"] = model_name
-
-        # Inject request context for tools that support notifications (e.g., clink)
-        try:
-            # Access the current request context from the server instance context var
-            arguments["_request_context"] = server.request_context
-        except Exception as e:
-            logger.debug(f"Could not inject request context: {e}")
 
         logger.debug(
             f"Model context created for {model_name} with {model_context.capabilities.context_window} token capacity"

@@ -210,71 +210,118 @@ class CLinkTool(SimpleTool):
 
         # Track last notification to avoid spamming the UI
         state = {"last_msg": "", "last_time": 0.0}
-        MIN_INTERVAL = 0.5  # seconds
+        # Mapping from tool_id to tool_name for Gemini stream-json events
+        tool_names: dict[str, str] = {}
+        MIN_INTERVAL = 0.0  # Disable rate-limiting for maximum responsiveness
 
         # ANSI escape sequence pattern for stripping color codes
         ansi_escape = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
 
         async def _notification_callback(line: str):
             if not request_context:
+                logger.debug(f"CLI RAW (no context): [{client_config.name}] {line.strip()}")
                 return
-            msg = line.strip()
-            if not msg:
-                return
+            
+            # Subprocesses might flush multiple lines at once in a single buffer chunk.
+            # Split and process each non-empty line to ensure real-time responsiveness.
+            lines = line.splitlines()
+            for raw_msg in lines:
+                msg = raw_msg.strip()
+                if not msg:
+                    continue
 
-            # Always log raw output to server debug log for diagnostic purposes
-            logger.debug(f"CLI RAW: [{client_config.name}] {msg}")
+                # Always log raw output to server debug log for diagnostic purposes
+                logger.debug(f"CLI RAW: [{client_config.name}] {msg}")
 
-            try:
-                content = None
-                # 1. codex (JSON) format handling
-                if msg.startswith("{") and msg.endswith("}"):
-                    try:
-                        data = json.loads(msg)
-                        # Extract meaningful events to show as status (started or completed)
-                        if data.get("type") in ["item.started", "item.completed"]:
-                            item = data.get("item", {})
-                            label = item.get("type")
+                try:
+                    content = None
+                    # 1. JSON format handling (gemini and codex)
+                    if msg.startswith("{") and msg.endswith("}"):
+                        try:
+                            data = json.loads(msg)
+                            msg_type = data.get("type")
 
-                            if label == "command_execution":
-                                status_prefix = "🛠️ Executing" if data["type"] == "item.started" else "✅ Executed"
-                                content = f"{status_prefix}: {item.get('command')}"
-                            elif label == "reasoning":
-                                status_prefix = "🧠 Thinking" if data["type"] == "item.started" else "🧠 Thought"
-                                content = f"{status_prefix}: {item.get('text')}"
-                    except json.JSONDecodeError:
-                        pass
+                            # Gemini stream-json events
+                            if msg_type == "message":
+                                role = data.get("role")
+                                # Support both standard content and thought parts
+                                payload_content = data.get("content") or data.get("thought")
+                                if role == "assistant" and payload_content:
+                                    # Only notify about thinking/progress messages, not final answers
+                                    if data.get("delta") is True:
+                                        content = f"🧠 Thinking: {payload_content}"
+                            elif msg_type == "tool_use":
+                                name = data.get("tool_name")
+                                tool_id = data.get("tool_id")
+                                if tool_id and name:
+                                    tool_names[tool_id] = name
+                                content = f"🛠️ Executing: {name or 'tool'}"
+                            elif msg_type == "tool_result":
+                                tool_id = data.get("tool_id")
+                                status = data.get("status")
+                                name = tool_names.get(tool_id) if tool_id else None
+                                if status == "success":
+                                    content = f"✅ Executed: {name or 'tool'}"
+                                elif status == "error":
+                                    content = f"❌ Error in: {name or 'tool'}"
+                            
+                            # Legacy gemini events (backward compatibility during transition)
+                            elif msg_type == "tool_call":
+                                status = data.get("status")
+                                name = data.get("name")
+                                if status == "Executing":
+                                    content = f"🛠️ Executing: {name}"
+                                elif status == "Success":
+                                    content = f"✅ Executed: {name}"
+                                elif status == "Error":
+                                    content = f"❌ Error in: {name}"
 
-                # 2. gemini (Text) format handling - filter for important milestones
-                else:
-                    important_keywords = [
-                        "Loading extension:",
-                        "Error executing tool",
-                        "Error when talking to Gemini API",
-                        "Executing tool",
-                    ]
-                    if any(k in msg for k in important_keywords):
-                        content = msg
+                            # Codex (Legacy/Other) format handling
+                            elif msg_type in ["item.started", "item.completed"]:
+                                item = data.get("item", {})
+                                label = item.get("type")
 
-                # Apply rate-limiting and deduplication
-                if content:
-                    # Strip ANSI codes to prevent TUI corruption in the host
-                    clean_content = ansi_escape.sub("", content)
+                                if label == "command_execution":
+                                    status_prefix = "🛠️ Executing" if msg_type == "item.started" else "✅ Executed"
+                                    content = f"{status_prefix}: {item.get('command')}"
+                                elif label == "reasoning":
+                                    status_prefix = "🧠 Thinking" if msg_type == "item.started" else "🧠 Thought"
+                                    content = f"{status_prefix}: {item.get('text')}"
+                        except json.JSONDecodeError:
+                            pass
 
-                    now = time.monotonic()
-                    if clean_content != state["last_msg"] or (now - state["last_time"]) > MIN_INTERVAL:
-                        state["last_msg"] = clean_content
-                        state["last_time"] = now
+                    # 2. gemini (Text) format handling - filter for important milestones
+                    else:
+                        important_keywords = [
+                            "Loading extension:",
+                            "Error executing tool",
+                            "Error when talking to Gemini API",
+                            "Executing tool",
+                        ]
+                        if any(k in msg for k in important_keywords):
+                            content = msg
 
-                        # Log the notification we are about to send for server-side monitoring
-                        logger.info(f"MCP NOTIFICATION: [{client_config.name}] {clean_content}")
+                    # Apply rate-limiting and deduplication
+                    if content:
+                        # Strip ANSI codes to prevent TUI corruption in the host
+                        clean_content = ansi_escape.sub("", content)
 
-                        await request_context.session.send_log_message(
-                            level="info",
-                            data=f"[{client_config.name}] {clean_content}",
-                        )
-            except Exception as e:
-                logger.warning(f"Failed to send notification: {e}")
+                        now = time.monotonic()
+                        if clean_content != state["last_msg"] or (now - state["last_time"]) > MIN_INTERVAL:
+                            state["last_msg"] = clean_content
+                            state["last_time"] = now
+
+                            # Log the notification we are about to send for server-side monitoring
+                            logger.debug(f"MCP NOTIFICATION: [{client_config.name}] {clean_content}")
+
+                            await request_context.session.send_log_message(
+                                level="info",
+                                data=f"[{client_config.name}] {clean_content}",
+                            )
+                        else:
+                            logger.debug(f"MCP NOTIFICATION SKIPPED (rate-limit): {clean_content}")
+                except Exception as e:
+                    logger.warning(f"Failed to send notification: {e}")
 
         agent = create_agent(client_config)
         try:

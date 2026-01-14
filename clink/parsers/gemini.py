@@ -26,19 +26,49 @@ class GeminiJSONParser(BaseParser):
 
         # Handle multiple JSON objects (stream-json format)
         payload = None
-        for line in stdout.strip().split("\n"):
-            line = line.strip()
-            if not line.startswith("{"):
+        accumulated_response = []
+        model_from_init = None
+        
+        for raw_line in stdout.splitlines():
+            line = raw_line.strip()
+            if not line:
                 continue
-            try:
-                data = json.loads(line)
-                # Prioritize result type or non-typed legacy format
-                if data.get("type") == "result" or "response" in data:
-                    payload = data
-            except json.JSONDecodeError:
-                continue
+            
+            # Handle cases where multiple JSON objects are concatenated in one line (e.g., }{)
+            json_parts = line.replace("}{", "}\n{").split("\n")
+            
+            for part in json_parts:
+                part = part.strip()
+                if not (part.startswith("{") and part.endswith("}")):
+                    continue
+                try:
+                    data = json.loads(part)
+                    msg_type = data.get("type")
+                    
+                    # Capture model from init event
+                    if msg_type == "init":
+                        model_from_init = data.get("model")
 
-        if not payload:
+                    # Accumulate content from message events (stream-json chunks)
+                    elif msg_type == "message":
+                        # Be lenient with role names: assistant (standard), gemini/model (variants)
+                        role = data.get("role")
+                        if role in ("assistant", "gemini", "model"):
+                            # Check multiple possible content fields: 'content' (standard), 'text' (variant)
+                            content = data.get("content") or data.get("text")
+                            if content:
+                                accumulated_response.append(content)
+                    
+                    # Prioritize result type which contains final content and stats
+                    elif msg_type == "result":
+                        payload = data
+                    # Also support legacy format without explicit type but having response/text
+                    elif not msg_type and ("response" in data or "text" in data):
+                        payload = data
+                except json.JSONDecodeError:
+                    continue
+
+        if not payload and not accumulated_response:
             # Fallback to older robust extraction if split/parse failed
             brace_index = stdout.find("{")
             if brace_index != -1:
@@ -47,20 +77,37 @@ class GeminiJSONParser(BaseParser):
                 except json.JSONDecodeError:
                     pass
 
-        if not payload:
+        if not payload and not accumulated_response:
             raise ParserError("Failed to extract valid JSON payload from Gemini CLI output")
 
-        response = payload.get("response")
-        response_text = response.strip() if isinstance(response, str) else ""
+        # Resolve final response text
+        response_text = ""
+        if payload:
+            response = payload.get("response") or payload.get("text")
+            if isinstance(response, str) and response.strip():
+                response_text = response.strip()
+        
+        if not response_text and accumulated_response:
+            response_text = "".join(accumulated_response).strip()
 
-        metadata: dict[str, Any] = {"raw": payload}
-        stats = payload.get("stats")
-        if isinstance(stats, dict):
-            metadata["stats"] = stats
-            models = stats.get("models")
-            if isinstance(models, dict) and models:
-                model_name = next(iter(models.keys()))
-                metadata["model_used"] = model_name
+        metadata: dict[str, Any] = {"raw": payload or {}}
+        if model_from_init:
+            metadata["model_used"] = model_from_init
+
+        if payload:
+            stats = payload.get("stats")
+            if isinstance(stats, dict):
+                metadata["stats"] = stats
+                # Legacy stats format (SessionMetrics)
+                models = stats.get("models")
+                if isinstance(models, dict) and models:
+                    model_name = next(iter(models.keys()))
+                    metadata["model_used"] = model_name
+                
+                # New stream stats format (StreamStats)
+                # Ensure model_used is set from init even if stats don't have model info
+                if "total_tokens" in stats and "model_used" not in metadata and model_from_init:
+                    metadata["model_used"] = model_from_init
 
         if response_text:
             if stderr and stderr.strip():
@@ -70,6 +117,8 @@ class GeminiJSONParser(BaseParser):
         fallback_message, extra_metadata = self._build_fallback_message(payload, stderr)
         if fallback_message:
             metadata.update(extra_metadata)
+            if stderr and stderr.strip():
+                metadata["stderr"] = stderr.strip()
             return ParsedCLIResponse(content=fallback_message, metadata=metadata)
 
         raise ParserError("Gemini CLI response is missing a textual 'response' field")
