@@ -3,7 +3,9 @@
   "command": "/home/htanji/proj/pal-mcp-server/gemini-cli/gemini-built.sh",
   "additional_args": [
     "--yolo",
-    "--exit-on-error"
+    "--exit-on-error",
+    "-o",
+    "stream-json"
   ],
   "env": {},
   "roles": {

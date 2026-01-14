@@ -17,30 +17,43 @@ class GeminiJSONParser(BaseParser):
         if not stdout.strip():
             raise ParserError("Gemini CLI returned empty stdout while JSON output was expected")
 
-        # Check for authentication requirement before attempting to parse JSON
+        # Check for authentication requirement
         if "accounts.google.com" in stdout or "authorize the application" in stdout:
             raise ParserError(
                 "Gemini CLI requires authentication. Please run 'gemini prompt \"test\"' "
-                "directly in your terminal to complete the login process. "
-                "Ensure that the HOME environment variable is correctly set in your MCP config."
+                "directly in your terminal to complete the login process."
             )
 
-        # Robustly extract JSON from potentially mixed stdout (e.g. YOLO warnings)
-        json_str = stdout
-        brace_index = stdout.find("{")
-        if brace_index != -1:
-            json_str = stdout[brace_index:]
+        # Handle multiple JSON objects (stream-json format)
+        payload = None
+        for line in stdout.strip().split("\n"):
+            line = line.strip()
+            if not line.startswith("{"):
+                continue
+            try:
+                data = json.loads(line)
+                # Prioritize result type or non-typed legacy format
+                if data.get("type") == "result" or "response" in data:
+                    payload = data
+            except json.JSONDecodeError:
+                continue
 
-        try:
-            payload: dict[str, Any] = json.loads(json_str)
-        except json.JSONDecodeError as exc:  # pragma: no cover - defensive logging
-            raise ParserError(f"Failed to decode Gemini CLI JSON output: {exc}") from exc
+        if not payload:
+            # Fallback to older robust extraction if split/parse failed
+            brace_index = stdout.find("{")
+            if brace_index != -1:
+                try:
+                    payload = json.loads(stdout[brace_index:])
+                except json.JSONDecodeError:
+                    pass
+
+        if not payload:
+            raise ParserError("Failed to extract valid JSON payload from Gemini CLI output")
 
         response = payload.get("response")
         response_text = response.strip() if isinstance(response, str) else ""
 
         metadata: dict[str, Any] = {"raw": payload}
-
         stats = payload.get("stats")
         if isinstance(stats, dict):
             metadata["stats"] = stats
@@ -48,13 +61,6 @@ class GeminiJSONParser(BaseParser):
             if isinstance(models, dict) and models:
                 model_name = next(iter(models.keys()))
                 metadata["model_used"] = model_name
-                model_stats = models.get(model_name) or {}
-                tokens = model_stats.get("tokens")
-                if isinstance(tokens, dict):
-                    metadata["token_usage"] = tokens
-                api_stats = model_stats.get("api")
-                if isinstance(api_stats, dict):
-                    metadata["latency_ms"] = api_stats.get("totalLatencyMs")
 
         if response_text:
             if stderr and stderr.strip():
@@ -64,8 +70,6 @@ class GeminiJSONParser(BaseParser):
         fallback_message, extra_metadata = self._build_fallback_message(payload, stderr)
         if fallback_message:
             metadata.update(extra_metadata)
-            if stderr and stderr.strip():
-                metadata["stderr"] = stderr.strip()
             return ParsedCLIResponse(content=fallback_message, metadata=metadata)
 
         raise ParserError("Gemini CLI response is missing a textual 'response' field")
