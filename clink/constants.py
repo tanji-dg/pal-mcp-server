@@ -5,12 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
-DEFAULT_TIMEOUT_SECONDS = 1800
-DEFAULT_STREAM_LIMIT = 10 * 1024 * 1024  # 10MB per stream
-
-from config import PROJECT_ROOT
-
-DEFAULT_TIMEOUT_SECONDS = 1800
+DEFAULT_TIMEOUT_SECONDS = 1800 # 30 minutes
+DEFAULT_IDLE_TIMEOUT_SECONDS = 120 # 2 minutes
 DEFAULT_STREAM_LIMIT = 10 * 1024 * 1024  # 10MB per stream
 
 BUILTIN_PROMPTS_DIR = PROJECT_ROOT / "systemprompts" / "clink"
@@ -27,6 +23,7 @@ class CLIInternalDefaults:
     env: dict[str, str] = field(default_factory=dict)
     default_role_prompt: str | None = None
     timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS
+    idle_timeout_seconds: int = DEFAULT_IDLE_TIMEOUT_SECONDS
     runner: str | None = None
 
 

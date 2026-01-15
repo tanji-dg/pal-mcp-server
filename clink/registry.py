@@ -139,8 +139,11 @@ class ClinkRegistry:
         internal_args = list(internal_defaults.additional_args) if internal_defaults else []
         config_args = list(raw.additional_args)
 
-        timeout_seconds = raw.timeout_seconds or (
+        default_total_timeout_seconds = raw.timeout_seconds or (
             internal_defaults.timeout_seconds if internal_defaults else DEFAULT_TIMEOUT_SECONDS
+        )
+        default_idle_timeout_seconds = (
+            internal_defaults.idle_timeout_seconds if internal_defaults else DEFAULT_IDLE_TIMEOUT_SECONDS
         )
 
         parser_name = internal_defaults.parser
@@ -163,12 +166,8 @@ class ClinkRegistry:
             internal_args=internal_args,
             config_args=config_args,
             env=env,
-            timeout_seconds=int(timeout_seconds),
-            parser=parser_name,
-            runner=runner_name,
-            roles=roles,
-            output_to_file=output_to_file,
-            working_dir=working_dir,
+            default_total_timeout_seconds=int(default_total_timeout_seconds),
+            default_idle_timeout_seconds=int(default_idle_timeout_seconds),
         )
 
     def _resolve_executable(
@@ -218,6 +217,8 @@ class ClinkRegistry:
                 prompt_path=prompt_path,
                 role_args=list(role_config.role_args),
                 description=role_config.description,
+                total_timeout_seconds=role_config.total_timeout_seconds,
+                idle_timeout_seconds=role_config.idle_timeout_seconds,
             )
         return resolved
 

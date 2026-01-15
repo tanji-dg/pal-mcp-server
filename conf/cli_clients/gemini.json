@@ -12,26 +12,36 @@
       "role_args": [
         "--model",
         "gemini-3-flash-preview"
-      ]
+      ],
+      "total_timeout_seconds": 900,
+      "idle_timeout_seconds": 120
     },
     "auto": {
       "prompt_path": "systemprompts/clink/default.txt",
-      "role_args": []
+      "role_args": [],
+      "total_timeout_seconds": 900,
+      "idle_timeout_seconds": 120
     },
     "planner": {
       "prompt_path": "systemprompts/clink/default_planner.txt",
-      "role_args": []
+      "role_args": [],
+      "total_timeout_seconds": 900,
+      "idle_timeout_seconds": 120
     },
     "codereviewer": {
       "prompt_path": "systemprompts/clink/default_codereviewer.txt",
-      "role_args": []
+      "role_args": [],
+      "total_timeout_seconds": 900,
+      "idle_timeout_seconds": 120
     },
     "flash3": {
       "prompt_path": "systemprompts/clink/default.txt",
       "role_args": [
         "--model",
         "gemini-3-flash-preview"
-      ]
+      ],
+      "total_timeout_seconds": 900,
+      "idle_timeout_seconds": 120
     }
   }
 }

@@ -80,7 +80,13 @@ class ModelContext:
                 class DummyProvider:
                     def get_capabilities(self, name):
                         # Default to 1M context for Gemini-like bridge models
-                        return ModelCapabilities(context_window=1_000_000)
+                        # Ensure all required positional arguments are provided
+                        return ModelCapabilities(
+                            provider="bridge",
+                            model_name=name,
+                            friendly_name=name,
+                            context_window=1_000_000,
+                        )
 
                 logger.debug(f"No provider found for {self.model_name} - using dummy provider for token calculation")
                 self._provider = DummyProvider()
