@@ -54,9 +54,21 @@ Gemini CLIの `-o stream-json` モードをサポートし、生成中の思考�
 3.  **設定更新**:
     - `conf/cli_clients/gemini.json` の `additional_args` に `-o stream-json`を追加する。
 
+## 5. ブリッジモードの強化と永続化 (NEW)
+
+### モデルの自動解決 (resolve_clink_model)
+サーバー側に API キーがない状態（ブリッジモード）で `continuation_id` を使用する場合でも、適切なトークン計算が行えるよう改善されました。
+- `server.py` の `resolve_clink_model`: `clink` 呼び出し時に引数の `role` から `gemini.json` 等の設定ファイルを読み込み、実際に使用されるモデル（`--model`）を特定します。
+- `utils/model_context.py` の緩和: 特定されたモデルに対応するプロバイダー（APIキー）がサーバーになくても、ダミーのプロバイダーを使用して履歴の復元（トークン管理）を続行します。
+
+### 会話履歴の永続化 (File Persistence)
+サーバーの再起動後も `continuation_id` を維持できるよう、メモリ内の会話履歴をファイルに保存します。
+- **保存先**: `logs/conversations.json`
+- **仕組み**: `InMemoryStorage` がデータの更新時に JSON 形式で保存し、起動時に自動ロードします。有効期限（TTL）切れのデータはロード時に除外されます。
+
 ---
 
-## 5. 開発環境とテスト
+## 6. 開発環境とテスト
 
 ### サーバーの起動
 ```bash
@@ -75,7 +87,9 @@ echo "Hello" | gemini -o stream-json --yolo
 
 ---
 
-## 6. 次のステップ (ToDo)
+## 7. 次のステップ (ToDo)
 - [x] `feat/clink-stream-json` ブランチでの実装を完了させる。
 - [x] 複数の JSON オブジェクトが混在する `stdout` のパースが、既存のパーサーを壊さないか確認する。
 - [x] `Codex` など他の CLI における JSON イベント形式との整合性を保つ。
+- [x] ブリッジモードでの `continuation_id` 利用時のモデル解決を実装する。
+- [x] 会話履歴のファイル永続化を実装する。

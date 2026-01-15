@@ -949,6 +949,52 @@ def parse_model_option(model_string: str) -> tuple[str, Optional[str]]:
     return model_string.strip(), None
 
 
+def resolve_clink_model(arguments: dict[str, Any]) -> Optional[str]:
+    """
+    Attempt to resolve the actual model being used by clink from its configuration.
+
+    This enables proper token calculation and context window management even in
+    'bridge-only' mode where the server doesn't have its own API keys.
+
+    Args:
+        arguments: Tool arguments potentially containing cli_name and role
+
+    Returns:
+        Resolved model name string or None if it couldn't be determined
+    """
+    try:
+        from clink import get_registry
+
+        # Determine CLI name
+        registry = get_registry()
+        cli_name = arguments.get("cli_name")
+        if not cli_name:
+            clients = registry.list_clients()
+            if "gemini" in [c.lower() for c in clients]:
+                cli_name = "gemini"
+            elif clients:
+                cli_name = clients[0]
+
+        if not cli_name:
+            return None
+
+        # Get role configuration
+        client = registry.get_client(cli_name)
+        role_name = arguments.get("role") or "default"
+        role = client.get_role(role_name)
+
+        # Look for --model in role_args
+        for i, arg in enumerate(role.role_args):
+            if arg == "--model" and i + 1 < len(role.role_args):
+                model_name = role.role_args[i + 1]
+                logger.debug(f"Resolved clink model '{model_name}' from {cli_name}:{role_name} config")
+                return model_name
+    except Exception as e:
+        logger.debug(f"Failed to resolve clink model from config: {e}")
+
+    return None
+
+
 def get_follow_up_instructions(current_turn_count: int, max_turns: int = None) -> str:
     """
     Generate dynamic follow-up instructions based on conversation turn count.
@@ -1134,6 +1180,13 @@ async def reconstruct_thread_context(arguments: dict[str, Any]) -> dict[str, Any
 
     tool = TOOLS.get(context.tool_name)
     requires_model = tool.requires_model() if tool else True
+
+    # SPECIAL HANDLING FOR CLINK: Resolve model from config for proper token management
+    if context.tool_name == "clink" and not arguments.get("model"):
+        clink_model = resolve_clink_model(arguments)
+        if clink_model:
+            arguments["model"] = clink_model
+            logger.debug(f"[CONVERSATION_DEBUG] Using clink model from configuration: {clink_model}")
 
     # Check if we should use the model from the previous conversation turn
     model_from_args = arguments.get("model")

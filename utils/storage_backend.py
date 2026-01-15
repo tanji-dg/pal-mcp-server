@@ -18,43 +18,55 @@ Key Features:
 - Drop-in replacement for Redis storage (for single-process scenarios)
 """
 
+import json
 import logging
 import threading
 import time
+from pathlib import Path
 from typing import Optional
 
+from config import PROJECT_ROOT
 from utils.env import get_env
 
 logger = logging.getLogger(__name__)
 
 
 class InMemoryStorage:
-    """Thread-safe in-memory storage for conversation threads"""
+    """Thread-safe in-memory storage with file persistence for conversation threads"""
 
     def __init__(self):
         self._store: dict[str, tuple[str, float]] = {}
         self._lock = threading.Lock()
+        
+        # Persistence configuration
+        self._storage_dir = PROJECT_ROOT / "logs"
+        self._storage_dir.mkdir(exist_ok=True)
+        self._persistence_file = self._storage_dir / "conversations.json"
+        
         # Match Redis behavior: cleanup interval based on conversation timeout
-        # Run cleanup at 1/10th of timeout interval (e.g., 18 mins for 3 hour timeout)
-        timeout_hours = int(get_env("CONVERSATION_TIMEOUT_HOURS", "3") or "3")
+        timeout_hours = int(get_env("CONVERSATION_TIMEOUT_HOURS", "24") or "24")
         self._cleanup_interval = (timeout_hours * 3600) // 10
         self._cleanup_interval = max(300, self._cleanup_interval)  # Minimum 5 minutes
         self._shutdown = False
+
+        # Load existing conversations from disk
+        self._load_from_disk()
 
         # Start background cleanup thread
         self._cleanup_thread = threading.Thread(target=self._cleanup_worker, daemon=True)
         self._cleanup_thread.start()
 
         logger.info(
-            f"In-memory storage initialized with {timeout_hours}h timeout, cleanup every {self._cleanup_interval//60}m"
+            f"Storage initialized with {timeout_hours}h timeout, cleanup every {self._cleanup_interval//60}m"
         )
 
     def set_with_ttl(self, key: str, ttl_seconds: int, value: str) -> None:
-        """Store value with expiration time"""
+        """Store value with expiration time and persist to disk"""
         with self._lock:
             expires_at = time.time() + ttl_seconds
             self._store[key] = (value, expires_at)
             logger.debug(f"Stored key {key} with TTL {ttl_seconds}s")
+            self._save_to_disk_locked()
 
     def get(self, key: str) -> Optional[str]:
         """Retrieve value if not expired"""
@@ -68,6 +80,7 @@ class InMemoryStorage:
                     # Clean up expired entry
                     del self._store[key]
                     logger.debug(f"Key {key} expired and removed")
+                    self._save_to_disk_locked()
         return None
 
     def setex(self, key: str, ttl_seconds: int, value: str) -> None:
@@ -81,7 +94,7 @@ class InMemoryStorage:
             self._cleanup_expired()
 
     def _cleanup_expired(self):
-        """Remove all expired entries"""
+        """Remove all expired entries and update disk"""
         with self._lock:
             current_time = time.time()
             expired_keys = [k for k, (_, exp) in self._store.items() if exp < current_time]
@@ -90,6 +103,37 @@ class InMemoryStorage:
 
             if expired_keys:
                 logger.debug(f"Cleaned up {len(expired_keys)} expired conversation threads")
+                self._save_to_disk_locked()
+
+    def _save_to_disk_locked(self):
+        """Save the current store to disk. MUST be called with self._lock held."""
+        try:
+            with open(self._persistence_file, "w", encoding="utf-8") as f:
+                json.dump(self._store, f, ensure_ascii=False)
+        except Exception as e:
+            logger.error(f"Failed to persist conversations to disk: {e}")
+
+    def _load_from_disk(self):
+        """Load conversations from disk on startup"""
+        if not self._persistence_file.exists():
+            return
+
+        try:
+            with open(self._persistence_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                
+                # Filter out already expired entries during load
+                current_time = time.time()
+                loaded_count = 0
+                for key, (value, expires_at) in data.items():
+                    if expires_at > current_time:
+                        self._store[key] = (value, expires_at)
+                        loaded_count += 1
+                
+                if loaded_count > 0:
+                    logger.info(f"Loaded {loaded_count} conversation threads from {self._persistence_file}")
+        except Exception as e:
+            logger.error(f"Failed to load conversations from disk: {e}")
 
     def shutdown(self):
         """Graceful shutdown of background thread"""

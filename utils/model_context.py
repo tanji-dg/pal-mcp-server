@@ -73,17 +73,17 @@ class ModelContext:
         if self._provider is None:
             self._provider = ModelProviderRegistry.get_provider_for_model(self.model_name)
             if not self._provider:
-                available_models = ModelProviderRegistry.get_available_model_names()
-                if available_models:
-                    available_text = ", ".join(available_models)
-                else:
-                    available_text = (
-                        "No models detected. Configure provider credentials or set DEFAULT_MODEL to a valid option."
-                    )
+                # If no provider is found (e.g., bridge mode), return a dummy provider
+                # to allow token calculation and history building to continue.
+                from providers.base import ModelCapabilities
 
-                raise ValueError(
-                    f"Model '{self.model_name}' is not available with current API keys. Available models: {available_text}."
-                )
+                class DummyProvider:
+                    def get_capabilities(self, name):
+                        # Default to 1M context for Gemini-like bridge models
+                        return ModelCapabilities(context_window=1_000_000)
+
+                logger.debug(f"No provider found for {self.model_name} - using dummy provider for token calculation")
+                self._provider = DummyProvider()
         return self._provider
 
     @property

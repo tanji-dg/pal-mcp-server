@@ -9,6 +9,13 @@
   "roles": {
     "default": {
       "prompt_path": "systemprompts/clink/default.txt",
+      "role_args": [
+        "--model",
+        "gemini-3-flash-preview"
+      ]
+    },
+    "auto": {
+      "prompt_path": "systemprompts/clink/default.txt",
       "role_args": []
     },
     "planner": {
