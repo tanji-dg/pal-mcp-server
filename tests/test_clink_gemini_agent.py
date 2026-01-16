@@ -36,17 +36,31 @@ class DummyProcess:
         self.stderr.feed_eof()
         self.returncode = returncode
         self.stdin_data: bytes | None = None
+        self._killed = False # Add killed flag
 
     async def communicate(self, input_data=None):
         if input_data:
             self.stdin_data = input_data
-        return b"", b""
+        # Read all remaining data from stdout/stderr to simulate full communication
+        stdout_remaining = await self.stdout.read()
+        stderr_remaining = await self.stderr.read()
+        return stdout_remaining, stderr_remaining
 
     async def wait(self):
+        # In these mock processes, output is pre-fed, so the process "completes" instantly.
+        # Unless it was explicitly killed.
+        if self._killed:
+            return self.returncode
+        # Simulate a quick process completion if not killed
+        await asyncio.sleep(0.001) # Small delay to avoid busy loop in very fast test scenarios
         return self.returncode
 
     def kill(self):
-        pass
+        if not self._killed:
+            self._killed = True
+            # Set a non-zero return code for killed processes, if not already set by normal exit
+            if self.returncode == 0:
+                self.returncode = 137 # Standard code for SIGKILL/SIGTERM
 
 
 @pytest.fixture()
@@ -59,7 +73,8 @@ def gemini_agent():
         internal_args=[],
         config_args=[],
         env={},
-        timeout_seconds=30,
+        default_total_timeout_seconds=0,
+        default_idle_timeout_seconds=0,
         parser="gemini_json",
         roles={"default": role},
         output_to_file=None,

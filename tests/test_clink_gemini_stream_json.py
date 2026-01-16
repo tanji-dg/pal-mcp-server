@@ -83,10 +83,11 @@ async def test_clink_tool_gemini_notifications(tmp_path, gemini_stream_stdout):
         executable=["echo"],
         env={},
         working_dir=tmp_path,
-        config_path=tmp_path,
-        timeout_seconds=5.0,
+        default_total_timeout_seconds=5,
+        default_idle_timeout_seconds=2,
         parser="gemini_json",
         roles={"default": mock_role},
+        output_to_file=None,
     )
 
     mock_registry.get_client.return_value = mock_client

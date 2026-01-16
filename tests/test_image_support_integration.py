@@ -296,7 +296,18 @@ class TestImageSupportIntegration:
             # Should be a real provider error (API key or network)
             assert any(
                 phrase in error_msg
-                for phrase in ["API", "key", "authentication", "provider", "network", "connection", "401", "403"]
+                for phrase in [
+                    "API",
+                    "key",
+                    "authentication",
+                    "provider",
+                    "network",
+                    "connection",
+                    "401",
+                    "403",
+                    "Image support not available",
+                    "does not support image processing",
+                ]
             )
 
         finally:

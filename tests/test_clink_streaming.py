@@ -15,7 +15,7 @@ from tools.clink import CLinkTool
 @pytest.fixture
 def mock_logger():
     """Mock logger to capture debug calls."""
-    return MagicMock(spec=logging.Logger)
+    return MagicMock()
 
 
 @pytest.fixture
@@ -24,12 +24,12 @@ def mock_cli_client(tmp_path):
     return ResolvedCLIClient(
         name="test-cli",
         executable=["echo"],
-        env={"TEST_ENV": "1"},
         working_dir=tmp_path,
-        config_path=tmp_path / "config.json",
-        timeout_seconds=5.0,
+        default_total_timeout_seconds=1,
+        default_idle_timeout_seconds=1,
         parser="gemini-json",  # Using a known parser name
         roles={},  # Initialize with empty roles
+        output_to_file=None, # Explicitly setting output_to_file
     )
 
 
@@ -45,42 +45,77 @@ def mock_cli_role(tmp_path):
     )
 
 
+class MockStream:
+    def __init__(self, lines: list[str] | None): # Add type hint for clarity
+        self._lines = [line.encode("utf-8") + b"\n" for line in (lines or [])] + [b""] # Handle None
+        self._index = 0
+
+    async def readline(self):
+        if self._index < len(self._lines):
+            line = self._lines[self._index]
+            self._index += 1
+            await asyncio.sleep(0.001) # Simulate I/O delay
+            return line
+        return b""
+
+
 class MockProcess:
     """Mock asyncio subprocess."""
 
     def __init__(self, stdout_lines=None, stderr_lines=None, returncode=0):
-        self.stdout = AsyncMock()
-        self.stderr = AsyncMock()
+        self.stdout = MockStream(stdout_lines) # Use custom mock stream
+        self.stderr = MockStream(stderr_lines) # Use custom mock stream
         self.stdin = MagicMock()  # stdin.write is synchronous
+        self.stdin.drain = AsyncMock()
+        self.stdin.close = AsyncMock()
         self.returncode = returncode
+        self._killed = False # Add killed flag
 
-        # Setup stdout streaming
-        if stdout_lines:
-            # readline side_effect needs to return bytes ending with newline, then empty bytes to signal EOF
-            side_effects = [line.encode("utf-8") + b"\n" for line in stdout_lines] + [b""]
-            self.stdout.readline.side_effect = side_effects
-        else:
-            self.stdout.readline.return_value = b""
+        # Store data for communicate method
+        self._stdout_data = [line.encode("utf-8") + b"\n" for line in stdout_lines] if stdout_lines else []
+        self._stderr_data = [line.encode("utf-8") + b"\n" for line in stderr_lines] if stderr_lines else []
 
-        # Setup stderr streaming
-        if stderr_lines:
-            side_effects = [line.encode("utf-8") + b"\n" for line in stderr_lines] + [b""]
-            self.stderr.readline.side_effect = side_effects
-        else:
-            self.stderr.readline.return_value = b""
+    async def communicate(self, input_data=None):
+        # Simulate consuming all remaining stdout and stderr
+        full_stdout = b"".join(self._stdout_data)
+        full_stderr = b"".join(self._stderr_data)
+        self._stdout_data.clear() # Clear it as it's been "read"
+        self._stderr_data.clear()
+        return full_stdout, full_stderr
 
     async def wait(self):
+        # Simulate waiting for the process to complete or be killed
+        # Wait until all stdout and stderr lines have been read
+        while self.stdout._index < len(self.stdout._lines) - 1 or self.stderr._index < len(self.stderr._lines) - 1:
+            await asyncio.sleep(0.01) # Small sleep to yield control
+        
+        if self.returncode is not None:
+            await asyncio.sleep(0.01) # Add a small delay for test stability after streams are empty
+            return self.returncode
+        # Otherwise, wait for it to be killed (or set by another mock interaction)
+        while not self._killed:
+            await asyncio.sleep(0.01) # Small sleep to yield control
         return self.returncode
+
+    def kill(self):
+        if not self._killed:
+            self._killed = True
+            # Set a non-zero return code for killed processes, if not already set by normal exit
+            if self.returncode == 0:
+                self.returncode = 137 # Standard code for SIGKILL/SIGTERM
 
 
 @pytest.mark.asyncio
-async def test_agent_streaming_logs(mock_cli_client, mock_cli_role, mock_logger):
+async def test_agent_streaming_logs(mock_cli_client, mock_cli_role): # Remove mock_logger from args
     """Test that BaseCLIAgent streams output to logs line-by-line."""
 
-    with patch("clink.agents.base.get_parser", return_value=MagicMock(name="mock_parser")):
-        agent = BaseCLIAgent(mock_cli_client)
-        # Inject mock logger
-        agent._logger = mock_logger
+    mock_logger = MagicMock() # Create local mock_logger
+
+    with (
+        patch("clink.agents.base.get_parser", return_value=MagicMock(name="mock_parser")),
+        patch("logging.getLogger", return_value=mock_logger), # Patch logging.getLogger
+    ):
+        agent = BaseCLIAgent(mock_cli_client) # Re-insert this line
 
         stdout_content = ["Line 1", "Line 2", "Line 3"]
         mock_process = MockProcess(stdout_lines=stdout_content)
@@ -111,10 +146,15 @@ async def test_agent_streaming_logs(mock_cli_client, mock_cli_role, mock_logger)
 
 
 @pytest.mark.asyncio
-async def test_agent_output_callback(mock_cli_client, mock_cli_role):
+async def test_agent_output_callback(mock_cli_client, mock_cli_role): # Removed mock_logger from args
     """Test that BaseCLIAgent invokes the output callback."""
 
-    with patch("clink.agents.base.get_parser", return_value=MagicMock(name="mock_parser")):
+    mock_logger = MagicMock() # Create local mock_logger
+
+    with (
+        patch("clink.agents.base.get_parser", return_value=MagicMock(name="mock_parser")),
+        patch("logging.getLogger", return_value=mock_logger), # Patch logging.getLogger
+    ):
         agent = BaseCLIAgent(mock_cli_client)
         stdout_content = ["Streamed Line 1", "Streamed Line 2"]
         mock_process = MockProcess(stdout_lines=stdout_content)
@@ -153,10 +193,11 @@ async def test_clink_tool_notifications(tmp_path):
         executable=["echo"],
         env={},
         working_dir=tmp_path,
-        config_path=tmp_path,
-        timeout_seconds=5.0,
+        default_total_timeout_seconds=0,
+        default_idle_timeout_seconds=0,
         parser="gemini-json",
-        roles={"default": mock_role},  # Add role to map
+        roles={"default": mock_role},
+        output_to_file=None,
     )
 
     mock_registry.get_client.return_value = mock_client

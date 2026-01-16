@@ -127,8 +127,17 @@ class TestWorkflowToolsUTF8(unittest.IsolatedAsyncioTestCase):
         # The call was successful, which means our fix worked
 
     @patch("tools.shared.base_tool.BaseTool.get_model_provider")
-    async def test_codereview_tool_french_findings(self, mock_get_provider):
+    @patch("utils.model_context.ModelContext") # Add this patch
+    async def test_codereview_tool_french_findings(self, mock_model_context, mock_get_provider):
         """Test that the codereview tool produces findings in French."""
+
+        # Mock ModelContext to bypass model validation
+        mock_context_instance = Mock()
+        mock_token_allocation = Mock()
+        mock_token_allocation.file_tokens = 1000
+        mock_token_allocation.total_tokens = 2000
+        mock_context_instance.calculate_token_allocation.return_value = mock_token_allocation
+
         # Mock with analysis in French
         mock_provider = Mock()
         mock_provider.get_provider_type.return_value = Mock(value="test")
@@ -163,6 +172,9 @@ class TestWorkflowToolsUTF8(unittest.IsolatedAsyncioTestCase):
             )
         )
         mock_get_provider.return_value = mock_provider
+        mock_context_instance.provider = mock_provider
+        mock_context_instance.capabilities = Mock(supports_extended_thinking=False)
+        mock_model_context.return_value = mock_context_instance
 
         # Test the tool
         codereview_tool = CodeReviewTool()
@@ -200,8 +212,16 @@ class TestWorkflowToolsUTF8(unittest.IsolatedAsyncioTestCase):
             self.assertIn("✅", analysis)
 
     @patch("tools.shared.base_tool.BaseTool.get_model_provider")
-    async def test_debug_tool_french_error_analysis(self, mock_get_provider):
+    @patch("utils.model_context.ModelContext") # Add this patch
+    async def test_debug_tool_french_error_analysis(self, mock_model_context, mock_get_provider):
         """Test that the debug tool analyzes errors in French."""
+
+        # Mock ModelContext to bypass model validation
+        mock_context_instance = Mock()
+        mock_token_allocation = Mock()
+        mock_token_allocation.file_tokens = 1000
+        mock_token_allocation.total_tokens = 2000
+        mock_context_instance.calculate_token_allocation.return_value = mock_token_allocation
         # Mock provider
         mock_provider = Mock()
         mock_provider.get_provider_type.return_value = Mock(value="test")
@@ -232,6 +252,9 @@ class TestWorkflowToolsUTF8(unittest.IsolatedAsyncioTestCase):
             )
         )
         mock_get_provider.return_value = mock_provider
+        mock_context_instance.provider = mock_provider
+        mock_context_instance.capabilities = Mock(supports_extended_thinking=False)
+        mock_model_context.return_value = mock_context_instance
 
         # Test the debug tool
         debug_tool = DebugIssueTool()

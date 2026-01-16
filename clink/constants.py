@@ -5,8 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
-DEFAULT_TIMEOUT_SECONDS = 1800 # 30 minutes
-DEFAULT_IDLE_TIMEOUT_SECONDS = 120 # 2 minutes
+from config import PROJECT_ROOT # Added this line
+
+
+DEFAULT_TIMEOUT_SECONDS = 3600 # 1 hour
+DEFAULT_IDLE_TIMEOUT_SECONDS = 600 # 10 minutes
 DEFAULT_STREAM_LIMIT = 10 * 1024 * 1024  # 10MB per stream
 
 BUILTIN_PROMPTS_DIR = PROJECT_ROOT / "systemprompts" / "clink"
@@ -33,6 +36,8 @@ INTERNAL_DEFAULTS: dict[str, CLIInternalDefaults] = {
         additional_args=["-o", "stream-json"],
         default_role_prompt="systemprompts/clink/default.txt",
         runner="gemini",
+        timeout_seconds=3600,
+        idle_timeout_seconds=600,
     ),
     "codex": CLIInternalDefaults(
         parser="codex_jsonl",
