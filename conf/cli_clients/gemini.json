@@ -13,26 +13,26 @@
         "--model",
         "gemini-3-flash-preview"
       ],
-      "total_timeout_seconds": 900,
-      "idle_timeout_seconds": 120
+      "total_timeout_seconds": 2400,
+      "idle_timeout_seconds": 300
     },
     "auto": {
       "prompt_path": "systemprompts/clink/default.txt",
       "role_args": [],
-      "total_timeout_seconds": 900,
-      "idle_timeout_seconds": 120
+      "total_timeout_seconds": 2400,
+      "idle_timeout_seconds": 300
     },
     "planner": {
       "prompt_path": "systemprompts/clink/default_planner.txt",
       "role_args": [],
-      "total_timeout_seconds": 900,
-      "idle_timeout_seconds": 120
+      "total_timeout_seconds": 2400,
+      "idle_timeout_seconds": 300
     },
     "codereviewer": {
       "prompt_path": "systemprompts/clink/default_codereviewer.txt",
       "role_args": [],
-      "total_timeout_seconds": 900,
-      "idle_timeout_seconds": 120
+      "total_timeout_seconds": 2400,
+      "idle_timeout_seconds": 300
     },
     "flash3": {
       "prompt_path": "systemprompts/clink/default.txt",
@@ -40,8 +40,8 @@
         "--model",
         "gemini-3-flash-preview"
       ],
-      "total_timeout_seconds": 900,
-      "idle_timeout_seconds": 120
+      "total_timeout_seconds": 2400,
+      "idle_timeout_seconds": 300
     }
   }
 }
