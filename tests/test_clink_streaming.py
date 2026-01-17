@@ -1,7 +1,6 @@
 "Tests for Clink streaming capabilities and real-time notifications."
 
 import asyncio
-import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -88,7 +87,7 @@ class MockProcess:
         # Wait until all stdout and stderr lines have been read
         while self.stdout._index < len(self.stdout._lines) - 1 or self.stderr._index < len(self.stderr._lines) - 1:
             await asyncio.sleep(0.01) # Small sleep to yield control
-        
+
         if self.returncode is not None:
             await asyncio.sleep(0.01) # Add a small delay for test stability after streams are empty
             return self.returncode

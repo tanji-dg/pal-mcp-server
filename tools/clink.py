@@ -221,7 +221,7 @@ class CLinkTool(SimpleTool):
             if not request_context:
                 logger.debug(f"CLI RAW (no context): [{client_config.name}] {line.strip()}")
                 return
-            
+
             # Subprocesses might flush multiple lines at once in a single buffer chunk.
             # Split and process each non-empty line to ensure real-time responsiveness.
             lines = line.splitlines()
@@ -264,7 +264,7 @@ class CLinkTool(SimpleTool):
                                     content = f"✅ Executed: {name or 'tool'}"
                                 elif status == "error":
                                     content = f"❌ Error in: {name or 'tool'}"
-                            
+
                             # Legacy gemini events (backward compatibility during transition)
                             elif msg_type == "tool_call":
                                 status = data.get("status")

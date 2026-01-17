@@ -28,15 +28,15 @@ class GeminiJSONParser(BaseParser):
         payload = None
         accumulated_response = []
         model_from_init = None
-        
+
         for raw_line in stdout.splitlines():
             line = raw_line.strip()
             if not line:
                 continue
-            
+
             # Handle cases where multiple JSON objects are concatenated in one line (e.g., }{)
             json_parts = line.replace("}{", "}\n{").split("\n")
-            
+
             for part in json_parts:
                 part = part.strip()
                 if not (part.startswith("{") and part.endswith("}")):
@@ -44,7 +44,7 @@ class GeminiJSONParser(BaseParser):
                 try:
                     data = json.loads(part)
                     msg_type = data.get("type")
-                    
+
                     # Capture model from init event
                     if msg_type == "init":
                         model_from_init = data.get("model")
@@ -58,7 +58,7 @@ class GeminiJSONParser(BaseParser):
                             content = data.get("content") or data.get("text")
                             if content:
                                 accumulated_response.append(content)
-                    
+
                     # Prioritize result type which contains final content and stats
                     elif msg_type == "result":
                         payload = data
@@ -86,7 +86,7 @@ class GeminiJSONParser(BaseParser):
             response = payload.get("response") or payload.get("text")
             if isinstance(response, str) and response.strip():
                 response_text = response.strip()
-        
+
         if not response_text and accumulated_response:
             response_text = "".join(accumulated_response).strip()
 
@@ -103,7 +103,7 @@ class GeminiJSONParser(BaseParser):
                 if isinstance(models, dict) and models:
                     model_name = next(iter(models.keys()))
                     metadata["model_used"] = model_name
-                
+
                 # New stream stats format (StreamStats)
                 # Ensure model_used is set from init even if stats don't have model info
                 if "total_tokens" in stats and "model_used" not in metadata and model_from_init:

@@ -5,8 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from config import PROJECT_ROOT # Added this line
-
+from config import PROJECT_ROOT  # Added this line
 
 DEFAULT_TIMEOUT_SECONDS = 3600 # 1 hour
 DEFAULT_IDLE_TIMEOUT_SECONDS = 600 # 10 minutes

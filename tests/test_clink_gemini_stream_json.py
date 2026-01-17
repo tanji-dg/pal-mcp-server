@@ -1,14 +1,15 @@
 "Tests for Gemini CLI stream-json format support."
 
 import json
-import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
 
-from clink.parsers.gemini import GeminiJSONParser
-from tools.clink import CLinkTool
 from clink.agents.base import AgentOutput
 from clink.models import ResolvedCLIClient, ResolvedCLIRole
+from clink.parsers.gemini import GeminiJSONParser
+from tools.clink import CLinkTool
+
 
 @pytest.fixture
 def gemini_stream_stdout():
@@ -44,7 +45,7 @@ def test_gemini_json_parser_stream_json(gemini_stream_stdout):
     # This also tests init event model capture
     parser = GeminiJSONParser()
     parsed = parser.parse(gemini_stream_stdout, stderr="")
-    
+
     assert parsed.content == "I will search for the capital of France.The capital is Paris."
     assert parsed.metadata["model_used"] == "gemini-2.0-flash"
     assert parsed.metadata["raw"]["type"] == "result"
@@ -58,17 +59,17 @@ def test_gemini_json_parser_legacy_format():
             "models": {"gemini-pro": {"tokens": {"total": 50}}}
         }
     })
-    
+
     parser = GeminiJSONParser()
     parsed = parser.parse(legacy_stdout, stderr="")
-    
+
     assert parsed.content == "Hello from legacy!"
     assert parsed.metadata["model_used"] == "gemini-pro"
 
 @pytest.mark.asyncio
 async def test_clink_tool_gemini_notifications(tmp_path, gemini_stream_stdout):
     """Verify that CLinkTool correctly parses Gemini stream-json events and sends notifications."""
-    
+
     # Mock setup similar to tests/test_clink_streaming.py
     mock_registry = MagicMock()
     mock_role = ResolvedCLIRole(
@@ -132,11 +133,11 @@ async def test_clink_tool_gemini_notifications(tmp_path, gemini_stream_stdout):
 
             # Check notifications
             notification_data = [call.kwargs["data"] for call in mock_session.send_log_message.call_args_list]
-            
+
             assert any("🧠 Thinking: I will search for the capital of France." in d for d in notification_data)
             assert any("🛠️ Executing: google_search" in d for d in notification_data)
             assert any("✅ Executed: google_search" in d for d in notification_data)
             assert any("🧠 Thinking: The capital is Paris." in d for d in notification_data)
-            
+
             # Ensure final response is NOT in notifications (it should be in tool output)
             assert not any("The capital of France is Paris." in d for d in notification_data)
