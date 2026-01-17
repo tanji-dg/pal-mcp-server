@@ -1613,7 +1613,7 @@ async def main():
     if MONITOR_ENABLED:
         try:
             from monitor.publisher import get_publisher
-            from monitor.logging import MonitorLogHandler
+            from monitor.log_handler import MonitorLogHandler
 
             monitor_publisher = get_publisher()
             await monitor_publisher.start()
