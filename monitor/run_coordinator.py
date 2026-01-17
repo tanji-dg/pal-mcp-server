@@ -92,7 +92,7 @@ async def run_dual_mode(host: str, port: int, socket_path: str, log_level: str):
     http_server = uvicorn.Server(http_config)
     unix_server = uvicorn.Server(unix_config)
 
-    logger.info(f"Starting dual-mode coordinator:")
+    logger.info("Starting dual-mode coordinator:")
     logger.info(f"  HTTP: http://{host}:{port} (dashboard + WebSocket)")
     logger.info(f"  Unix: {socket_path} (MCP events)")
 
@@ -162,9 +162,10 @@ def main():
     # Determine transport mode
     transport = "dual" if args.dual else args.transport
 
-    try:
-        import uvicorn
-    except ImportError:
+    # Check if uvicorn is available
+    import importlib.util
+
+    if importlib.util.find_spec("uvicorn") is None:
         logger.error(
             "uvicorn is required. Install with: pip install uvicorn"
         )
