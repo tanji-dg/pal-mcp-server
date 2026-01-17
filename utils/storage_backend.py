@@ -22,7 +22,6 @@ import json
 import logging
 import threading
 import time
-from pathlib import Path
 from typing import Optional
 
 from config import PROJECT_ROOT
@@ -37,12 +36,12 @@ class InMemoryStorage:
     def __init__(self):
         self._store: dict[str, tuple[str, float]] = {}
         self._lock = threading.Lock()
-        
+
         # Persistence configuration
         self._storage_dir = PROJECT_ROOT / "logs"
         self._storage_dir.mkdir(exist_ok=True)
         self._persistence_file = self._storage_dir / "conversations.json"
-        
+
         # Match Redis behavior: cleanup interval based on conversation timeout
         timeout_hours = int(get_env("CONVERSATION_TIMEOUT_HOURS", "24") or "24")
         self._cleanup_interval = (timeout_hours * 3600) // 10
@@ -119,9 +118,9 @@ class InMemoryStorage:
             return
 
         try:
-            with open(self._persistence_file, "r", encoding="utf-8") as f:
+            with open(self._persistence_file, encoding="utf-8") as f:
                 data = json.load(f)
-                
+
                 # Filter out already expired entries during load
                 current_time = time.time()
                 loaded_count = 0
@@ -129,7 +128,7 @@ class InMemoryStorage:
                     if expires_at > current_time:
                         self._store[key] = (value, expires_at)
                         loaded_count += 1
-                
+
                 if loaded_count > 0:
                     logger.info(f"Loaded {loaded_count} conversation threads from {self._persistence_file}")
         except Exception as e:
