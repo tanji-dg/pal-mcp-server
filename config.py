@@ -186,10 +186,10 @@ MONITOR_ENABLED = (get_env("MONITOR_ENABLED", "false") or "false").lower() in (
 )
 
 # MONITOR_TRANSPORT: Transport type for MCP-to-coordinator communication
-# Options: "http" (default) or "unix"
+# Options: "http" or "unix" (default)
 # - http: Uses HTTP to connect to MONITOR_COORDINATOR_URL
 # - unix: Uses Unix socket at MONITOR_SOCKET_PATH
-MONITOR_TRANSPORT = (get_env("MONITOR_TRANSPORT", "http") or "http").lower()
+MONITOR_TRANSPORT = (get_env("MONITOR_TRANSPORT", "unix") or "unix").lower()
 
 # MONITOR_COORDINATOR_URL: HTTP URL for coordinator (used when MONITOR_TRANSPORT=http)
 # Default: http://localhost:9876

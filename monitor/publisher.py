@@ -343,7 +343,7 @@ def get_publisher() -> MonitorPublisher:
         # Import config here to avoid circular imports
         from utils.env import get_env
 
-        transport = (get_env("MONITOR_TRANSPORT", "http") or "http").lower()
+        transport = (get_env("MONITOR_TRANSPORT", "unix") or "unix").lower()
         coordinator_url = get_env("MONITOR_COORDINATOR_URL", DEFAULT_COORDINATOR_URL)
         socket_path = get_env("MONITOR_SOCKET_PATH", DEFAULT_SOCKET_PATH)
         enabled = (get_env("MONITOR_ENABLED", "false") or "false").lower() in (
