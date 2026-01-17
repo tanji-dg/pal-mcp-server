@@ -8,9 +8,10 @@ constants used throughout the application.
 Configuration values can be overridden by environment variables where appropriate.
 """
 
-import os
 from pathlib import Path
+
 from utils.env import get_env
+
 
 def get_project_root() -> Path:
     """
@@ -22,10 +23,10 @@ def get_project_root() -> Path:
     base = Path(__file__).resolve().parent
     if (base / "server.py").exists():
         return base
-    
+
     # 2. Check if we're in a subdirectory of the source tree (e.g. clink/constants.py)
     # This shouldn't be needed for config.py, but good for completeness
-    
+
     # 3. Fallback to current working directory
     return Path.cwd()
 
@@ -170,6 +171,41 @@ MCP_PROMPT_SIZE_LIMIT = _calculate_mcp_prompt_limit()
 # "de-DE", "it-IT", "pt-PT"
 # Leave empty for default language (English)
 LOCALE = get_env("LOCALE", "") or ""
+
+# Monitoring Configuration
+# These settings control the optional real-time monitoring interface
+# that allows remote dashboards to view MCP server instance status.
+#
+# MONITOR_ENABLED: Enable/disable monitoring event publishing
+# When enabled, the server publishes tool execution events to the coordinator
+# Default: False (monitoring disabled)
+MONITOR_ENABLED = (get_env("MONITOR_ENABLED", "false") or "false").lower() in (
+    "true",
+    "1",
+    "yes",
+)
+
+# MONITOR_TRANSPORT: Transport type for MCP-to-coordinator communication
+# Options: "http" (default) or "unix"
+# - http: Uses HTTP to connect to MONITOR_COORDINATOR_URL
+# - unix: Uses Unix socket at MONITOR_SOCKET_PATH
+MONITOR_TRANSPORT = (get_env("MONITOR_TRANSPORT", "http") or "http").lower()
+
+# MONITOR_COORDINATOR_URL: HTTP URL for coordinator (used when MONITOR_TRANSPORT=http)
+# Default: http://localhost:9876
+MONITOR_COORDINATOR_URL = get_env("MONITOR_COORDINATOR_URL", "http://localhost:9876") or "http://localhost:9876"
+
+# MONITOR_SOCKET_PATH: Unix socket path (used when MONITOR_TRANSPORT=unix)
+# Default: /tmp/pal-monitor.sock
+MONITOR_SOCKET_PATH = get_env("MONITOR_SOCKET_PATH", "/tmp/pal-monitor.sock") or "/tmp/pal-monitor.sock"
+
+# MONITOR_WS_HOST: WebSocket server host for dashboard connections
+# Default: 0.0.0.0 (all interfaces)
+MONITOR_WS_HOST = get_env("MONITOR_WS_HOST", "0.0.0.0") or "0.0.0.0"
+
+# MONITOR_WS_PORT: WebSocket port for dashboard connections
+# Default: 9876
+MONITOR_WS_PORT = int(get_env("MONITOR_WS_PORT", "9876") or "9876")
 
 # Threading configuration
 # Simple in-memory conversation threading for stateless MCP environment

@@ -1,0 +1,15 @@
+# PAL MCP Server Monitoring Coordinator Dependencies
+#
+# Install with: pip install -r requirements-monitor.txt
+#
+# These dependencies are only needed for running the monitoring coordinator.
+# The MCP server itself only needs httpx (already in requirements.txt).
+
+# FastAPI for the WebSocket server
+fastapi>=0.109.0
+
+# ASGI server for running FastAPI
+uvicorn>=0.27.0
+
+# WebSocket support for FastAPI
+websockets>=12.0

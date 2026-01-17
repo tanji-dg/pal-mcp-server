@@ -25,10 +25,9 @@ import os
 import sys
 import time
 from logging.handlers import RotatingFileHandler
-from pathlib import Path
 from typing import Any, Optional
 
-from utils.env import env_override_enabled, get_env  # noqa: E402
+from utils.env import env_override_enabled, get_all_env, get_env  # noqa: E402
 
 # Ensure timezone is correctly applied on Unix systems if TZ is set
 # This allows users to set TZ=Asia/Tokyo in their .env file for JST logs
@@ -57,6 +56,7 @@ from config import (  # noqa: E402
     DEFAULT_MODEL,
     DEFAULT_THINKING_MODE_THINKDEEP,
     LOCALE,
+    MONITOR_ENABLED,
     PROJECT_ROOT,
     __version__,
 )
@@ -896,8 +896,48 @@ async def handle_call_tool(name: str, arguments: dict[str, Any]) -> list[TextCon
                 raise ToolExecutionError(ToolOutput(**file_size_check).model_dump_json())
 
         # Execute tool with pre-resolved model context
-        result = await tool.execute(arguments)
-        logger.info(f"Tool '{name}' execution completed")
+        # Track execution time for monitoring
+        tool_start_time = time.time()
+
+        # Publish tool start event to monitor
+        if MONITOR_ENABLED:
+            try:
+                from monitor.publisher import get_publisher
+
+                publisher = get_publisher()
+                await publisher.tool_start(name)
+            except Exception as e:
+                logger.debug(f"Failed to publish tool start event: {e}")
+
+        try:
+            result = await tool.execute(arguments)
+            tool_duration_ms = int((time.time() - tool_start_time) * 1000)
+            logger.info(f"Tool '{name}' execution completed in {tool_duration_ms}ms")
+
+            # Publish tool completion event to monitor
+            if MONITOR_ENABLED:
+                try:
+                    from monitor.publisher import get_publisher
+
+                    publisher = get_publisher()
+                    await publisher.tool_end(name, tool_duration_ms)
+                except Exception as e:
+                    logger.debug(f"Failed to publish tool end event: {e}")
+
+        except Exception as tool_error:
+            tool_duration_ms = int((time.time() - tool_start_time) * 1000)
+
+            # Publish tool error event to monitor
+            if MONITOR_ENABLED:
+                try:
+                    from monitor.publisher import get_publisher
+
+                    publisher = get_publisher()
+                    await publisher.tool_error(name, tool_duration_ms, str(tool_error))
+                except Exception as e:
+                    logger.debug(f"Failed to publish tool error event: {e}")
+
+            raise  # Re-raise the original error
 
         if log_level == "DEBUG":
             logger.debug(f"Tool '{name}' result content: {result}")
@@ -1558,7 +1598,7 @@ async def main():
     # Log startup message
     logger.info("PAL MCP Server starting up...")
     logger.info(f"Log level: {log_level}")
-    
+
     # Log key environment variables for diagnostics
     logger.info("Configuration summary:")
     logger.info(f"  DEFAULT_MODEL: {DEFAULT_MODEL}")
@@ -1566,6 +1606,20 @@ async def main():
     logger.info(f"  DEFAULT_THINKING_MODE: {DEFAULT_THINKING_MODE_THINKDEEP}")
     logger.info(f"  DISABLED_TOOLS: {get_env('DISABLED_TOOLS') or '[NONE]'}")
     logger.info(f"  TZ: {get_env('TZ') or '[NOT SET]'}")
+    logger.info(f"  MONITOR_ENABLED: {MONITOR_ENABLED}")
+
+    # Initialize monitoring publisher if enabled
+    monitor_publisher = None
+    if MONITOR_ENABLED:
+        try:
+            from monitor.publisher import get_publisher
+
+            monitor_publisher = get_publisher()
+            await monitor_publisher.start()
+            logger.info(f"Monitor publisher started: {monitor_publisher.instance_id}")
+        except Exception as e:
+            logger.warning(f"Failed to initialize monitor publisher: {e}")
+            monitor_publisher = None
 
     # Note: MCP client info will be logged during the protocol handshake
     # (when handle_list_tools is called)
@@ -1597,20 +1651,29 @@ async def main():
 
     # Run the server using stdio transport (standard input/output)
     # This allows the server to be launched by MCP clients as a subprocess
-    async with stdio_server() as (read_stream, write_stream):
-        await server.run(
-            read_stream,
-            write_stream,
-            InitializationOptions(
-                server_name="PAL",
-                server_version=__version__,
-                instructions=handshake_instructions,
-                capabilities=ServerCapabilities(
-                    tools=ToolsCapability(),  # Advertise tool support capability
-                    prompts=PromptsCapability(),  # Advertise prompt support capability
+    try:
+        async with stdio_server() as (read_stream, write_stream):
+            await server.run(
+                read_stream,
+                write_stream,
+                InitializationOptions(
+                    server_name="PAL",
+                    server_version=__version__,
+                    instructions=handshake_instructions,
+                    capabilities=ServerCapabilities(
+                        tools=ToolsCapability(),  # Advertise tool support capability
+                        prompts=PromptsCapability(),  # Advertise prompt support capability
+                    ),
                 ),
-            ),
-        )
+            )
+    finally:
+        # Cleanup monitoring publisher on shutdown
+        if monitor_publisher:
+            try:
+                await monitor_publisher.stop()
+                logger.info("Monitor publisher stopped")
+            except Exception as e:
+                logger.debug(f"Error stopping monitor publisher: {e}")
 
 
 def run():
