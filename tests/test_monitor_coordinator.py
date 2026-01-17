@@ -73,6 +73,15 @@ class TestInstanceTracker:
         assert len(tracker.recent_calls) == 1
         assert tracker.recent_calls[0].status == "error"
 
+    def test_add_log(self):
+        """Test adding a log message."""
+        tracker = InstanceTracker("12345@hostname")
+        tracker.add_log("INFO", "Test message")
+
+        assert len(tracker.recent_logs) == 1
+        assert tracker.recent_logs[0].level == "INFO"
+        assert tracker.recent_logs[0].message == "Test message"
+
     def test_recent_calls_limit(self):
         """Test that recent calls are limited."""
         tracker = InstanceTracker("12345@hostname")
@@ -314,6 +323,31 @@ class TestMonitorCoordinator:
         assert tracker.state == "idle"
         assert len(tracker.recent_calls) == 1
         assert tracker.recent_calls[0].status == "error"
+
+    @pytest.mark.asyncio
+    async def test_process_log_event(self, coordinator):
+        """Test processing a log event."""
+        # Register
+        await coordinator.process_event(
+            ToolEvent(
+                event_type=ToolEventType.REGISTER,
+                instance_id="12345@hostname",
+            )
+        )
+
+        # Log event
+        await coordinator.process_event(
+            ToolEvent(
+                event_type=ToolEventType.LOG,
+                instance_id="12345@hostname",
+                log_level="INFO",
+                log_message="System started",
+            )
+        )
+
+        tracker = coordinator.instances["12345@hostname"]
+        assert len(tracker.recent_logs) == 1
+        assert tracker.recent_logs[0].message == "System started"
 
     @pytest.mark.asyncio
     async def test_auto_register_on_event(self, coordinator):

@@ -31,12 +31,13 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from typing import Optional
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 
 from monitor.models import (
     AggregatedState,
     InstanceStatus,
+    LogEntry,
     ToolCall,
     ToolEvent,
     ToolEventType,
@@ -48,6 +49,7 @@ logger = logging.getLogger(__name__)
 HEARTBEAT_INTERVAL = 10  # seconds between heartbeats
 INSTANCE_TIMEOUT = 30  # seconds before marking instance as offline
 MAX_RECENT_CALLS = 20  # maximum number of recent calls to keep per instance
+MAX_RECENT_LOGS = 50  # maximum number of recent logs to keep per instance
 BROADCAST_INTERVAL = 1.0  # seconds between state broadcasts
 
 
@@ -63,6 +65,7 @@ class InstanceTracker:
         self.active_tool: Optional[str] = None
         self.tool_start_time: Optional[datetime] = None
         self.recent_calls: deque[ToolCall] = deque(maxlen=MAX_RECENT_CALLS)
+        self.recent_logs: deque[LogEntry] = deque(maxlen=MAX_RECENT_LOGS)
 
         # Metrics for last minute
         self._calls_1m: list[tuple[float, bool]] = []  # (timestamp, is_error)
@@ -102,6 +105,12 @@ class InstanceTracker:
         self.state = "idle"
         self.active_tool = None
         self.tool_start_time = None
+        self.last_heartbeat = datetime.now()
+
+    def add_log(self, level: str, message: str):
+        """Record a log message."""
+        log = LogEntry(level=level, message=message)
+        self.recent_logs.appendleft(log)
         self.last_heartbeat = datetime.now()
 
     def get_uptime(self) -> float:
@@ -144,6 +153,7 @@ class InstanceTracker:
             active_tool=self.active_tool if state == "busy" else None,
             tool_start_time=self.tool_start_time if state == "busy" else None,
             recent_calls=list(self.recent_calls),
+            recent_logs=list(self.recent_logs),
             error_rate_1m=self.get_error_rate_1m(),
             avg_execution_time_1m=self.get_avg_execution_time_1m(),
         )
@@ -224,6 +234,9 @@ class MonitorCoordinator:
                         f"{event.error_message}"
                     )
 
+                elif event.event_type == ToolEventType.LOG:
+                    tracker.add_log(event.log_level or "INFO", event.log_message or "")
+
             else:
                 # Auto-register instance on first event
                 self.instances[instance_id] = InstanceTracker(
@@ -241,6 +254,8 @@ class MonitorCoordinator:
                     tracker.end_tool(event.duration_ms or 0, is_error=True)
                 elif event.event_type == ToolEventType.HEARTBEAT:
                     tracker.update_heartbeat(event.uptime_seconds)
+                elif event.event_type == ToolEventType.LOG:
+                    tracker.add_log(event.log_level or "INFO", event.log_message or "")
 
     async def add_websocket_client(self, websocket: WebSocket):
         """Add a new WebSocket client connection."""
@@ -331,13 +346,37 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
+    @app.middleware("http")
+    async def log_transport_middleware(request: Request, call_next):
+        """Log the transport type (HTTP or Unix socket)."""
+        # Determine transport based on client address or scope
+        # Uvicorn sets scope['client'] to None or ['unix'] for Unix sockets depending on version/config
+        # For TCP/HTTP, it's usually (host, port)
+
+        client = request.scope.get("client")
+        path = request.scope.get("path")
+
+        # Skip health checks to reduce noise
+        if path != "/health":
+            transport = "HTTP"
+            if not client:
+                # Often None for Unix sockets in some ASGI implementations
+                transport = "Unix Socket"
+            elif isinstance(client, (list, tuple)) and (len(client) == 0 or client[0] == "unix"):
+                transport = "Unix Socket"
+
+            logger.info(f"Request to {path} via {transport}")
+
+        response = await call_next(request)
+        return response
+
     # Serve dashboard HTML
     @app.get("/", response_class=HTMLResponse)
     async def dashboard():
         """Serve the monitoring dashboard."""
         dashboard_path = os.path.join(os.path.dirname(__file__), "dashboard.html")
         try:
-            with open(dashboard_path, "r", encoding="utf-8") as f:
+            with open(dashboard_path, encoding="utf-8") as f:
                 return HTMLResponse(content=f.read())
         except FileNotFoundError:
             return HTMLResponse(

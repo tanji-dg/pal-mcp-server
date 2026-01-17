@@ -170,6 +170,51 @@
         .call-item.error {
             border-left: 3px solid #ff4757;
         }
+        .logs-section {
+            margin-top: 15px;
+            border-top: 1px solid #333;
+            padding-top: 15px;
+        }
+        .logs-section h4 {
+            color: #888;
+            font-size: 12px;
+            margin-bottom: 10px;
+        }
+        .logs-container {
+            background: #0f1525;
+            padding: 10px;
+            border-radius: 5px;
+            font-family: monospace;
+            font-size: 11px;
+            max-height: 200px;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+        .log-entry {
+            display: flex;
+            gap: 8px;
+            border-bottom: 1px solid #1a2639;
+            padding-bottom: 2px;
+        }
+        .log-time {
+            color: #666;
+            min-width: 60px;
+        }
+        .log-level {
+            font-weight: bold;
+            min-width: 40px;
+        }
+        .log-level.INFO { color: #00d4ff; }
+        .log-level.WARNING { color: #ffa502; }
+        .log-level.ERROR { color: #ff4757; }
+        .log-level.DEBUG { color: #888; }
+        .log-msg {
+            color: #ddd;
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
         .no-instances {
             text-align: center;
             padding: 60px 20px;
@@ -338,6 +383,7 @@
             container.innerHTML = instances.map(inst => {
                 const uptime = formatUptime(inst.uptime_seconds);
                 const recentCalls = (inst.recent_calls || []).slice(0, 5);
+                const recentLogs = (inst.recent_logs || []).slice(0, 20);
 
                 return `
                     <div class="instance-card ${inst.state}">
@@ -379,9 +425,33 @@
                                 </div>
                             </div>
                         ` : ''}
+
+                        ${recentLogs.length > 0 ? `
+                            <div class="logs-section">
+                                <h4>Recent Logs</h4>
+                                <div class="logs-container">
+                                    ${recentLogs.map(log => {
+                                        const time = new Date(log.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', second:'2-digit'});
+                                        return `
+                                            <div class="log-entry">
+                                                <span class="log-time">${time}</span>
+                                                <span class="log-level ${log.level}">${log.level}</span>
+                                                <span class="log-msg">${escapeHtml(log.message)}</span>
+                                            </div>
+                                        `;
+                                    }).join('')}
+                                </div>
+                            </div>
+                        ` : ''}
                     </div>
                 `;
             }).join('');
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
         }
 
         function formatUptime(seconds) {

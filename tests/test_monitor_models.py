@@ -14,6 +14,7 @@ from monitor.models import (
     ToolEvent,
     ToolEventType,
     WebSocketMessage,
+    LogEntry,
 )
 
 
@@ -41,6 +42,17 @@ class TestToolCall:
         assert data["tool"] == "analyze"
         assert data["duration_ms"] == 2500
         assert data["status"] == "success"
+
+
+class TestLogEntry:
+    """Tests for LogEntry model."""
+
+    def test_create_log_entry(self):
+        """Test creating a log entry."""
+        log = LogEntry(level="INFO", message="Test log message")
+        assert log.level == "INFO"
+        assert log.message == "Test log message"
+        assert isinstance(log.timestamp, datetime)
 
 
 class TestInstanceStatus:
@@ -86,9 +98,24 @@ class TestInstanceStatus:
         assert len(status.recent_calls) == 2
         assert status.recent_calls[0].tool == "chat"
 
+    def test_instance_status_with_recent_logs(self):
+        """Test instance status with recent logs."""
+        logs = [
+            LogEntry(level="INFO", message="Started"),
+            LogEntry(level="ERROR", message="Failed"),
+        ]
+        status = InstanceStatus(
+            instance_id="12345@hostname",
+            uptime_seconds=3600.0,
+            recent_logs=logs,
+        )
+        assert len(status.recent_logs) == 2
+        assert status.recent_logs[0].level == "INFO"
+
     def test_to_dict_iso_timestamps(self):
         """Test that to_dict produces ISO format timestamps."""
         ts = datetime(2026, 1, 18, 12, 0, 0)
+        log = LogEntry(level="INFO", message="Test", timestamp=ts)
         status = InstanceStatus(
             instance_id="12345@hostname",
             uptime_seconds=3600.0,
@@ -96,10 +123,12 @@ class TestInstanceStatus:
             tool_start_time=ts,
             state="busy",
             active_tool="test",
+            recent_logs=[log],
         )
         data = status.to_dict()
         assert data["last_heartbeat"] == "2026-01-18T12:00:00"
         assert data["tool_start_time"] == "2026-01-18T12:00:00"
+        assert data["recent_logs"][0]["timestamp"] == "2026-01-18T12:00:00"
 
 
 class TestToolEvent:
@@ -148,6 +177,18 @@ class TestToolEvent:
         )
         assert event.event_type == ToolEventType.TOOL_ERROR
         assert event.error_message == "API timeout"
+
+    def test_create_log_event(self):
+        """Test creating a log event."""
+        event = ToolEvent(
+            event_type=ToolEventType.LOG,
+            instance_id="12345@hostname",
+            log_level="INFO",
+            log_message="System initialized",
+        )
+        assert event.event_type == ToolEventType.LOG
+        assert event.log_level == "INFO"
+        assert event.log_message == "System initialized"
 
     def test_to_json_serialization(self):
         """Test JSON serialization."""
@@ -250,6 +291,7 @@ class TestToolEventType:
         assert ToolEventType.HEARTBEAT.value == "heartbeat"
         assert ToolEventType.REGISTER.value == "register"
         assert ToolEventType.UNREGISTER.value == "unregister"
+        assert ToolEventType.LOG.value == "log"
 
     def test_event_type_string_comparison(self):
         """Test string comparison for event types."""

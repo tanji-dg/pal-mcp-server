@@ -26,6 +26,7 @@ class ToolEventType(str, Enum):
     HEARTBEAT = "heartbeat"
     REGISTER = "register"
     UNREGISTER = "unregister"
+    LOG = "log"
 
 
 class ToolCall(BaseModel):
@@ -36,6 +37,16 @@ class ToolCall(BaseModel):
     status: str = Field(..., description="Execution status: 'success' or 'error'")
     timestamp: datetime = Field(
         default_factory=datetime.now, description="When the call completed"
+    )
+
+
+class LogEntry(BaseModel):
+    """Record of a log message."""
+
+    level: str = Field(..., description="Log level (INFO, ERROR, etc)")
+    message: str = Field(..., description="Log message content")
+    timestamp: datetime = Field(
+        default_factory=datetime.now, description="Log timestamp"
     )
 
 
@@ -66,6 +77,10 @@ class InstanceStatus(BaseModel):
         default_factory=list,
         description="Recent tool call history (newest first)",
     )
+    recent_logs: list[LogEntry] = Field(
+        default_factory=list,
+        description="Recent log messages (newest first)",
+    )
     error_rate_1m: float = Field(
         default=0.0,
         description="Error rate in the last minute (0.0 to 1.0)",
@@ -90,6 +105,15 @@ class InstanceStatus(BaseModel):
             }
             for call in data["recent_calls"]
         ]
+        data["recent_logs"] = [
+            {
+                **log,
+                "timestamp": log["timestamp"].isoformat()
+                if isinstance(log["timestamp"], datetime)
+                else log["timestamp"],
+            }
+            for log in data["recent_logs"]
+        ]
         return data
 
 
@@ -112,6 +136,12 @@ class ToolEvent(BaseModel):
     )
     uptime_seconds: Optional[float] = Field(
         default=None, description="Uptime for HEARTBEAT/REGISTER events"
+    )
+    log_level: Optional[str] = Field(
+        default=None, description="Log level for LOG events (INFO, ERROR, etc)"
+    )
+    log_message: Optional[str] = Field(
+        default=None, description="Log content for LOG events"
     )
 
     def to_json(self) -> str:

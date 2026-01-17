@@ -1613,9 +1613,16 @@ async def main():
     if MONITOR_ENABLED:
         try:
             from monitor.publisher import get_publisher
+            from monitor.logging import MonitorLogHandler
 
             monitor_publisher = get_publisher()
             await monitor_publisher.start()
+
+            # Add monitoring log handler to root logger
+            monitor_handler = MonitorLogHandler(monitor_publisher)
+            monitor_handler.setLevel(logging.INFO)
+            logging.getLogger().addHandler(monitor_handler)
+
             logger.info(f"Monitor publisher started: {monitor_publisher.instance_id}")
         except Exception as e:
             logger.warning(f"Failed to initialize monitor publisher: {e}")

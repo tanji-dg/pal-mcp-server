@@ -233,6 +233,20 @@ class MonitorPublisher:
         )
         await self._publish_event(event)
 
+    async def log_event(self, level: str, message: str):
+        """Record a log message event."""
+        if not self.enabled:
+            return
+
+        event = ToolEvent(
+            event_type=ToolEventType.LOG,
+            instance_id=self.instance_id,
+            log_level=level,
+            log_message=message[:2000],  # Truncate very long logs
+            uptime_seconds=self.uptime_seconds,
+        )
+        await self._publish_event(event)
+
     async def _publish_event(self, event: ToolEvent):
         """Add event to the send queue (non-blocking)."""
         if not self._running:
