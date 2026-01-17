@@ -32,6 +32,7 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.responses import HTMLResponse
 
 from monitor.models import (
     AggregatedState,
@@ -329,6 +330,20 @@ def create_app() -> FastAPI:
         version="1.0.0",
         lifespan=lifespan,
     )
+
+    # Serve dashboard HTML
+    @app.get("/", response_class=HTMLResponse)
+    async def dashboard():
+        """Serve the monitoring dashboard."""
+        dashboard_path = os.path.join(os.path.dirname(__file__), "dashboard.html")
+        try:
+            with open(dashboard_path, "r", encoding="utf-8") as f:
+                return HTMLResponse(content=f.read())
+        except FileNotFoundError:
+            return HTMLResponse(
+                content="<h1>Dashboard not found</h1><p>dashboard.html is missing</p>",
+                status_code=404,
+            )
 
     @app.get("/health")
     async def health_check():

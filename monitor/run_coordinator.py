@@ -3,35 +3,105 @@
 Run the PAL MCP Monitor Coordinator.
 
 This script starts the monitoring coordinator server that:
-- Receives status events from MCP server instances
+- Receives status events from MCP server instances (via HTTP or Unix socket)
 - Maintains aggregated state in memory
-- Serves WebSocket connections for dashboards
+- Serves WebSocket connections and dashboard for browsers (via HTTP)
 
-Supports both HTTP and Unix socket transports.
+Architecture:
+    MCP Servers → Unix Socket (internal) → Coordinator
+                                               ↓
+    Browser → HTTP (external) ← Dashboard + WebSocket
 
 Usage:
-    # HTTP mode (default)
+    # HTTP only (simple mode)
     python monitor/run_coordinator.py
-    python monitor/run_coordinator.py --transport http --host 0.0.0.0 --port 9876
 
-    # Unix socket mode
-    python monitor/run_coordinator.py --transport unix --socket /tmp/pal-monitor.sock
+    # Dual mode: HTTP for dashboard + Unix socket for MCP events
+    python monitor/run_coordinator.py --dual --socket /tmp/pal-monitor.sock
 
 Environment Variables:
-    MONITOR_TRANSPORT: Transport type ("http" or "unix", default: http)
-    MONITOR_WS_HOST: WebSocket host (default: 0.0.0.0)
-    MONITOR_WS_PORT: WebSocket port (default: 9876)
+    MONITOR_TRANSPORT: "http", "unix", or "dual" (default: http)
+    MONITOR_WS_HOST: HTTP host (default: 0.0.0.0)
+    MONITOR_WS_PORT: HTTP port (default: 9876)
     MONITOR_SOCKET_PATH: Unix socket path (default: /tmp/pal-monitor.sock)
     LOG_LEVEL: Logging level (default: INFO)
 """
 
 import argparse
+import asyncio
 import logging
 import os
 import sys
 
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+
+def run_http_only(host: str, port: int, log_level: str, reload: bool = False):
+    """Run coordinator with HTTP only."""
+    import uvicorn
+
+    uvicorn.run(
+        "monitor.coordinator:app",
+        host=host,
+        port=port,
+        reload=reload,
+        log_level=log_level,
+    )
+
+
+def run_unix_only(socket_path: str, log_level: str, reload: bool = False):
+    """Run coordinator with Unix socket only."""
+    import uvicorn
+
+    if os.path.exists(socket_path):
+        os.unlink(socket_path)
+
+    uvicorn.run(
+        "monitor.coordinator:app",
+        uds=socket_path,
+        reload=reload,
+        log_level=log_level,
+    )
+
+
+async def run_dual_mode(host: str, port: int, socket_path: str, log_level: str):
+    """Run coordinator with both HTTP and Unix socket simultaneously."""
+    import uvicorn
+
+    logger = logging.getLogger(__name__)
+
+    # Remove existing socket
+    if os.path.exists(socket_path):
+        os.unlink(socket_path)
+
+    # Create configs for both servers
+    http_config = uvicorn.Config(
+        "monitor.coordinator:app",
+        host=host,
+        port=port,
+        log_level=log_level,
+    )
+    unix_config = uvicorn.Config(
+        "monitor.coordinator:app",
+        uds=socket_path,
+        log_level=log_level,
+    )
+
+    # Create server instances
+    http_server = uvicorn.Server(http_config)
+    unix_server = uvicorn.Server(unix_config)
+
+    logger.info(f"Starting dual-mode coordinator:")
+    logger.info(f"  HTTP: http://{host}:{port} (dashboard + WebSocket)")
+    logger.info(f"  Unix: {socket_path} (MCP events)")
+
+    # Run both servers concurrently
+    # Note: Both share the same 'app' and thus the same global coordinator instance
+    await asyncio.gather(
+        http_server.serve(),
+        unix_server.serve(),
+    )
 
 
 def main():
@@ -43,20 +113,25 @@ def main():
     )
     parser.add_argument(
         "--transport",
-        choices=["http", "unix"],
+        choices=["http", "unix", "dual"],
         default=os.environ.get("MONITOR_TRANSPORT", "http"),
-        help="Transport type: http or unix (default: http)",
+        help="Transport: http, unix, or dual (default: http)",
+    )
+    parser.add_argument(
+        "--dual",
+        action="store_true",
+        help="Enable dual mode (HTTP + Unix socket)",
     )
     parser.add_argument(
         "--host",
         default=os.environ.get("MONITOR_WS_HOST", "0.0.0.0"),
-        help="Host to bind to (default: 0.0.0.0)",
+        help="HTTP host (default: 0.0.0.0)",
     )
     parser.add_argument(
         "--port",
         type=int,
         default=int(os.environ.get("MONITOR_WS_PORT", "9876")),
-        help="Port to listen on (default: 9876)",
+        help="HTTP port (default: 9876)",
     )
     parser.add_argument(
         "--socket",
@@ -84,42 +159,39 @@ def main():
 
     logger = logging.getLogger(__name__)
 
-    # Import and run with appropriate transport
+    # Determine transport mode
+    transport = "dual" if args.dual else args.transport
+
     try:
         import uvicorn
     except ImportError:
         logger.error(
-            "uvicorn is required to run the coordinator. "
-            "Install it with: pip install uvicorn"
+            "uvicorn is required. Install with: pip install uvicorn"
         )
         sys.exit(1)
 
-    if args.transport == "unix":
-        # Unix socket mode
-        logger.info(f"Starting coordinator with Unix socket: {args.socket}")
-        logger.info(f"WebSocket for dashboards: ws://{args.host}:{args.port}/ws")
-
-        # Remove existing socket file if present
-        if os.path.exists(args.socket):
-            os.unlink(args.socket)
-
-        uvicorn.run(
-            "monitor.coordinator:app",
-            uds=args.socket,
-            reload=args.reload,
-            log_level=args.log_level.lower(),
-        )
-    else:
-        # HTTP mode
-        logger.info(f"Starting coordinator on http://{args.host}:{args.port}")
-        logger.info(f"WebSocket endpoint: ws://{args.host}:{args.port}/ws")
-
-        uvicorn.run(
-            "monitor.coordinator:app",
+    if transport == "dual":
+        logger.info("Starting in dual mode (HTTP + Unix socket)")
+        asyncio.run(run_dual_mode(
             host=args.host,
             port=args.port,
-            reload=args.reload,
+            socket_path=args.socket,
             log_level=args.log_level.lower(),
+        ))
+    elif transport == "unix":
+        logger.info(f"Starting with Unix socket: {args.socket}")
+        run_unix_only(
+            socket_path=args.socket,
+            log_level=args.log_level.lower(),
+            reload=args.reload,
+        )
+    else:
+        logger.info(f"Starting with HTTP: http://{args.host}:{args.port}")
+        run_http_only(
+            host=args.host,
+            port=args.port,
+            log_level=args.log_level.lower(),
+            reload=args.reload,
         )
 
 

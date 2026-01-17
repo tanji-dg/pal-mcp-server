@@ -1,0 +1,400 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PAL MCP Monitor</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #1a1a2e;
+            color: #eee;
+            min-height: 100vh;
+            padding: 20px;
+        }
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+            padding-bottom: 15px;
+            border-bottom: 1px solid #333;
+        }
+        h1 {
+            font-size: 24px;
+            color: #00d4ff;
+        }
+        .status {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .status-dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background: #ff4757;
+        }
+        .status-dot.connected {
+            background: #2ed573;
+            animation: pulse 2s infinite;
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+        .stat-card {
+            background: #16213e;
+            border-radius: 10px;
+            padding: 20px;
+            text-align: center;
+        }
+        .stat-value {
+            font-size: 36px;
+            font-weight: bold;
+            color: #00d4ff;
+        }
+        .stat-label {
+            color: #888;
+            margin-top: 5px;
+        }
+        .instances {
+            display: grid;
+            gap: 15px;
+        }
+        .instance-card {
+            background: #16213e;
+            border-radius: 10px;
+            padding: 20px;
+            border-left: 4px solid #00d4ff;
+        }
+        .instance-card.busy {
+            border-left-color: #ffa502;
+        }
+        .instance-card.offline {
+            border-left-color: #ff4757;
+            opacity: 0.6;
+        }
+        .instance-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+        }
+        .instance-id {
+            font-family: monospace;
+            font-size: 14px;
+            color: #00d4ff;
+        }
+        .instance-state {
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: bold;
+            text-transform: uppercase;
+        }
+        .instance-state.idle {
+            background: #2ed573;
+            color: #000;
+        }
+        .instance-state.busy {
+            background: #ffa502;
+            color: #000;
+        }
+        .instance-state.offline {
+            background: #ff4757;
+            color: #fff;
+        }
+        .instance-metrics {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+            gap: 10px;
+            margin-bottom: 15px;
+        }
+        .metric {
+            background: #1a1a2e;
+            padding: 10px;
+            border-radius: 5px;
+            text-align: center;
+        }
+        .metric-value {
+            font-size: 18px;
+            font-weight: bold;
+        }
+        .metric-label {
+            font-size: 11px;
+            color: #888;
+        }
+        .active-tool {
+            background: #ffa502;
+            color: #000;
+            padding: 8px 15px;
+            border-radius: 5px;
+            display: inline-block;
+            margin-bottom: 15px;
+        }
+        .recent-calls {
+            margin-top: 15px;
+        }
+        .recent-calls h4 {
+            color: #888;
+            font-size: 12px;
+            margin-bottom: 10px;
+        }
+        .call-list {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+        }
+        .call-item {
+            background: #1a1a2e;
+            padding: 5px 10px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-family: monospace;
+        }
+        .call-item.success {
+            border-left: 3px solid #2ed573;
+        }
+        .call-item.error {
+            border-left: 3px solid #ff4757;
+        }
+        .no-instances {
+            text-align: center;
+            padding: 60px 20px;
+            color: #666;
+        }
+        .no-instances .icon {
+            font-size: 48px;
+            margin-bottom: 15px;
+        }
+        .config {
+            margin-bottom: 20px;
+            padding: 15px;
+            background: #16213e;
+            border-radius: 10px;
+        }
+        .config label {
+            display: block;
+            margin-bottom: 5px;
+            color: #888;
+        }
+        .config input {
+            width: 100%;
+            max-width: 400px;
+            padding: 8px 12px;
+            border: 1px solid #333;
+            border-radius: 5px;
+            background: #1a1a2e;
+            color: #fff;
+            font-family: monospace;
+        }
+        .config button {
+            margin-top: 10px;
+            padding: 8px 20px;
+            background: #00d4ff;
+            color: #000;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-weight: bold;
+        }
+        .config button:hover {
+            background: #00b8e6;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>🖥️ PAL MCP Monitor</h1>
+        <div class="status">
+            <div class="status-dot" id="statusDot"></div>
+            <span id="statusText">Disconnected</span>
+        </div>
+    </div>
+
+    <div class="config">
+        <label>WebSocket URL:</label>
+        <input type="text" id="wsUrl" value="ws://localhost:9876/ws">
+        <button onclick="connect()">Connect</button>
+    </div>
+
+    <div class="stats">
+        <div class="stat-card">
+            <div class="stat-value" id="totalInstances">0</div>
+            <div class="stat-label">Instances</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-value" id="busyInstances">0</div>
+            <div class="stat-label">Busy</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-value" id="avgExecTime">0ms</div>
+            <div class="stat-label">Avg Exec Time</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-value" id="errorRate">0%</div>
+            <div class="stat-label">Error Rate</div>
+        </div>
+    </div>
+
+    <div class="instances" id="instances">
+        <div class="no-instances">
+            <div class="icon">📡</div>
+            <p>No MCP instances connected</p>
+            <p style="margin-top: 10px; font-size: 14px;">Waiting for instances to register...</p>
+        </div>
+    </div>
+
+    <script>
+        let ws = null;
+
+        function connect() {
+            const url = document.getElementById('wsUrl').value;
+
+            if (ws) {
+                ws.close();
+            }
+
+            ws = new WebSocket(url);
+
+            ws.onopen = () => {
+                document.getElementById('statusDot').classList.add('connected');
+                document.getElementById('statusText').textContent = 'Connected';
+            };
+
+            ws.onclose = () => {
+                document.getElementById('statusDot').classList.remove('connected');
+                document.getElementById('statusText').textContent = 'Disconnected';
+                // Auto-reconnect after 3 seconds
+                setTimeout(() => {
+                    if (!ws || ws.readyState === WebSocket.CLOSED) {
+                        connect();
+                    }
+                }, 3000);
+            };
+
+            ws.onerror = (error) => {
+                console.error('WebSocket error:', error);
+            };
+
+            ws.onmessage = (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+                    if (data.type === 'state_update') {
+                        updateUI(data);
+                    } else if (data.type === 'ping') {
+                        ws.send('pong');
+                    }
+                } catch (e) {
+                    console.error('Parse error:', e);
+                }
+            };
+        }
+
+        function updateUI(data) {
+            const instances = data.instances || [];
+
+            // Update stats
+            document.getElementById('totalInstances').textContent = instances.length;
+            document.getElementById('busyInstances').textContent =
+                instances.filter(i => i.state === 'busy').length;
+
+            const avgTime = instances.length > 0
+                ? Math.round(instances.reduce((sum, i) => sum + (i.avg_execution_time_1m || 0), 0) / instances.length)
+                : 0;
+            document.getElementById('avgExecTime').textContent = avgTime + 'ms';
+
+            const avgError = instances.length > 0
+                ? (instances.reduce((sum, i) => sum + (i.error_rate_1m || 0), 0) / instances.length * 100).toFixed(1)
+                : 0;
+            document.getElementById('errorRate').textContent = avgError + '%';
+
+            // Update instances
+            const container = document.getElementById('instances');
+
+            if (instances.length === 0) {
+                container.innerHTML = `
+                    <div class="no-instances">
+                        <div class="icon">📡</div>
+                        <p>No MCP instances connected</p>
+                        <p style="margin-top: 10px; font-size: 14px;">Waiting for instances to register...</p>
+                    </div>
+                `;
+                return;
+            }
+
+            container.innerHTML = instances.map(inst => {
+                const uptime = formatUptime(inst.uptime_seconds);
+                const recentCalls = (inst.recent_calls || []).slice(0, 5);
+
+                return `
+                    <div class="instance-card ${inst.state}">
+                        <div class="instance-header">
+                            <span class="instance-id">${inst.instance_id}</span>
+                            <span class="instance-state ${inst.state}">${inst.state}</span>
+                        </div>
+
+                        ${inst.active_tool ? `<div class="active-tool">🔧 ${inst.active_tool}</div>` : ''}
+
+                        <div class="instance-metrics">
+                            <div class="metric">
+                                <div class="metric-value">${uptime}</div>
+                                <div class="metric-label">Uptime</div>
+                            </div>
+                            <div class="metric">
+                                <div class="metric-value">${Math.round(inst.avg_execution_time_1m || 0)}ms</div>
+                                <div class="metric-label">Avg Time</div>
+                            </div>
+                            <div class="metric">
+                                <div class="metric-value">${((inst.error_rate_1m || 0) * 100).toFixed(1)}%</div>
+                                <div class="metric-label">Error Rate</div>
+                            </div>
+                            <div class="metric">
+                                <div class="metric-value">${recentCalls.length}</div>
+                                <div class="metric-label">Recent Calls</div>
+                            </div>
+                        </div>
+
+                        ${recentCalls.length > 0 ? `
+                            <div class="recent-calls">
+                                <h4>Recent Tool Calls</h4>
+                                <div class="call-list">
+                                    ${recentCalls.map(call => `
+                                        <div class="call-item ${call.status}">
+                                            ${call.tool} (${call.duration_ms}ms)
+                                        </div>
+                                    `).join('')}
+                                </div>
+                            </div>
+                        ` : ''}
+                    </div>
+                `;
+            }).join('');
+        }
+
+        function formatUptime(seconds) {
+            if (seconds < 60) return Math.round(seconds) + 's';
+            if (seconds < 3600) return Math.round(seconds / 60) + 'm';
+            if (seconds < 86400) return Math.round(seconds / 3600) + 'h';
+            return Math.round(seconds / 86400) + 'd';
+        }
+
+        // Auto-connect on load
+        window.onload = () => {
+            connect();
+        };
+    </script>
+</body>
+</html>
