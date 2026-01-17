@@ -299,6 +299,34 @@ black --check .
 isort --check-only .
 ```
 
+### Monitoring System
+
+The PAL MCP Server includes a real-time monitoring system that allows you to view the status and tool activity of multiple MCP server instances.
+
+#### Start the Monitor Coordinator
+```bash
+# Start in the foreground
+./scripts/start_monitor.sh
+
+# Start in the background
+./scripts/start_monitor.sh bg
+```
+
+This will start:
+- **WebSocket Server**: `http://localhost:9876` (for dashboard)
+- **Unix Socket**: `/tmp/pal-monitor.sock` (for MCP events)
+
+#### Access Dashboard
+Open your browser and go to: **http://localhost:9876**
+
+#### Enable Monitoring in MCP Server
+Ensure your `.env` file has the following settings (default in provided `.env`):
+```env
+MONITOR_ENABLED=true
+MONITOR_TRANSPORT=unix
+MONITOR_SOCKET_PATH=/tmp/pal-monitor.sock
+```
+
 ### File Structure Context
 
 - `./code_quality_checks.sh` - Comprehensive quality check script
