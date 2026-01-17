@@ -15,10 +15,27 @@ from tools.clink import CLinkTool
 def gemini_stream_stdout():
     """Simulate Gemini stream-json output with thinking, tool calls and final result."""
     events = [
-        {"type": "init", "timestamp": "2025-01-01T00:00:00Z", "session_id": "test-session", "model": "gemini-2.0-flash"},
+        {
+            "type": "init",
+            "timestamp": "2025-01-01T00:00:00Z",
+            "session_id": "test-session",
+            "model": "gemini-2.0-flash",
+        },
         {"type": "message", "role": "assistant", "content": "I will search for the capital of France.", "delta": True},
-        {"type": "tool_use", "timestamp": "2025-01-01T00:00:01Z", "tool_name": "google_search", "tool_id": "call_123", "parameters": {}},
-        {"type": "tool_result", "timestamp": "2025-01-01T00:00:02Z", "tool_id": "call_123", "status": "success", "output": "Paris"},
+        {
+            "type": "tool_use",
+            "timestamp": "2025-01-01T00:00:01Z",
+            "tool_name": "google_search",
+            "tool_id": "call_123",
+            "parameters": {},
+        },
+        {
+            "type": "tool_result",
+            "timestamp": "2025-01-01T00:00:02Z",
+            "tool_id": "call_123",
+            "status": "success",
+            "output": "Paris",
+        },
         {"type": "message", "role": "assistant", "content": "The capital is Paris.", "delta": True},
         {
             "type": "result",
@@ -31,11 +48,12 @@ def gemini_stream_stdout():
                 "cached": 0,
                 "input": 40,
                 "duration_ms": 1500,
-                "tool_calls": 1
-            }
-        }
+                "tool_calls": 1,
+            },
+        },
     ]
     return "\n".join(json.dumps(e) for e in events)
+
 
 def test_gemini_json_parser_stream_json(gemini_stream_stdout):
     """Verify that GeminiJSONParser extracts the final result from multiple JSON objects.
@@ -51,20 +69,19 @@ def test_gemini_json_parser_stream_json(gemini_stream_stdout):
     assert parsed.metadata["raw"]["type"] == "result"
     assert parsed.metadata["stats"]["total_tokens"] == 100
 
+
 def test_gemini_json_parser_legacy_format():
     """Verify that GeminiJSONParser still supports legacy format with 'response' field."""
-    legacy_stdout = json.dumps({
-        "response": "Hello from legacy!",
-        "stats": {
-            "models": {"gemini-pro": {"tokens": {"total": 50}}}
-        }
-    })
+    legacy_stdout = json.dumps(
+        {"response": "Hello from legacy!", "stats": {"models": {"gemini-pro": {"tokens": {"total": 50}}}}}
+    )
 
     parser = GeminiJSONParser()
     parsed = parser.parse(legacy_stdout, stderr="")
 
     assert parsed.content == "Hello from legacy!"
     assert parsed.metadata["model_used"] == "gemini-pro"
+
 
 @pytest.mark.asyncio
 async def test_clink_tool_gemini_notifications(tmp_path, gemini_stream_stdout):
@@ -126,7 +143,7 @@ async def test_clink_tool_gemini_notifications(tmp_path, gemini_stream_stdout):
             arguments = {
                 "prompt": "What is the capital of France?",
                 "cli_name": "gemini",
-                "_request_context": mock_request_context
+                "_request_context": mock_request_context,
             }
 
             await tool.execute(arguments)

@@ -192,6 +192,12 @@ def clear_model_restriction_env(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def enable_all_tools(monkeypatch):
+    """Ensure all tools are enabled during tests."""
+    monkeypatch.delenv("DISABLED_TOOLS", raising=False)
+
+
+@pytest.fixture(autouse=True)
 def disable_force_env_override(monkeypatch):
     """Default tests to runtime environment visibility unless they explicitly opt in."""
 

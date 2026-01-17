@@ -52,7 +52,8 @@ class BaseCLIAgent:
         self._parser: BaseParser = get_parser(client.parser)
         self._logger = logging.getLogger(f"clink.runner.{client.name}")
 
-    async def run(        self,
+    async def run(
+        self,
         *,
         role: ResolvedCLIRole,
         prompt: str,
@@ -143,7 +144,7 @@ class BaseCLIAgent:
         # Stream output while buffering for final result
         stdout_buffer = []
         stderr_buffer = []
-        activity_event = asyncio.Event() # Event to signal activity on streams
+        activity_event = asyncio.Event()  # Event to signal activity on streams
 
         async def _read_stream(
             stream,
@@ -163,7 +164,7 @@ class BaseCLIAgent:
                 decoded_line = line.decode("utf-8", errors="replace")
                 buffer.append(decoded_line)
                 # Emit real-time log entry for tests and callers (format eagerly so mocks capture text)
-                self._logger.debug(f"[CLI OUTPUT] {decoded_line.rstrip('\n')}")
+                self._logger.debug("[CLI OUTPUT] %s", decoded_line.rstrip("\n"))
                 # Invoke output callback if provided (supports sync and async)
                 if output_callback:
                     try:
@@ -175,30 +176,36 @@ class BaseCLIAgent:
                 activity_event.set()  # Signal activity
                 # activity_event.clear() # Clear after processing for next wait - removed, handled by monitor
 
-        async def _idle_timeout_monitor(process: asyncio.subprocess.Process, activity_event: asyncio.Event, idle_timeout: int):
+        async def _idle_timeout_monitor(
+            process: asyncio.subprocess.Process, activity_event: asyncio.Event, idle_timeout: int
+        ):
 
             while True:
                 try:
                     # Wait for activity, or idle timeout if no activity
-                    await asyncio.wait_for(activity_event.wait(), timeout=idle_timeout if idle_timeout is not None and idle_timeout > 0 else None)
-                    activity_event.clear() # Reset for next cycle
+                    await asyncio.wait_for(
+                        activity_event.wait(),
+                        timeout=idle_timeout if idle_timeout is not None and idle_timeout > 0 else None,
+                    )
+                    activity_event.clear()  # Reset for next cycle
                 except asyncio.TimeoutError:
                     # Idle timeout occurred, no activity for 'idle_timeout' seconds
                     self._logger.warning(
                         f"CLI '{self.client.name}' idle timed out after {idle_timeout} seconds. Terminating process."
                     )
-                    if process.returncode is None: # Guard against already terminated process
+                    if process.returncode is None:  # Guard against already terminated process
                         process.kill()
-                    break # Exit monitor loop
+                    break  # Exit monitor loop
                 except asyncio.CancelledError:
                     # Monitor task was cancelled, meaning main process completed or total timeout hit
                     break
                 # Small delay to prevent busy-waiting if event is set/cleared very rapidly
-                try: # Add try-except around sleep
-                    await asyncio.sleep(0.01) # Small delay to prevent busy-waiting if event is set/cleared very rapidly
+                try:  # Add try-except around sleep
+                    await asyncio.sleep(
+                        0.01
+                    )  # Small delay to prevent busy-waiting if event is set/cleared very rapidly
                 except asyncio.CancelledError:
-                    break # Break if cancelled during sleep
-
+                    break  # Break if cancelled during sleep
 
         # Setup tasks for stream monitoring
         stream_tasks = [
@@ -237,6 +244,7 @@ class BaseCLIAgent:
             def _cancel_idle_monitor(fut):
                 if idle_monitor_task and not idle_monitor_task.done():
                     idle_monitor_task.cancel()
+
             process_wait_task.add_done_callback(_cancel_idle_monitor)
 
         try:
@@ -247,7 +255,7 @@ class BaseCLIAgent:
             )
         except asyncio.TimeoutError as exc:
             # Total timeout occurred for the entire operation
-            if process_wait_task and not process_wait_task.done(): # Ensure process is killed if total timeout
+            if process_wait_task and not process_wait_task.done():  # Ensure process is killed if total timeout
                 process.kill()
                 try:
                     await process.communicate()
@@ -262,7 +270,7 @@ class BaseCLIAgent:
         except asyncio.CancelledError:
             # This can happen if idle_monitor_task cancelled the process, and then
             # gather was cancelled. Ensure the process is killed.
-            if process.returncode is None: # Corrected to use returncode
+            if process.returncode is None:  # Corrected to use returncode
                 try:
                     process.kill()
                     await process.communicate()
@@ -273,7 +281,7 @@ class BaseCLIAgent:
                 process_wait_task.cancel()
             if idle_monitor_task and not idle_monitor_task.done():
                 idle_monitor_task.cancel()
-            raise # Re-raise the cancellation to propagate
+            raise  # Re-raise the cancellation to propagate
 
         finally:
             # Ensure all tasks are cleaned up
@@ -297,11 +305,10 @@ class BaseCLIAgent:
                 except ProcessLookupError:
                     self._logger.debug("Process already terminated, skipping kill and communicate.")
 
-
         stdout_text = "".join(stdout_buffer)
         stderr_text = "".join(stderr_buffer)
         duration = time.monotonic() - start_time
-        return_code = process.returncode # Use the final return code
+        return_code = process.returncode  # Use the final return code
 
         if output_file_path and output_file_path.exists():
             output_file_content = output_file_path.read_text(encoding="utf-8", errors="replace")

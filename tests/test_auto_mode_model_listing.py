@@ -64,6 +64,7 @@ def test_error_listing_respects_env_restrictions(monkeypatch, reset_registry):
     monkeypatch.setenv("GEMINI_API_KEY", "test-gemini")
     monkeypatch.setenv("OPENAI_API_KEY", "test-openai")
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-openrouter")
+    monkeypatch.setenv("DISABLED_TOOLS", "")
     monkeypatch.delenv("XAI_API_KEY", raising=False)
     # Ensure Azure provider stays disabled regardless of developer workstation env
     for azure_var in (
@@ -151,6 +152,7 @@ def test_error_listing_without_restrictions_shows_full_catalog(monkeypatch, rese
     monkeypatch.setenv("OPENAI_API_KEY", "test-openai")
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-openrouter")
     monkeypatch.setenv("XAI_API_KEY", "test-xai")
+    monkeypatch.setenv("DISABLED_TOOLS", "")
     monkeypatch.setenv("PAL_MCP_FORCE_ENV_OVERRIDE", "false")
     for azure_var in (
         "AZURE_OPENAI_API_KEY",

@@ -83,7 +83,7 @@ class ModelContext:
                         self._model_name = model_name
 
                     def get_provider_type(self):
-                        return ProviderType.BRIDGE # Or DUMMY, BRIDGE seems appropriate for this context
+                        return ProviderType.BRIDGE  # Or DUMMY, BRIDGE seems appropriate for this context
 
                     def get_capabilities(self, name):
                         return ModelCapabilities(
@@ -93,17 +93,22 @@ class ModelContext:
                             context_window=1_000_000,
                         )
 
-                    async def generate_content(self, *args, **kwargs):
-                        logger.error(f"DummyProvider.generate_content called for model {self._model_name}. "
-                                     "This indicates a test misconfiguration or missing API key for a workflow tool.")
+                    def generate_content(self, *args, **kwargs):
+                        logger.error(
+                            f"DummyProvider.generate_content called for model {self._model_name}. "
+                            "This indicates a test misconfiguration or missing API key for a workflow tool."
+                        )
+
                         class MockPart:
-                            text = "'DummyProvider' object has no attribute 'generate_content'"
+                            text = f"No provider available for model {self._model_name}"
+
                             def to_json(self):
                                 return {"text": self.text}
 
                         class MockCandidate:
                             def __init__(self):
                                 self.parts = [MockPart()]
+
                             def to_json(self):
                                 return {"parts": [p.to_json() for p in self.parts]}
 
@@ -111,13 +116,19 @@ class ModelContext:
                             def __init__(self):
                                 self.candidates = [MockCandidate()]
                                 self.usage_metadata = {}
+
                             def to_json(self):
-                                return {"candidates": [c.to_json() for c in self.candidates], "usage_metadata": self.usage_metadata}
+                                return {
+                                    "candidates": [c.to_json() for c in self.candidates],
+                                    "usage_metadata": self.usage_metadata,
+                                }
+
                             @property
                             def text(self):
                                 return self.candidates[0].parts[0].text
+
                             @property
-                            def content(self): # Add content property
+                            def content(self):  # Add content property
                                 return self.text
 
                         return MockResponse()

@@ -28,7 +28,7 @@ def mock_cli_client(tmp_path):
         default_idle_timeout_seconds=1,
         parser="gemini-json",  # Using a known parser name
         roles={},  # Initialize with empty roles
-        output_to_file=None, # Explicitly setting output_to_file
+        output_to_file=None,  # Explicitly setting output_to_file
     )
 
 
@@ -45,15 +45,15 @@ def mock_cli_role(tmp_path):
 
 
 class MockStream:
-    def __init__(self, lines: list[str] | None): # Add type hint for clarity
-        self._lines = [line.encode("utf-8") + b"\n" for line in (lines or [])] + [b""] # Handle None
+    def __init__(self, lines: list[str] | None):  # Add type hint for clarity
+        self._lines = [line.encode("utf-8") + b"\n" for line in (lines or [])] + [b""]  # Handle None
         self._index = 0
 
     async def readline(self):
         if self._index < len(self._lines):
             line = self._lines[self._index]
             self._index += 1
-            await asyncio.sleep(0.001) # Simulate I/O delay
+            await asyncio.sleep(0.001)  # Simulate I/O delay
             return line
         return b""
 
@@ -62,13 +62,13 @@ class MockProcess:
     """Mock asyncio subprocess."""
 
     def __init__(self, stdout_lines=None, stderr_lines=None, returncode=0):
-        self.stdout = MockStream(stdout_lines) # Use custom mock stream
-        self.stderr = MockStream(stderr_lines) # Use custom mock stream
+        self.stdout = MockStream(stdout_lines)  # Use custom mock stream
+        self.stderr = MockStream(stderr_lines)  # Use custom mock stream
         self.stdin = MagicMock()  # stdin.write is synchronous
         self.stdin.drain = AsyncMock()
         self.stdin.close = AsyncMock()
         self.returncode = returncode
-        self._killed = False # Add killed flag
+        self._killed = False  # Add killed flag
 
         # Store data for communicate method
         self._stdout_data = [line.encode("utf-8") + b"\n" for line in stdout_lines] if stdout_lines else []
@@ -78,7 +78,7 @@ class MockProcess:
         # Simulate consuming all remaining stdout and stderr
         full_stdout = b"".join(self._stdout_data)
         full_stderr = b"".join(self._stderr_data)
-        self._stdout_data.clear() # Clear it as it's been "read"
+        self._stdout_data.clear()  # Clear it as it's been "read"
         self._stderr_data.clear()
         return full_stdout, full_stderr
 
@@ -86,14 +86,14 @@ class MockProcess:
         # Simulate waiting for the process to complete or be killed
         # Wait until all stdout and stderr lines have been read
         while self.stdout._index < len(self.stdout._lines) - 1 or self.stderr._index < len(self.stderr._lines) - 1:
-            await asyncio.sleep(0.01) # Small sleep to yield control
+            await asyncio.sleep(0.01)  # Small sleep to yield control
 
         if self.returncode is not None:
-            await asyncio.sleep(0.01) # Add a small delay for test stability after streams are empty
+            await asyncio.sleep(0.01)  # Add a small delay for test stability after streams are empty
             return self.returncode
         # Otherwise, wait for it to be killed (or set by another mock interaction)
         while not self._killed:
-            await asyncio.sleep(0.01) # Small sleep to yield control
+            await asyncio.sleep(0.01)  # Small sleep to yield control
         return self.returncode
 
     def kill(self):
@@ -101,20 +101,20 @@ class MockProcess:
             self._killed = True
             # Set a non-zero return code for killed processes, if not already set by normal exit
             if self.returncode == 0:
-                self.returncode = 137 # Standard code for SIGKILL/SIGTERM
+                self.returncode = 137  # Standard code for SIGKILL/SIGTERM
 
 
 @pytest.mark.asyncio
-async def test_agent_streaming_logs(mock_cli_client, mock_cli_role): # Remove mock_logger from args
+async def test_agent_streaming_logs(mock_cli_client, mock_cli_role):  # Remove mock_logger from args
     """Test that BaseCLIAgent streams output to logs line-by-line."""
 
-    mock_logger = MagicMock() # Create local mock_logger
+    mock_logger = MagicMock()  # Create local mock_logger
 
     with (
         patch("clink.agents.base.get_parser", return_value=MagicMock(name="mock_parser")),
-        patch("logging.getLogger", return_value=mock_logger), # Patch logging.getLogger
+        patch("logging.getLogger", return_value=mock_logger),  # Patch logging.getLogger
     ):
-        agent = BaseCLIAgent(mock_cli_client) # Re-insert this line
+        agent = BaseCLIAgent(mock_cli_client)  # Re-insert this line
 
         stdout_content = ["Line 1", "Line 2", "Line 3"]
         mock_process = MockProcess(stdout_lines=stdout_content)
@@ -134,25 +134,26 @@ async def test_agent_streaming_logs(mock_cli_client, mock_cli_role): # Remove mo
 
             # Verify real-time logging calls
             # We expect debug calls with [CLI OUTPUT] prefix for each line
+            # The new format uses %s so the content is in call.args[1]
             debug_calls = [
-                call.args[0] for call in mock_logger.debug.call_args_list if "[CLI OUTPUT]" in str(call.args[0])
+                call for call in mock_logger.debug.call_args_list if "[CLI OUTPUT]" in str(call.args[0])
             ]
 
             assert len(debug_calls) == 3
-            assert "[CLI OUTPUT] Line 1" in debug_calls[0]
-            assert "[CLI OUTPUT] Line 2" in debug_calls[1]
-            assert "[CLI OUTPUT] Line 3" in debug_calls[2]
+            assert debug_calls[0].args[1] == "Line 1"
+            assert debug_calls[1].args[1] == "Line 2"
+            assert debug_calls[2].args[1] == "Line 3"
 
 
 @pytest.mark.asyncio
-async def test_agent_output_callback(mock_cli_client, mock_cli_role): # Removed mock_logger from args
+async def test_agent_output_callback(mock_cli_client, mock_cli_role):  # Removed mock_logger from args
     """Test that BaseCLIAgent invokes the output callback."""
 
-    mock_logger = MagicMock() # Create local mock_logger
+    mock_logger = MagicMock()  # Create local mock_logger
 
     with (
         patch("clink.agents.base.get_parser", return_value=MagicMock(name="mock_parser")),
-        patch("logging.getLogger", return_value=mock_logger), # Patch logging.getLogger
+        patch("logging.getLogger", return_value=mock_logger),  # Patch logging.getLogger
     ):
         agent = BaseCLIAgent(mock_cli_client)
         stdout_content = ["Streamed Line 1", "Streamed Line 2"]

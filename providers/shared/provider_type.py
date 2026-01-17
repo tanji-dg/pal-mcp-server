@@ -15,4 +15,4 @@ class ProviderType(Enum):
     OPENROUTER = "openrouter"
     CUSTOM = "custom"
     DIAL = "dial"
-    BRIDGE = "bridge" # Added for bridge mode/dummy provider
+    BRIDGE = "bridge"  # Added for bridge mode/dummy provider

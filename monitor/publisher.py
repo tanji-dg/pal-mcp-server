@@ -30,7 +30,7 @@ import logging
 import os
 import socket
 import time
-from typing import Optional, Any
+from typing import Any, Optional
 
 import httpx
 
@@ -150,9 +150,7 @@ class MonitorPublisher:
             )
         )
 
-        transport_info = (
-            f"unix:{self.socket_path}" if self.transport == "unix" else self.coordinator_url
-        )
+        transport_info = f"unix:{self.socket_path}" if self.transport == "unix" else self.coordinator_url
         logger.info(f"Monitor publisher started: {self.instance_id} via {transport_info}")
 
     async def stop(self):
@@ -198,6 +196,7 @@ class MonitorPublisher:
         tool_input = None
         if arguments:
             import json
+
             try:
                 tool_input = json.dumps(arguments)
             except Exception:
@@ -221,6 +220,7 @@ class MonitorPublisher:
         tool_output = None
         if result:
             import json
+
             try:
                 # Handle Pydantic models or dicts
                 if hasattr(result, "model_dump"):
@@ -242,9 +242,7 @@ class MonitorPublisher:
         )
         await self._publish_event(event)
 
-    async def tool_error(
-        self, tool_name: str, duration_ms: int, error_message: str
-    ):
+    async def tool_error(self, tool_name: str, duration_ms: int, error_message: str):
         """Record that a tool execution resulted in an error."""
         if not self.enabled:
             return
@@ -296,9 +294,7 @@ class MonitorPublisher:
             try:
                 # Collect events from queue
                 try:
-                    event = await asyncio.wait_for(
-                        self._queue.get(), timeout=batch_timeout
-                    )
+                    event = await asyncio.wait_for(self._queue.get(), timeout=batch_timeout)
                     batch.append(event)
 
                     # Drain queue for batching

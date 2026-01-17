@@ -259,7 +259,7 @@ async def test_consensus_auto_mode_with_openrouter_and_gemini(monkeypatch):
         step1_output = await server.handle_call_tool("consensus", step1_args)
         assert step1_output and step1_output[0].type == "text"
         step1_text = step1_output[0].text
-        if not step1_text.strip().startswith("{"): # Basic check for JSON
+        if not step1_text.strip().startswith("{"):  # Basic check for JSON
             pytest.skip(f"Skipping consensus test due to non-JSON output: {step1_text[:200]}")
         step1_payload = json.loads(step1_text)
 

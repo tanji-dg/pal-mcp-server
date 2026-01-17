@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from clink.models import ResolvedCLIClient
+from clink.models import ResolvedCLIClient, ResolvedCLIRole
 from clink.parsers.base import ParsedCLIResponse
 
 from .base import AgentOutput, BaseCLIAgent

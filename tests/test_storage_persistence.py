@@ -1,4 +1,3 @@
-
 import json
 import time
 
@@ -35,6 +34,7 @@ def test_storage_persistence(tmp_path):
     # Verify data was reloaded
     assert new_storage.get(key) == value
 
+
 def test_storage_expiration_on_load(tmp_path):
     test_file = tmp_path / "expired_conversations.json"
 
@@ -42,10 +42,7 @@ def test_storage_expiration_on_load(tmp_path):
     expired_time = time.time() - 10
     valid_time = time.time() + 100
 
-    data = {
-        "expired_key": ["expired_value", expired_time],
-        "valid_key": ["valid_value", valid_time]
-    }
+    data = {"expired_key": ["expired_value", expired_time], "valid_key": ["valid_value", valid_time]}
 
     with open(test_file, "w") as f:
         json.dump(data, f)

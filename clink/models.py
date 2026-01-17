@@ -28,12 +28,10 @@ class CLIRoleConfig(BaseModel):
     role_args: list[str] = Field(default_factory=list)
     description: str | None = Field(default=None)
     total_timeout_seconds: PositiveInt | None = Field(
-        default=None,
-        description="Total time in seconds before the CLI process is terminated."
+        default=None, description="Total time in seconds before the CLI process is terminated."
     )
     idle_timeout_seconds: PositiveInt | None = Field(
-        default=None,
-        description="Time in seconds of no output before the CLI process is terminated."
+        default=None, description="Time in seconds of no output before the CLI process is terminated."
     )
 
     @field_validator("role_args", mode="before")
@@ -80,12 +78,10 @@ class ResolvedCLIRole(BaseModel):
     role_args: list[str] = Field(default_factory=list)
     description: str | None = None
     total_timeout_seconds: int | None = Field(
-        default=None,
-        description="Total time in seconds before the CLI process is terminated for this role."
+        default=None, description="Total time in seconds before the CLI process is terminated for this role."
     )
     idle_timeout_seconds: int | None = Field(
-        default=None,
-        description="Time in seconds of no output before the CLI process is terminated for this role."
+        default=None, description="Time in seconds of no output before the CLI process is terminated for this role."
     )
 
 

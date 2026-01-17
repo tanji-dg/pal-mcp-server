@@ -84,9 +84,7 @@ class InstanceTracker:
         self.tool_start_time = datetime.now()
         self.last_heartbeat = datetime.now()
 
-    def end_tool(
-        self, duration_ms: int, is_error: bool = False, tool_output: Optional[str] = None
-    ):
+    def end_tool(self, duration_ms: int, is_error: bool = False, tool_output: Optional[str] = None):
         """Record tool execution completion."""
         now = time.time()
         status = "error" if is_error else "success"
@@ -109,12 +107,6 @@ class InstanceTracker:
         self.active_tool = None
         self.active_tool_input = None
         self.tool_start_time = None
-        self.last_heartbeat = datetime.now()
-
-    def add_log(self, level: str, message: str):
-        """Record a log message."""
-        log = LogEntry(level=level, message=message)
-        self.recent_logs.appendleft(log)
         self.last_heartbeat = datetime.now()
 
     def get_uptime(self) -> float:
@@ -224,26 +216,16 @@ class MonitorCoordinator:
                         logger.debug(f"Tool started: {event.tool_name} on {instance_id}")
 
                 elif event.event_type == ToolEventType.TOOL_END:
-                    tracker.end_tool(
-                        event.duration_ms or 0, is_error=False, tool_output=event.tool_output
-                    )
-                    logger.debug(
-                        f"Tool completed: {event.tool_name} on {instance_id} "
-                        f"({event.duration_ms}ms)"
-                    )
+                    tracker.end_tool(event.duration_ms or 0, is_error=False, tool_output=event.tool_output)
+                    logger.debug(f"Tool completed: {event.tool_name} on {instance_id} " f"({event.duration_ms}ms)")
 
                 elif event.event_type == ToolEventType.TOOL_ERROR:
                     tracker.end_tool(event.duration_ms or 0, is_error=True)
-                    logger.warning(
-                        f"Tool error: {event.tool_name} on {instance_id} - "
-                        f"{event.error_message}"
-                    )
+                    logger.warning(f"Tool error: {event.tool_name} on {instance_id} - " f"{event.error_message}")
 
             else:
                 # Auto-register instance on first event
-                self.instances[instance_id] = InstanceTracker(
-                    instance_id, event.uptime_seconds or 0.0
-                )
+                self.instances[instance_id] = InstanceTracker(instance_id, event.uptime_seconds or 0.0)
                 logger.info(f"Instance auto-registered: {instance_id}")
                 # Process the event now that instance exists
                 tracker = self.instances[instance_id]
@@ -251,9 +233,7 @@ class MonitorCoordinator:
                     if event.tool_name:
                         tracker.start_tool(event.tool_name, event.tool_input)
                 elif event.event_type == ToolEventType.TOOL_END:
-                    tracker.end_tool(
-                        event.duration_ms or 0, is_error=False, tool_output=event.tool_output
-                    )
+                    tracker.end_tool(event.duration_ms or 0, is_error=False, tool_output=event.tool_output)
                 elif event.event_type == ToolEventType.TOOL_ERROR:
                     tracker.end_tool(event.duration_ms or 0, is_error=True)
                 elif event.event_type == ToolEventType.HEARTBEAT:
@@ -276,9 +256,7 @@ class MonitorCoordinator:
         """Remove a WebSocket client connection."""
         async with self._lock:
             self.websocket_clients.discard(websocket)
-            logger.info(
-                f"Dashboard disconnected. Total clients: {len(self.websocket_clients)}"
-            )
+            logger.info(f"Dashboard disconnected. Total clients: {len(self.websocket_clients)}")
 
     async def get_aggregated_state(self) -> AggregatedState:
         """Get current aggregated state of all instances."""

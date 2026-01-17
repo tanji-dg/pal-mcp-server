@@ -166,19 +166,19 @@ def main():
     import importlib.util
 
     if importlib.util.find_spec("uvicorn") is None:
-        logger.error(
-            "uvicorn is required. Install with: pip install uvicorn"
-        )
+        logger.error("uvicorn is required. Install with: pip install uvicorn")
         sys.exit(1)
 
     if transport == "dual":
         logger.info("Starting in dual mode (HTTP + Unix socket)")
-        asyncio.run(run_dual_mode(
-            host=args.host,
-            port=args.port,
-            socket_path=args.socket,
-            log_level=args.log_level.lower(),
-        ))
+        asyncio.run(
+            run_dual_mode(
+                host=args.host,
+                port=args.port,
+                socket_path=args.socket,
+                log_level=args.log_level.lower(),
+            )
+        )
     elif transport == "unix":
         logger.info(f"Starting with Unix socket: {args.socket}")
         run_unix_only(

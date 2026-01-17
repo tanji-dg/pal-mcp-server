@@ -303,26 +303,10 @@ class SimpleTool(BaseTool):
                 logger.error("Path validation failed for %s: %s", self.get_name(), path_error)
                 raise ToolExecutionError(error_output.model_dump_json())
 
-            # Handle model resolution like old base.py
-            model_name = self.get_request_model_name(request)
-            if not model_name:
-                from config import DEFAULT_MODEL
-
-                model_name = DEFAULT_MODEL
-
-            # Store the current model name for later use
+            # Handle model resolution using centralized logic
+            model_name, model_context = self._resolve_model_context(arguments, request)
             self._current_model_name = model_name
-
-            # Handle model context from arguments (for in-process testing)
-            if "_model_context" in arguments:
-                self._model_context = arguments["_model_context"]
-                logger.debug(f"{self.get_name()}: Using model context from arguments")
-            else:
-                # Create model context if not provided
-                from utils.model_context import ModelContext
-
-                self._model_context = ModelContext(model_name)
-                logger.debug(f"{self.get_name()}: Created model context for {model_name}")
+            self._model_context = model_context
 
             # Get images if present
             images = self.get_request_images(request)

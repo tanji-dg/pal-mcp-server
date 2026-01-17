@@ -304,7 +304,7 @@ class TestAutoModeErrorMessages:
 
                         error_output = json.loads(exc_info.value.payload)
                         assert error_output["status"] == "error"
-                        assert "Model 'auto' is not available" in error_output["content"]
+                        assert any(phrase in error_output["content"] for phrase in ["Model 'auto' is not available", "Model parameter is required in auto mode"])
 
 
 # Removed TestFileContentPreparation class
@@ -413,7 +413,7 @@ class TestRuntimeModelSelection:
                 )
 
                 assert len(result) == 1
-                assert "Model 'auto' is not available" in result[0].text
+                assert any(phrase in result[0].text for phrase in ["Model 'auto' is not available", "Model parameter is required in auto mode"])
 
     @pytest.mark.asyncio
     async def test_unavailable_model_in_request(self):

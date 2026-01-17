@@ -36,7 +36,7 @@ class DummyProcess:
         self.stderr.feed_eof()
         self.returncode = returncode
         self.stdin_data: bytes | None = None
-        self._killed = False # Add killed flag
+        self._killed = False  # Add killed flag
 
     async def communicate(self, input_data=None):
         if input_data:
@@ -52,7 +52,7 @@ class DummyProcess:
         if self._killed:
             return self.returncode
         # Simulate a quick process completion if not killed
-        await asyncio.sleep(0.001) # Small delay to avoid busy loop in very fast test scenarios
+        await asyncio.sleep(0.001)  # Small delay to avoid busy loop in very fast test scenarios
         return self.returncode
 
     def kill(self):
@@ -60,7 +60,7 @@ class DummyProcess:
             self._killed = True
             # Set a non-zero return code for killed processes, if not already set by normal exit
             if self.returncode == 0:
-                self.returncode = 137 # Standard code for SIGKILL/SIGTERM
+                self.returncode = 137  # Standard code for SIGKILL/SIGTERM
 
 
 @pytest.fixture()

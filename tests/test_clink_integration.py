@@ -31,7 +31,7 @@ async def test_clink_gemini_single_digit_sum():
 
     assert results, "clink tool returned no outputs"
     payload = json.loads(results[0].text)
-    status = payload["status"] # Moved this line up
+    status = payload["status"]  # Moved this line up
 
     if status == "error":
         error_message = payload.get("error", {}).get("message", "")

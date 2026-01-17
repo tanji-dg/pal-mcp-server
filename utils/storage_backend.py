@@ -55,9 +55,7 @@ class InMemoryStorage:
         self._cleanup_thread = threading.Thread(target=self._cleanup_worker, daemon=True)
         self._cleanup_thread.start()
 
-        logger.info(
-            f"Storage initialized with {timeout_hours}h timeout, cleanup every {self._cleanup_interval//60}m"
-        )
+        logger.info(f"Storage initialized with {timeout_hours}h timeout, cleanup every {self._cleanup_interval//60}m")
 
     def set_with_ttl(self, key: str, ttl_seconds: int, value: str) -> None:
         """Store value with expiration time and persist to disk"""

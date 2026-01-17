@@ -7,8 +7,8 @@ from pathlib import Path
 
 from config import PROJECT_ROOT  # Added this line
 
-DEFAULT_TIMEOUT_SECONDS = 3600 # 1 hour
-DEFAULT_IDLE_TIMEOUT_SECONDS = 600 # 10 minutes
+DEFAULT_TIMEOUT_SECONDS = 3600  # 1 hour
+DEFAULT_IDLE_TIMEOUT_SECONDS = 600  # 10 minutes
 DEFAULT_STREAM_LIMIT = 10 * 1024 * 1024  # 10MB per stream
 
 BUILTIN_PROMPTS_DIR = PROJECT_ROOT / "systemprompts" / "clink"

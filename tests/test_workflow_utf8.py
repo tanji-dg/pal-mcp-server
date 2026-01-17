@@ -127,7 +127,7 @@ class TestWorkflowToolsUTF8(unittest.IsolatedAsyncioTestCase):
         # The call was successful, which means our fix worked
 
     @patch("tools.shared.base_tool.BaseTool.get_model_provider")
-    @patch("utils.model_context.ModelContext") # Add this patch
+    @patch("utils.model_context.ModelContext")  # Add this patch
     async def test_codereview_tool_french_findings(self, mock_model_context, mock_get_provider):
         """Test that the codereview tool produces findings in French."""
 
@@ -212,7 +212,7 @@ class TestWorkflowToolsUTF8(unittest.IsolatedAsyncioTestCase):
             self.assertIn("✅", analysis)
 
     @patch("tools.shared.base_tool.BaseTool.get_model_provider")
-    @patch("utils.model_context.ModelContext") # Add this patch
+    @patch("utils.model_context.ModelContext")  # Add this patch
     async def test_debug_tool_french_error_analysis(self, mock_model_context, mock_get_provider):
         """Test that the debug tool analyzes errors in French."""
 

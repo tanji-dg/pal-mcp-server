@@ -36,20 +36,14 @@ class ToolCall(BaseModel):
     tool_output: Optional[str] = Field(None, description="Output result (JSON string)")
     duration_ms: int = Field(..., description="Execution duration in milliseconds")
     status: str = Field(..., description="Execution status: 'success' or 'error'")
-    timestamp: datetime = Field(
-        default_factory=datetime.now, description="When the call completed"
-    )
+    timestamp: datetime = Field(default_factory=datetime.now, description="When the call completed")
 
 
 class InstanceStatus(BaseModel):
     """Status report from a single MCP server instance."""
 
-    instance_id: str = Field(
-        ..., description="Unique identifier: PID@hostname"
-    )
-    uptime_seconds: float = Field(
-        ..., description="Seconds since server startup"
-    )
+    instance_id: str = Field(..., description="Unique identifier: PID@hostname")
+    uptime_seconds: float = Field(..., description="Seconds since server startup")
     state: str = Field(
         default="idle",
         description="Current state: 'idle', 'busy', or 'offline'",
@@ -58,12 +52,8 @@ class InstanceStatus(BaseModel):
         default_factory=datetime.now,
         description="Timestamp of last communication",
     )
-    active_tool: Optional[str] = Field(
-        default=None, description="Currently executing tool name, null if idle"
-    )
-    tool_start_time: Optional[datetime] = Field(
-        default=None, description="When the active tool started execution"
-    )
+    active_tool: Optional[str] = Field(default=None, description="Currently executing tool name, null if idle")
+    tool_start_time: Optional[datetime] = Field(default=None, description="When the active tool started execution")
     recent_calls: list[ToolCall] = Field(
         default_factory=list,
         description="Recent tool call history (newest first)",
@@ -86,9 +76,9 @@ class InstanceStatus(BaseModel):
         data["recent_calls"] = [
             {
                 **call,
-                "timestamp": call["timestamp"].isoformat()
-                if isinstance(call["timestamp"], datetime)
-                else call["timestamp"],
+                "timestamp": (
+                    call["timestamp"].isoformat() if isinstance(call["timestamp"], datetime) else call["timestamp"]
+                ),
             }
             for call in data["recent_calls"]
         ]
@@ -100,27 +90,13 @@ class ToolEvent(BaseModel):
 
     event_type: ToolEventType = Field(..., description="Type of event")
     instance_id: str = Field(..., description="Source instance identifier")
-    timestamp: datetime = Field(
-        default_factory=datetime.now, description="Event timestamp"
-    )
-    tool_name: Optional[str] = Field(
-        default=None, description="Tool name for tool events"
-    )
-    tool_input: Optional[str] = Field(
-        default=None, description="Input arguments for TOOL_START"
-    )
-    tool_output: Optional[str] = Field(
-        default=None, description="Output result for TOOL_END"
-    )
-    duration_ms: Optional[int] = Field(
-        default=None, description="Duration for TOOL_END events"
-    )
-    error_message: Optional[str] = Field(
-        default=None, description="Error message for TOOL_ERROR events"
-    )
-    uptime_seconds: Optional[float] = Field(
-        default=None, description="Uptime for HEARTBEAT/REGISTER events"
-    )
+    timestamp: datetime = Field(default_factory=datetime.now, description="Event timestamp")
+    tool_name: Optional[str] = Field(default=None, description="Tool name for tool events")
+    tool_input: Optional[str] = Field(default=None, description="Input arguments for TOOL_START")
+    tool_output: Optional[str] = Field(default=None, description="Output result for TOOL_END")
+    duration_ms: Optional[int] = Field(default=None, description="Duration for TOOL_END events")
+    error_message: Optional[str] = Field(default=None, description="Error message for TOOL_ERROR events")
+    uptime_seconds: Optional[float] = Field(default=None, description="Uptime for HEARTBEAT/REGISTER events")
 
     def to_json(self) -> str:
         """Serialize to JSON string."""
@@ -136,12 +112,8 @@ class AggregatedState(BaseModel):
     """Complete aggregated state for dashboard consumption."""
 
     type: str = Field(default="state_update", description="Message type identifier")
-    timestamp: datetime = Field(
-        default_factory=datetime.now, description="State snapshot timestamp"
-    )
-    instances: list[InstanceStatus] = Field(
-        default_factory=list, description="Status of all known instances"
-    )
+    timestamp: datetime = Field(default_factory=datetime.now, description="State snapshot timestamp")
+    instances: list[InstanceStatus] = Field(default_factory=list, description="Status of all known instances")
 
     def to_json(self) -> str:
         """Serialize to JSON for WebSocket transmission."""
@@ -165,9 +137,7 @@ class WebSocketMessage(BaseModel):
 
     type: str = Field(..., description="Message type")
     payload: dict = Field(default_factory=dict, description="Message payload")
-    timestamp: datetime = Field(
-        default_factory=datetime.now, description="Message timestamp"
-    )
+    timestamp: datetime = Field(default_factory=datetime.now, description="Message timestamp")
 
     def to_json(self) -> str:
         """Serialize to JSON string."""

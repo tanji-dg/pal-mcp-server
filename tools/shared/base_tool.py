@@ -1382,10 +1382,15 @@ When recommending searches, be specific about what information you need and why 
         model_context = arguments.get("_model_context")
         resolved_model_name = arguments.get("_resolved_model_name")
 
-        if model_context and resolved_model_name:
-            # Model was already resolved at MCP boundary
-            model_name = resolved_model_name
-            logger.debug(f"Using pre-resolved model '{model_name}' from MCP boundary")
+        if model_context:
+            # Model was already resolved at MCP boundary or provided by test
+            model_name = resolved_model_name or getattr(request, "model", None)
+            if not model_name:
+                from config import DEFAULT_MODEL
+
+                model_name = DEFAULT_MODEL
+            logger.debug(f"Using provided model context for '{model_name}'")
+            return model_name, model_context
         else:
             # Fallback for direct execute calls
             model_name = getattr(request, "model", None)

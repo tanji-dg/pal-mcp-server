@@ -30,6 +30,7 @@ def get_project_root() -> Path:
     # 3. Fallback to current working directory
     return Path.cwd()
 
+
 PROJECT_ROOT = get_project_root()
 
 # Version and metadata

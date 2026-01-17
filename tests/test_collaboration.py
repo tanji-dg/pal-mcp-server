@@ -26,7 +26,7 @@ class TestDynamicContextRequests:
         return DebugIssueTool()
 
     @pytest.mark.asyncio
-    @patch("tools.shared.base_tool.BaseTool.get_model_provider")
+    @patch("providers.registry.ModelProviderRegistry.get_provider_for_model")
     async def test_clarification_request_parsing(self, mock_get_provider, analyze_tool):
         """Test that tools correctly parse clarification requests"""
         # Mock model to return a clarification request
@@ -155,7 +155,7 @@ class TestDynamicContextRequests:
                 assert "files_required_to_continue" in analysis_content or malformed_json in str(response_data)
 
     @pytest.mark.asyncio
-    @patch("tools.shared.base_tool.BaseTool.get_model_provider")
+    @patch("providers.registry.ModelProviderRegistry.get_provider_for_model")
     async def test_clarification_with_suggested_action(self, mock_get_provider, analyze_tool):
         """Test clarification request with suggested next action"""
         import importlib

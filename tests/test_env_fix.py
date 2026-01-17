@@ -1,4 +1,3 @@
-
 import os
 import unittest
 from unittest.mock import patch
@@ -15,10 +14,7 @@ class TestEnvFallback(unittest.TestCase):
 
     def test_get_env_fallback_to_system_when_override_enabled(self):
         # .env の内容をモック (PAL_MCP_FORCE_ENV_OVERRIDE=true, TEST_FALLBACK_VAR は定義なし)
-        mock_dotenv = {
-            "PAL_MCP_FORCE_ENV_OVERRIDE": "true",
-            "OTHER_VAR": "other_value"
-        }
+        mock_dotenv = {"PAL_MCP_FORCE_ENV_OVERRIDE": "true", "OTHER_VAR": "other_value"}
 
         with patch("utils.env._read_dotenv_values", return_value=mock_dotenv):
             reload_env()
@@ -34,10 +30,7 @@ class TestEnvFallback(unittest.TestCase):
     def test_get_env_prefers_dotenv_when_override_enabled(self):
         # 両方に存在する変数の場合
         os.environ["CONFLICT_VAR"] = "system_value"
-        mock_dotenv = {
-            "PAL_MCP_FORCE_ENV_OVERRIDE": "true",
-            "CONFLICT_VAR": "dotenv_value"
-        }
+        mock_dotenv = {"PAL_MCP_FORCE_ENV_OVERRIDE": "true", "CONFLICT_VAR": "dotenv_value"}
 
         with patch("utils.env._read_dotenv_values", return_value=mock_dotenv):
             reload_env()
@@ -49,10 +42,7 @@ class TestEnvFallback(unittest.TestCase):
     def test_get_env_prefers_system_when_override_disabled(self):
         # オーバーライド無効の場合
         os.environ["CONFLICT_VAR"] = "system_value"
-        mock_dotenv = {
-            "PAL_MCP_FORCE_ENV_OVERRIDE": "false",
-            "CONFLICT_VAR": "dotenv_value"
-        }
+        mock_dotenv = {"PAL_MCP_FORCE_ENV_OVERRIDE": "false", "CONFLICT_VAR": "dotenv_value"}
 
         with patch("utils.env._read_dotenv_values", return_value=mock_dotenv):
             reload_env()
@@ -60,6 +50,7 @@ class TestEnvFallback(unittest.TestCase):
             # システム環境変数が優先されるべき (os.getenv の標準挙動)
             value = get_env("CONFLICT_VAR")
             self.assertEqual(value, "system_value")
+
 
 if __name__ == "__main__":
     unittest.main()
