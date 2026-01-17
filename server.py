@@ -905,7 +905,7 @@ async def handle_call_tool(name: str, arguments: dict[str, Any]) -> list[TextCon
                 from monitor.publisher import get_publisher
 
                 publisher = get_publisher()
-                await publisher.tool_start(name)
+                await publisher.tool_start(name, arguments)
             except Exception as e:
                 logger.debug(f"Failed to publish tool start event: {e}")
 
@@ -920,7 +920,7 @@ async def handle_call_tool(name: str, arguments: dict[str, Any]) -> list[TextCon
                     from monitor.publisher import get_publisher
 
                     publisher = get_publisher()
-                    await publisher.tool_end(name, tool_duration_ms)
+                    await publisher.tool_end(name, tool_duration_ms, result)
                 except Exception as e:
                     logger.debug(f"Failed to publish tool end event: {e}")
 
@@ -1613,16 +1613,9 @@ async def main():
     if MONITOR_ENABLED:
         try:
             from monitor.publisher import get_publisher
-            from monitor.log_handler import MonitorLogHandler
 
             monitor_publisher = get_publisher()
             await monitor_publisher.start()
-
-            # Add monitoring log handler to root logger
-            monitor_handler = MonitorLogHandler(monitor_publisher)
-            monitor_handler.setLevel(logging.INFO)
-            logging.getLogger().addHandler(monitor_handler)
-
             logger.info(f"Monitor publisher started: {monitor_publisher.instance_id}")
         except Exception as e:
             logger.warning(f"Failed to initialize monitor publisher: {e}")

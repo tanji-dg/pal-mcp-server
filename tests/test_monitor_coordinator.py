@@ -73,14 +73,17 @@ class TestInstanceTracker:
         assert len(tracker.recent_calls) == 1
         assert tracker.recent_calls[0].status == "error"
 
-    def test_add_log(self):
-        """Test adding a log message."""
+    def test_tool_io_tracking(self):
+        """Test tracking tool input and output."""
         tracker = InstanceTracker("12345@hostname")
-        tracker.add_log("INFO", "Test message")
+        tracker.start_tool("chat", tool_input='{"message": "hello"}')
+        assert tracker.active_tool_input == '{"message": "hello"}'
 
-        assert len(tracker.recent_logs) == 1
-        assert tracker.recent_logs[0].level == "INFO"
-        assert tracker.recent_logs[0].message == "Test message"
+        tracker.end_tool(duration_ms=100, is_error=False, tool_output='{"response": "hi"}')
+        assert len(tracker.recent_calls) == 1
+        call = tracker.recent_calls[0]
+        assert call.tool_input == '{"message": "hello"}'
+        assert call.tool_output == '{"response": "hi"}'
 
     def test_recent_calls_limit(self):
         """Test that recent calls are limited."""
@@ -325,8 +328,8 @@ class TestMonitorCoordinator:
         assert tracker.recent_calls[0].status == "error"
 
     @pytest.mark.asyncio
-    async def test_process_log_event(self, coordinator):
-        """Test processing a log event."""
+    async def test_process_tool_io_events(self, coordinator):
+        """Test processing tool start/end with I/O data."""
         # Register
         await coordinator.process_event(
             ToolEvent(
@@ -335,19 +338,33 @@ class TestMonitorCoordinator:
             )
         )
 
-        # Log event
+        # Start with input
         await coordinator.process_event(
             ToolEvent(
-                event_type=ToolEventType.LOG,
+                event_type=ToolEventType.TOOL_START,
                 instance_id="12345@hostname",
-                log_level="INFO",
-                log_message="System started",
+                tool_name="chat",
+                tool_input="input_data",
             )
         )
 
         tracker = coordinator.instances["12345@hostname"]
-        assert len(tracker.recent_logs) == 1
-        assert tracker.recent_logs[0].message == "System started"
+        assert tracker.active_tool_input == "input_data"
+
+        # End with output
+        await coordinator.process_event(
+            ToolEvent(
+                event_type=ToolEventType.TOOL_END,
+                instance_id="12345@hostname",
+                tool_name="chat",
+                duration_ms=100,
+                tool_output="output_data",
+            )
+        )
+
+        call = tracker.recent_calls[0]
+        assert call.tool_input == "input_data"
+        assert call.tool_output == "output_data"
 
     @pytest.mark.asyncio
     async def test_auto_register_on_event(self, coordinator):

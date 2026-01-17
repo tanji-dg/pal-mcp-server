@@ -170,6 +170,29 @@
         .call-item.error {
             border-left: 3px solid #ff4757;
         }
+        .call-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 4px;
+        }
+        .call-name {
+            font-weight: bold;
+        }
+        .call-detail {
+            font-size: 10px;
+            color: #aaa;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            padding-top: 2px;
+        }
+        .call-detail.input {
+            color: #00d4ff;
+        }
+        .call-detail.output {
+            color: #2ed573;
+        }
         .logs-section {
             margin-top: 15px;
             border-top: 1px solid #333;
@@ -419,33 +442,24 @@
                                 <div class="call-list">
                                     ${recentCalls.map(call => `
                                         <div class="call-item ${call.status}">
-                                            ${call.tool} (${call.duration_ms}ms)
+                                            <div class="call-header">
+                                                <span class="call-name">${call.tool}</span>
+                                                <span class="call-duration">${call.duration_ms}ms</span>
+                                            </div>
+                                            ${call.tool_input ? `<div class="call-detail input" title="${escapeHtml(call.tool_input)}">Input: ${truncate(call.tool_input)}</div>` : ''}
+                                            ${call.tool_output ? `<div class="call-detail output" title="${escapeHtml(call.tool_output)}">Output: ${truncate(call.tool_output)}</div>` : ''}
                                         </div>
                                     `).join('')}
-                                </div>
-                            </div>
-                        ` : ''}
-
-                        ${recentLogs.length > 0 ? `
-                            <div class="logs-section">
-                                <h4>Recent Logs</h4>
-                                <div class="logs-container">
-                                    ${recentLogs.map(log => {
-                                        const time = new Date(log.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', second:'2-digit'});
-                                        return `
-                                            <div class="log-entry">
-                                                <span class="log-time">${time}</span>
-                                                <span class="log-level ${log.level}">${log.level}</span>
-                                                <span class="log-msg">${escapeHtml(log.message)}</span>
-                                            </div>
-                                        `;
-                                    }).join('')}
                                 </div>
                             </div>
                         ` : ''}
                     </div>
                 `;
             }).join('');
+        }
+
+        function truncate(str, n=50) {
+            return (str.length > n) ? str.substr(0, n-1) + '...' : str;
         }
 
         function escapeHtml(text) {

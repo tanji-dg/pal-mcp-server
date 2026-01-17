@@ -37,7 +37,6 @@ from fastapi.responses import HTMLResponse
 from monitor.models import (
     AggregatedState,
     InstanceStatus,
-    LogEntry,
     ToolCall,
     ToolEvent,
     ToolEventType,
@@ -49,7 +48,6 @@ logger = logging.getLogger(__name__)
 HEARTBEAT_INTERVAL = 10  # seconds between heartbeats
 INSTANCE_TIMEOUT = 30  # seconds before marking instance as offline
 MAX_RECENT_CALLS = 20  # maximum number of recent calls to keep per instance
-MAX_RECENT_LOGS = 50  # maximum number of recent logs to keep per instance
 BROADCAST_INTERVAL = 1.0  # seconds between state broadcasts
 
 
@@ -63,9 +61,9 @@ class InstanceTracker:
         self.last_heartbeat = datetime.now()
         self.state = "idle"
         self.active_tool: Optional[str] = None
+        self.active_tool_input: Optional[str] = None
         self.tool_start_time: Optional[datetime] = None
         self.recent_calls: deque[ToolCall] = deque(maxlen=MAX_RECENT_CALLS)
-        self.recent_logs: deque[LogEntry] = deque(maxlen=MAX_RECENT_LOGS)
 
         # Metrics for last minute
         self._calls_1m: list[tuple[float, bool]] = []  # (timestamp, is_error)
@@ -78,14 +76,17 @@ class InstanceTracker:
             self.uptime_at_register = uptime_seconds
             self.start_time = time.time()
 
-    def start_tool(self, tool_name: str):
+    def start_tool(self, tool_name: str, tool_input: Optional[str] = None):
         """Record tool execution start."""
         self.state = "busy"
         self.active_tool = tool_name
+        self.active_tool_input = tool_input
         self.tool_start_time = datetime.now()
         self.last_heartbeat = datetime.now()
 
-    def end_tool(self, duration_ms: int, is_error: bool = False):
+    def end_tool(
+        self, duration_ms: int, is_error: bool = False, tool_output: Optional[str] = None
+    ):
         """Record tool execution completion."""
         now = time.time()
         status = "error" if is_error else "success"
@@ -93,6 +94,8 @@ class InstanceTracker:
         if self.active_tool:
             call = ToolCall(
                 tool=self.active_tool,
+                tool_input=self.active_tool_input,
+                tool_output=tool_output,
                 duration_ms=duration_ms,
                 status=status,
             )
@@ -104,6 +107,7 @@ class InstanceTracker:
 
         self.state = "idle"
         self.active_tool = None
+        self.active_tool_input = None
         self.tool_start_time = None
         self.last_heartbeat = datetime.now()
 
@@ -153,7 +157,6 @@ class InstanceTracker:
             active_tool=self.active_tool if state == "busy" else None,
             tool_start_time=self.tool_start_time if state == "busy" else None,
             recent_calls=list(self.recent_calls),
-            recent_logs=list(self.recent_logs),
             error_rate_1m=self.get_error_rate_1m(),
             avg_execution_time_1m=self.get_avg_execution_time_1m(),
         )
@@ -217,11 +220,13 @@ class MonitorCoordinator:
 
                 elif event.event_type == ToolEventType.TOOL_START:
                     if event.tool_name:
-                        tracker.start_tool(event.tool_name)
+                        tracker.start_tool(event.tool_name, event.tool_input)
                         logger.debug(f"Tool started: {event.tool_name} on {instance_id}")
 
                 elif event.event_type == ToolEventType.TOOL_END:
-                    tracker.end_tool(event.duration_ms or 0, is_error=False)
+                    tracker.end_tool(
+                        event.duration_ms or 0, is_error=False, tool_output=event.tool_output
+                    )
                     logger.debug(
                         f"Tool completed: {event.tool_name} on {instance_id} "
                         f"({event.duration_ms}ms)"
@@ -234,9 +239,6 @@ class MonitorCoordinator:
                         f"{event.error_message}"
                     )
 
-                elif event.event_type == ToolEventType.LOG:
-                    tracker.add_log(event.log_level or "INFO", event.log_message or "")
-
             else:
                 # Auto-register instance on first event
                 self.instances[instance_id] = InstanceTracker(
@@ -247,15 +249,15 @@ class MonitorCoordinator:
                 tracker = self.instances[instance_id]
                 if event.event_type == ToolEventType.TOOL_START:
                     if event.tool_name:
-                        tracker.start_tool(event.tool_name)
+                        tracker.start_tool(event.tool_name, event.tool_input)
                 elif event.event_type == ToolEventType.TOOL_END:
-                    tracker.end_tool(event.duration_ms or 0, is_error=False)
+                    tracker.end_tool(
+                        event.duration_ms or 0, is_error=False, tool_output=event.tool_output
+                    )
                 elif event.event_type == ToolEventType.TOOL_ERROR:
                     tracker.end_tool(event.duration_ms or 0, is_error=True)
                 elif event.event_type == ToolEventType.HEARTBEAT:
                     tracker.update_heartbeat(event.uptime_seconds)
-                elif event.event_type == ToolEventType.LOG:
-                    tracker.add_log(event.log_level or "INFO", event.log_message or "")
 
     async def add_websocket_client(self, websocket: WebSocket):
         """Add a new WebSocket client connection."""

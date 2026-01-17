@@ -30,7 +30,7 @@ import logging
 import os
 import socket
 import time
-from typing import Optional
+from typing import Optional, Any
 
 import httpx
 
@@ -189,28 +189,54 @@ class MonitorPublisher:
 
         logger.info("Monitor publisher stopped")
 
-    async def tool_start(self, tool_name: str):
+    async def tool_start(self, tool_name: str, arguments: Optional[dict] = None):
         """Record that a tool has started execution."""
         if not self.enabled:
             return
+
+        # Serialize arguments to string if present
+        tool_input = None
+        if arguments:
+            import json
+            try:
+                tool_input = json.dumps(arguments)
+            except Exception:
+                tool_input = str(arguments)
 
         event = ToolEvent(
             event_type=ToolEventType.TOOL_START,
             instance_id=self.instance_id,
             tool_name=tool_name,
+            tool_input=tool_input,
             uptime_seconds=self.uptime_seconds,
         )
         await self._publish_event(event)
 
-    async def tool_end(self, tool_name: str, duration_ms: int):
+    async def tool_end(self, tool_name: str, duration_ms: int, result: Optional[Any] = None):
         """Record that a tool has completed successfully."""
         if not self.enabled:
             return
+
+        # Serialize result to string if present
+        tool_output = None
+        if result:
+            import json
+            try:
+                # Handle Pydantic models or dicts
+                if hasattr(result, "model_dump"):
+                    tool_output = result.model_dump_json()
+                elif hasattr(result, "to_dict"):
+                    tool_output = json.dumps(result.to_dict())
+                else:
+                    tool_output = json.dumps(result)
+            except Exception:
+                tool_output = str(result)
 
         event = ToolEvent(
             event_type=ToolEventType.TOOL_END,
             instance_id=self.instance_id,
             tool_name=tool_name,
+            tool_output=tool_output,
             duration_ms=duration_ms,
             uptime_seconds=self.uptime_seconds,
         )
@@ -229,20 +255,6 @@ class MonitorPublisher:
             tool_name=tool_name,
             duration_ms=duration_ms,
             error_message=error_message[:500],  # Truncate long error messages
-            uptime_seconds=self.uptime_seconds,
-        )
-        await self._publish_event(event)
-
-    async def log_event(self, level: str, message: str):
-        """Record a log message event."""
-        if not self.enabled:
-            return
-
-        event = ToolEvent(
-            event_type=ToolEventType.LOG,
-            instance_id=self.instance_id,
-            log_level=level,
-            log_message=message[:2000],  # Truncate very long logs
             uptime_seconds=self.uptime_seconds,
         )
         await self._publish_event(event)
