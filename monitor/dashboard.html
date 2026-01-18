@@ -406,7 +406,6 @@
             container.innerHTML = instances.map(inst => {
                 const uptime = formatUptime(inst.uptime_seconds);
                 const recentCalls = (inst.recent_calls || []).slice(0, 5);
-                const recentLogs = (inst.recent_logs || []).slice(0, 20);
 
                 return `
                     <div class="instance-card ${inst.state}">
