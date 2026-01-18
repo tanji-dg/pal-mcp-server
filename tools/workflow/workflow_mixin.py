@@ -744,9 +744,11 @@ class BaseWorkflowMixin(ABC):
 
             logger.error(f"Error in {self.get_name()} work: {e}", exc_info=True)
             error_data = {
-                "status": f"{self.get_name()}_failed",
+                "status": "error",
                 "error": str(e),
                 "step_number": arguments.get("step_number", 0),
+                "content": str(e),
+                "content_type": "text",
             }
 
             # Add metadata to error responses too
