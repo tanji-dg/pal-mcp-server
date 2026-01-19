@@ -790,6 +790,9 @@ async def handle_call_tool(name: str, arguments: dict[str, Any]) -> list[TextCon
         logger.info(f"Executing tool '{name}' with {len(arguments)} parameter(s)")
         tool = TOOLS[name]
 
+        # Track execution time for monitoring (start tracking immediately)
+        tool_start_time = time.time()
+
         # EARLY MODEL RESOLUTION AT MCP BOUNDARY
         # Resolve model before passing to tool - this ensures consistent model handling
         # NOTE: Consensus tool is exempt as it handles multiple models internally
@@ -815,7 +818,7 @@ async def handle_call_tool(name: str, arguments: dict[str, Any]) -> list[TextCon
         try:
             # Access the current request context from the server instance context var
             arguments["_request_context"] = server.request_context
-            
+
             # Also inject instance ID for monitor session grouping
             if MONITOR_ENABLED:
                 from monitor.publisher import get_publisher
@@ -823,6 +826,16 @@ async def handle_call_tool(name: str, arguments: dict[str, Any]) -> list[TextCon
                 arguments["_instance_id"] = publisher.instance_id
         except Exception as e:
             logger.debug(f"Could not inject request/instance context: {e}")
+
+        # Publish tool start event to monitor (as early as possible)
+        if MONITOR_ENABLED:
+            try:
+                from monitor.publisher import get_publisher
+
+                publisher = get_publisher()
+                await publisher.tool_start(name, arguments)
+            except Exception as e:
+                logger.debug(f"Failed to publish tool start event: {e}")
 
         # Skip model resolution for tools that don't require models (e.g., clink)
         if not tool.requires_model():
@@ -885,23 +898,10 @@ async def handle_call_tool(name: str, arguments: dict[str, Any]) -> list[TextCon
                     logger.warning(f"File size check failed for {name} with model {model_name}")
                     raise ToolExecutionError(ToolOutput(**file_size_check).model_dump_json())
 
-        # Track execution time for monitoring
-        tool_start_time = time.time()
-
-        # Publish tool start event to monitor
-        if MONITOR_ENABLED:
-            try:
-                from monitor.publisher import get_publisher
-
-                publisher = get_publisher()
-                await publisher.tool_start(name, arguments)
-            except Exception as e:
-                logger.debug(f"Failed to publish tool start event: {e}")
-
         try:
             if not result_ready:
                 result = await tool.execute(arguments)
-            
+
             tool_duration_ms = int((time.time() - tool_start_time) * 1000)
             logger.info(f"Tool '{name}' execution completed in {tool_duration_ms}ms")
 
