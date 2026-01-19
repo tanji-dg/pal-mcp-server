@@ -11,15 +11,19 @@
   "roles": {
     "default": {
       "prompt_path": "systemprompts/clink/default.txt",
-      "role_args": []
+      "role_args": ["--settings", "/home/htanji/.claude/settings.json.gemini"]
     },
     "planner": {
       "prompt_path": "systemprompts/clink/default_planner.txt",
-      "role_args": []
+      "role_args": ["--settings", "/home/htanji/.claude/settings.json.thinking"]
     },
     "codereviewer": {
       "prompt_path": "systemprompts/clink/default_codereviewer.txt",
       "role_args": []
+    },
+    "developer": {
+      "prompt_path": "systemprompts/clink/default.txt",
+      "role_args": ["--settings", "/home/htanji/.claude/settings.json.gemini"]
     }
   }
 }

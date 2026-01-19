@@ -815,13 +815,20 @@ async def handle_call_tool(name: str, arguments: dict[str, Any]) -> list[TextCon
         try:
             # Access the current request context from the server instance context var
             arguments["_request_context"] = server.request_context
+            
+            # Also inject instance ID for monitor session grouping
+            if MONITOR_ENABLED:
+                from monitor.publisher import get_publisher
+                publisher = get_publisher()
+                arguments["_instance_id"] = publisher.instance_id
         except Exception as e:
-            logger.debug(f"Could not inject request context: {e}")
+            logger.debug(f"Could not inject request/instance context: {e}")
 
         # Skip model resolution for tools that don't require models (e.g., clink)
         if not tool.requires_model():
             logger.debug(f"Tool {name} doesn't require model resolution - skipping model validation")
             # Execute tool directly without model context
+            result = await tool.execute(arguments)
             result_ready = True
         else:
             result_ready = False
@@ -892,7 +899,9 @@ async def handle_call_tool(name: str, arguments: dict[str, Any]) -> list[TextCon
                 logger.debug(f"Failed to publish tool start event: {e}")
 
         try:
-            result = await tool.execute(arguments)
+            if not result_ready:
+                result = await tool.execute(arguments)
+            
             tool_duration_ms = int((time.time() - tool_start_time) * 1000)
             logger.info(f"Tool '{name}' execution completed in {tool_duration_ms}ms")
 
@@ -923,7 +932,12 @@ async def handle_call_tool(name: str, arguments: dict[str, Any]) -> list[TextCon
                 except Exception as e:
                     logger.debug(f"Failed to publish tool error event: {e}")
 
-            raise  # Re-raise the original error
+            logger.error(f"Tool '{name}' failed: {tool_error}")
+
+            # Instead of re-raising and crashing the server/task, return the error as text content
+            # This allows the MCP client to receive the error gracefully
+            error_text = str(tool_error)
+            return [TextContent(type="text", text=error_text)]
 
         if log_level == "DEBUG":
             logger.debug(f"Tool '{name}' result content: {result}")

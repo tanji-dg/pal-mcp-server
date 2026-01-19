@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import subprocess
+import time
 from typing import Optional
 
 from .log_utils import LogUtils
@@ -125,7 +126,7 @@ class Calculator:
         self.logger.debug(f"Created test files with absolute paths: {list(self.test_files.values())}")
 
     def call_mcp_tool(self, tool_name: str, params: dict) -> tuple[Optional[str], Optional[str]]:
-        """Call an MCP tool via standalone server"""
+        """Call an MCP tool via standalone server using Popen for better stream control"""
         try:
             # Prepare the MCP initialization and tool call sequence
             init_request = {
@@ -158,42 +159,95 @@ class Calculator:
             # Join with newlines as MCP expects
             input_data = "\n".join(messages) + "\n"
 
-            # Call the standalone MCP server directly
+            # Call the standalone MCP server directly using Popen
             server_cmd = [self.python_path, "server.py"]
 
             self.logger.debug(f"Calling MCP tool {tool_name} with proper initialization")
 
-            # Execute the command with proper handling for async responses
-            # For consensus tool and other long-running tools, we need to ensure
-            # the subprocess doesn't close prematurely
-            result = subprocess.run(
+            process = subprocess.Popen(
                 server_cmd,
-                input=input_data,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
-                capture_output=True,
-                timeout=3600,  # 1 hour timeout
-                check=False,  # Don't raise on non-zero exit code
+                bufsize=1,  # Line buffered
             )
 
-            if result.returncode != 0:
-                self.logger.error(f"Standalone server failed with return code {result.returncode}")
-                self.logger.error(f"Stderr: {result.stderr}")
-                # Still try to parse stdout as the response might have been written before the error
-                self.logger.debug(f"Attempting to parse stdout despite error: {result.stdout[:500]}")
+            # Write input data
+            try:
+                process.stdin.write(input_data)
+                process.stdin.flush()
+                # Do NOT close stdin immediately, as this signals EOF to the server
+                # and might cause it to shut down before processing the request.
+            except Exception as e:
+                self.logger.error(f"Failed to write to server stdin: {e}")
+                process.kill()
+                return None, None
 
-            # Parse the response - look for the tool call response
-            response_data = self._parse_mcp_response(result.stdout, expected_id=2)
-            if not response_data:
+            # Read stdout line by line until we find the response
+            response_text = None
+            start_time = time.time()
+            timeout = 3600  # 1 hour timeout for long running tools
+
+            while True:
+                if time.time() - start_time > timeout:
+                    self.logger.error(f"Timeout waiting for response from {tool_name}")
+                    break
+
+                # Check if process has exited unexpectedly
+                if process.poll() is not None:
+                    # Capture stderr for debugging
+                    stderr_output = process.stderr.read()
+                    self.logger.error(f"Server process exited unexpectedly with code {process.returncode}")
+                    if stderr_output:
+                        self.logger.error(f"Stderr: {stderr_output}")
+                    break
+
+                # Non-blocking read would be ideal, but for simplicity we assume the server outputs lines
+                line = process.stdout.readline()
+                if not line:
+                    continue
+
+                if line.strip() and line.startswith("{"):
+                    try:
+                        response = json.loads(line)
+                        # Look for the tool call response with the expected ID
+                        if response.get("id") == 2:
+                            if "result" in response:
+                                result = response["result"]
+                                # Handle new response format with 'content' array
+                                if isinstance(result, dict) and "content" in result:
+                                    content_array = result["content"]
+                                    if isinstance(content_array, list) and len(content_array) > 0:
+                                        response_text = content_array[0].get("text", "")
+                                # Handle legacy format
+                                elif isinstance(result, list) and len(result) > 0:
+                                    response_text = result[0].get("text", "")
+                            elif "error" in response:
+                                self.logger.error(f"MCP error: {response['error']}")
+
+                            # We found the response (success or error), break the loop
+                            break
+                    except json.JSONDecodeError:
+                        pass
+
+            # Clean up process
+            try:
+                process.terminate()
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+            except Exception:
+                pass
+
+            if not response_text:
                 return None, None
 
             # Extract continuation_id if present
-            continuation_id = self._extract_continuation_id(response_data)
+            continuation_id = self._extract_continuation_id(response_text)
 
-            return response_data, continuation_id
+            return response_text, continuation_id
 
-        except subprocess.TimeoutExpired:
-            self.logger.error(f"MCP tool call timed out after 1 hour: {tool_name}")
-            return None, None
         except Exception as e:
             self.logger.error(f"MCP tool call failed: {e}")
             return None, None

@@ -219,21 +219,21 @@ class CLinkTool(SimpleTool):
         # ANSI escape sequence pattern for stripping color codes
         ansi_escape = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
 
-        # Session label for logs
-        session_label = f"[{continuation_id[:8]}] " if continuation_id else ""
+        # Determine effective session ID for monitor display
+        effective_session_id = continuation_id or arguments.get("_instance_id") or "standalone"
 
         async def _notification_callback(line: str):
+            logger.debug(f"CLINK NOTIFICATION RAW LINE: {line.strip()}")
             # Stream raw output to monitor if enabled
             try:
                 publisher = get_publisher()
                 if publisher:
-                    # Prefix session ID to raw log for monitor visibility
-                    await publisher.tool_log(client_config.name, f"{session_label}{line}")
+                    await publisher.tool_log(client_config.name, line, session_id=effective_session_id)
             except Exception:
                 pass
 
             if not request_context:
-                logger.debug(f"CLI RAW (no context): [{client_config.name}] {line.strip()}")
+                logger.debug(f"CLI RAW (no context): [{client_config.name}] [Session: {effective_session_id[:8]}] {line.strip()}")
                 return
 
             # Subprocesses might flush multiple lines at once in a single buffer chunk.

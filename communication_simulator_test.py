@@ -107,16 +107,26 @@ class CommunicationSimulator:
 
         self.test_registry = TEST_REGISTRY
 
-        # Define quick mode tests (essential tests for time-limited testing)
-        # Focus on tests that work with current tool configurations
-        self.quick_mode_tests = [
-            "cross_tool_continuation",  # Cross-tool conversation memory
-            "basic_conversation",  # Basic chat functionality
-            "content_validation",  # Content validation and deduplication
-            "model_thinking_config",  # Flash/flashlite model testing
-            "o3_model_selection",  # O3 model selection testing
-            "per_tool_deduplication",  # File deduplication for individual tools
-        ]
+        # Check for valid API keys to determine if we are in "bridge-only" mode
+        self.bridge_only_mode = self._check_bridge_only_mode()
+
+        if self.bridge_only_mode:
+            self.logger.info("Bridge-only mode detected (no valid AI API keys found)")
+            # In bridge-only mode, we only test clink functionality
+            self.quick_mode_tests = [
+                "clink_validation"
+            ]
+        else:
+            # Define quick mode tests (essential tests for time-limited testing)
+            # Focus on tests that work with current tool configurations
+            self.quick_mode_tests = [
+                "cross_tool_continuation",  # Cross-tool conversation memory
+                "basic_conversation",  # Basic chat functionality
+                "content_validation",  # Content validation and deduplication
+                "model_thinking_config",  # Flash/flashlite model testing
+                "o3_model_selection",  # O3 model selection testing
+                "per_tool_deduplication",  # File deduplication for individual tools
+            ]
 
         # If quick mode is enabled, override selected_tests
         if self.quick_mode:
@@ -128,8 +138,46 @@ class CommunicationSimulator:
             name: self._create_test_runner(test_class) for name, test_class in self.test_registry.items()
         }
 
-        # Test result tracking
-        self.test_results = dict.fromkeys(self.test_registry.keys(), False)
+        # Test result tracking - only track tests that will actually run
+        if self.selected_tests:
+            # Only track selected tests
+            self.test_results = {name: False for name in self.selected_tests if name in self.test_registry}
+        else:
+            # Track all tests if running full suite
+            self.test_results = dict.fromkeys(self.test_registry.keys(), False)
+
+    def _check_bridge_only_mode(self) -> bool:
+        """Check if we are in bridge-only mode (no valid API keys)"""
+        # List of keys to check
+        api_keys = [
+            "OPENAI_API_KEY",
+            "OPENROUTER_API_KEY",
+            "GEMINI_API_KEY",
+            "XAI_API_KEY"
+        ]
+
+        # Check if any key is present and NOT a placeholder
+        has_valid_key = False
+        for key in api_keys:
+            value = os.environ.get(key)
+            if not value or value.strip() == "":
+                continue
+
+            # Check for common placeholder patterns
+            value_lower = value.lower()
+            if "placeholder" in value_lower:
+                continue
+            if "your_" in value_lower and "_key_here" in value_lower:
+                continue
+
+            has_valid_key = True
+            break
+
+        # Also check for custom API URL (e.g. Ollama)
+        if os.environ.get("CUSTOM_API_URL"):
+            has_valid_key = True
+
+        return not has_valid_key
 
     def _get_python_path(self) -> str:
         """Get the Python path for the virtual environment"""

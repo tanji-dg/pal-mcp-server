@@ -42,9 +42,12 @@ from .test_token_allocation_validation import TokenAllocationValidationTest
 from .test_vision_capability import VisionCapabilityTest
 from .test_xai_models import XAIModelsTest
 
+from .test_clink_validation import ClinkValidationTest
+
 # Test registry for dynamic loading
 TEST_REGISTRY = {
     "basic_conversation": BasicConversationTest,
+    "clink_validation": ClinkValidationTest,
     "chat_validation": ChatSimpleValidationTest,
     "codereview_validation": CodeReviewValidationTest,
     "content_validation": ContentValidationTest,

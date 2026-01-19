@@ -278,7 +278,7 @@ class MonitorPublisher:
         )
         await self._publish_event(event)
 
-    async def tool_log(self, tool_name: str, log_message: str):
+    async def tool_log(self, tool_name: str, log_message: str, session_id: Optional[str] = None):
         """Record a log message from a tool execution."""
         if not self.enabled:
             return
@@ -288,8 +288,10 @@ class MonitorPublisher:
             instance_id=self.instance_id,
             tool_name=tool_name,
             log_data=log_message,
+            session_id=session_id,
             uptime_seconds=self.uptime_seconds,
         )
+        logger.debug(f"Publisher: Sent TOOL_LOG event: {event.model_dump_json()}")
         await self._publish_event(event)
 
     async def _publish_event(self, event: ToolEvent):

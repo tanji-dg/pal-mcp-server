@@ -78,6 +78,8 @@
             border-radius: 10px;
             padding: 20px;
             border-left: 4px solid #00d4ff;
+            display: flex;
+            flex-direction: column;
         }
         .instance-card.busy {
             border-left-color: #ffa502;
@@ -97,12 +99,56 @@
             font-size: 14px;
             color: #00d4ff;
         }
+        .active-tool-tag {
+            background: #00d4ff22;
+            color: #00d4ff;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: bold;
+            text-transform: uppercase;
+            margin-left: 10px;
+            border: 1px solid #00d4ff44;
+        }
+        .model-tag {
+            background: #a55eea22;
+            color: #a55eea;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: bold;
+            margin-left: 8px;
+            border: 1px solid #a55eea44;
+        }
+        .instance-phase {
+            background: #ffa50222;
+            color: #ffa502;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: bold;
+            margin-left: 8px;
+            margin-right: auto;
+            border: 1px solid #ffa50244;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+        .instance-phase::before {
+            content: "•";
+            animation: blink 1s infinite;
+        }
+        @keyframes blink {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.2; }
+        }
         .instance-state {
             padding: 4px 12px;
             border-radius: 20px;
             font-size: 12px;
             font-weight: bold;
             text-transform: uppercase;
+            flex-shrink: 0;
         }
         .instance-state.idle {
             background: #2ed573;
@@ -199,10 +245,26 @@
             padding: 15px;
             border-radius: 10px;
         }
-        .logs-section h3 {
+        .logs-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+        .logs-header h3 {
             font-size: 16px;
             color: #888;
-            margin-bottom: 10px;
+            margin: 0;
+        }
+        .tz-toggle {
+            font-size: 12px;
+            color: #888;
+        }
+        .tz-toggle label {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            cursor: pointer;
         }
         .logs-container {
             background: #0f1525;
@@ -228,10 +290,19 @@
             min-width: 70px;
             flex-shrink: 0;
         }
+        .log-session {
+            color: #ffa502;
+            font-family: monospace;
+            min-width: 80px;
+            flex-shrink: 0;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
         .log-tool {
             color: #00d4ff;
             font-weight: bold;
-            min-width: 80px;
+            min-width: 70px;
             flex-shrink: 0;
         }
         .log-msg {
@@ -277,6 +348,14 @@
             <div class="stat-label">Busy</div>
         </div>
         <div class="stat-card">
+            <div class="stat-value" id="totalCalls">0</div>
+            <div class="stat-label">Total Calls</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-value" id="totalErrors">0</div>
+            <div class="stat-label">Total Errors</div>
+        </div>
+        <div class="stat-card">
             <div class="stat-value" id="avgExecTime">0ms</div>
             <div class="stat-label">Avg Exec Time (1h)</div>
         </div>
@@ -295,43 +374,103 @@
     </div>
 
     <div class="logs-section">
-        <h3>📜 Live Logs</h3>
+        <div class="logs-header">
+            <h3>📜 Live Logs</h3>
+            <div class="tz-toggle">
+                <label>
+                    <input type="checkbox" id="tzLocal" onchange="toggleTz()"> LocalTime (UTC if off)
+                </label>
+            </div>
+        </div>
         <div class="logs-container" id="logsContainer"></div>
     </div>
 
     <script>
         let ws = null;
+        // Load preference, default to true (LocalTime) if not set
+        let useLocalTime = localStorage.getItem('monitor_use_localtime') !== 'false';
+
+        function initTz() {
+            const cb = document.getElementById('tzLocal');
+            if (cb) {
+                cb.checked = useLocalTime;
+            }
+        }
+
+        function toggleTz() {
+            useLocalTime = document.getElementById('tzLocal').checked;
+            localStorage.setItem('monitor_use_localtime', useLocalTime);
+            
+            refreshLogTimes();
+        }
+
+        function refreshLogTimes() {
+            const entries = document.querySelectorAll('.log-entry');
+            entries.forEach(entry => {
+                const timestamp = entry.getAttribute('data-timestamp');
+                if (timestamp) {
+                    entry.querySelector('.log-time').textContent = `[${formatLogTime(timestamp)}]`;
+                }
+            });
+        }
+
+        function formatLogTime(isoString) {
+            const date = new Date(isoString);
+            if (useLocalTime) {
+                // Local Time (Browser default)
+                return date.toLocaleTimeString(undefined, { 
+                    hour12: false,
+                    hour: '2-digit',
+                    minute: '2-digit',
+                    second: '2-digit'
+                });
+            } else {
+                // UTC
+                return date.toLocaleTimeString('en-GB', { 
+                    timeZone: 'UTC',
+                    hour12: false,
+                    hour: '2-digit',
+                    minute: '2-digit',
+                    second: '2-digit'
+                });
+            }
+        }
 
         function connect() {
             // Automatically determine WebSocket URL based on current page location
             const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-            const url = `${protocol}//${window.location.host}/ws`;
+            const host = window.location.host;
+            const url = `${protocol}//${host}/ws`;
 
             if (ws) {
+                console.log("Closing existing WebSocket connection...");
                 ws.close();
             }
 
-            console.log(`Connecting to Monitor at ${url}...`);
+            console.log(`Attempting to connect to Monitor WebSocket: ${url}`);
             ws = new WebSocket(url);
 
             ws.onopen = () => {
+                console.log("WebSocket connection established successfully.");
                 document.getElementById('statusDot').classList.add('connected');
                 document.getElementById('statusText').textContent = 'Connected';
             };
 
-            ws.onclose = () => {
+            ws.onclose = (event) => {
+                console.log(`WebSocket connection closed. Code: ${event.code}, Reason: ${event.reason}`);
                 document.getElementById('statusDot').classList.remove('connected');
                 document.getElementById('statusText').textContent = 'Disconnected';
                 // Auto-reconnect after 3 seconds
                 setTimeout(() => {
                     if (!ws || ws.readyState === WebSocket.CLOSED) {
+                        console.log("Attempting automatic reconnection...");
                         connect();
                     }
                 }, 3000);
             };
 
             ws.onerror = (error) => {
-                console.error('WebSocket error:', error);
+                console.error('WebSocket connection error:', error);
             };
 
             ws.onmessage = (event) => {
@@ -354,16 +493,29 @@
             const container = document.getElementById('logsContainer');
             const entry = document.createElement('div');
             entry.className = 'log-entry';
+            // Store raw timestamp for timezone switching
+            entry.setAttribute('data-timestamp', event.timestamp);
             
-            const time = new Date(event.timestamp).toLocaleTimeString();
+            const time = formatLogTime(event.timestamp);
             const tool = event.tool_name || 'system';
+            
+            // Session ID logic: priority: session_id > instance_id
+            let session = '-';
+            if (event.session_id) {
+                session = event.session_id.substr(0, 8);
+            } else if (event.instance_id) {
+                // Use part of PID if session is missing
+                session = event.instance_id.split('@')[0];
+            }
+            
             const msg = event.log_data || '';
             
-            // Check for error keywords to highlight
-            const isError = /error|fail|exception/i.test(msg);
+            // Check for error keywords to highlight, but exclude "is_error":false patterns common in JSON
+            const isError = /error|fail|exception/i.test(msg) && !/"is_error"\s*:\s*false/i.test(msg);
             
             entry.innerHTML = `
                 <span class="log-time">[${time}]</span>
+                <span class="log-session" title="${event.session_id || ''}">[${session}]</span>
                 <span class="log-tool">[${tool}]</span>
                 <span class="log-msg ${isError ? 'error' : ''}">${escapeHtml(msg)}</span>
             `;
@@ -387,13 +539,22 @@
             document.getElementById('busyInstances').textContent =
                 instances.filter(i => i.state === 'busy').length;
 
-            const avgTime = instances.length > 0
-                ? Math.round(instances.reduce((sum, i) => sum + (i.avg_execution_time_1m || 0), 0) / instances.length)
+            const totalCalls = instances.reduce((sum, i) => sum + (i.total_calls || 0), 0);
+            document.getElementById('totalCalls').textContent = totalCalls;
+
+            const totalErrors = instances.reduce((sum, i) => sum + (i.total_errors || 0), 0);
+            document.getElementById('totalErrors').textContent = totalErrors;
+
+            // Only count instances that have actually made calls in the window for averaging
+            const instancesWithMetrics = instances.filter(i => (i.recent_calls && i.recent_calls.length > 0) || i.total_calls > 0);
+            
+            const avgTime = instancesWithMetrics.length > 0
+                ? Math.round(instancesWithMetrics.reduce((sum, i) => sum + (i.avg_execution_time_1m || 0), 0) / instancesWithMetrics.length)
                 : 0;
             document.getElementById('avgExecTime').textContent = avgTime + 'ms';
 
-            const avgError = instances.length > 0
-                ? (instances.reduce((sum, i) => sum + (i.error_rate_1m || 0), 0) / instances.length * 100).toFixed(1)
+            const avgError = instancesWithMetrics.length > 0
+                ? (instancesWithMetrics.reduce((sum, i) => sum + (i.error_rate_1m || 0), 0) / instancesWithMetrics.length * 100).toFixed(1)
                 : 0;
             document.getElementById('errorRate').textContent = avgError + '%';
 
@@ -418,11 +579,12 @@
                 return `
                     <div class="instance-card ${inst.state}">
                         <div class="instance-header">
-                            <span class="instance-id">${inst.instance_id}</span>
+                            <span class="instance-id" title="${inst.instance_id}">${inst.instance_id}</span>
+                            ${inst.active_tool ? `<span class="active-tool-tag">${inst.active_tool}</span>` : ''}
+                            ${inst.model_name ? `<span class="model-tag">${inst.model_name}</span>` : ''}
+                            ${inst.last_status && inst.state === 'busy' ? `<span class="instance-phase">${inst.last_status}</span>` : ''}
                             <span class="instance-state ${inst.state}">${inst.state}</span>
                         </div>
-
-                        ${inst.active_tool ? `<div class="active-tool">🔧 ${inst.active_tool}</div>` : ''}
 
                         <div class="instance-metrics">
                             <div class="metric">
@@ -494,6 +656,7 @@
 
         // Auto-connect on load
         window.onload = () => {
+            initTz();
             connect();
         };
     </script>

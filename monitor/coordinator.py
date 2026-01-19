@@ -23,6 +23,7 @@ Usage:
 """
 
 import asyncio
+import json
 import logging
 import os
 import time
@@ -40,6 +41,7 @@ from monitor.models import (
     ToolCall,
     ToolEvent,
     ToolEventType,
+    utc_now,
 )
 
 logger = logging.getLogger(__name__)
@@ -52,18 +54,29 @@ BROADCAST_INTERVAL = 1.0  # seconds between state broadcasts
 
 
 class InstanceTracker:
-    """Tracks state for a single MCP server instance."""
+    """Tracks the status and history of a single MCP server instance."""
 
     def __init__(self, instance_id: str, uptime_seconds: float = 0.0):
         self.instance_id = instance_id
-        self.start_time = time.time()
         self.uptime_at_register = uptime_seconds
-        self.last_heartbeat = datetime.now()
+        self.start_time = time.time()
         self.state = "idle"
-        self.active_tool: Optional[str] = None
+        self.last_heartbeat = utc_now()
+        
+        # Support for nested/parallel tool calls
+        self.active_tools: dict[str, datetime] = {} # tool_name -> start_time
+        self.active_tool_inputs: dict[str, str] = {} # tool_name -> input
+        self._tool_start_times: dict[str, datetime] = {} # tool_id -> start_time (for log-based duration tracking)
+        
+        self.active_tool: Optional[str] = None # Primary/most recent tool
         self.active_tool_input: Optional[str] = None
+        self.model_name: Optional[str] = None
         self.tool_start_time: Optional[datetime] = None
         self.recent_calls: deque[ToolCall] = deque(maxlen=MAX_RECENT_CALLS)
+        
+        # Current status for display
+        self.last_status: Optional[str] = None
+        self._tool_name_cache: dict[str, str] = {} # Map tool_id -> name
         
         # Lifetime stats
         self.total_calls: int = 0
@@ -75,52 +88,240 @@ class InstanceTracker:
 
     def update_heartbeat(self, uptime_seconds: Optional[float] = None):
         """Update last heartbeat time."""
-        self.last_heartbeat = datetime.now()
+        self.last_heartbeat = utc_now()
         if uptime_seconds is not None:
             self.uptime_at_register = uptime_seconds
             self.start_time = time.time()
 
     def start_tool(self, tool_name: str, tool_input: Optional[str] = None):
         """Record tool execution start."""
+        now = utc_now()
         self.state = "busy"
+        self.active_tools[tool_name] = now
+        self.active_tool_inputs[tool_name] = tool_input
+        
+        # Update primary display info
         self.active_tool = tool_name
         self.active_tool_input = tool_input
-        self.tool_start_time = datetime.now()
-        self.last_heartbeat = datetime.now()
+        self.tool_start_time = now
+        self.last_heartbeat = now
+        self.last_status = f"Starting {tool_name}..."
+        
+        # Try to extract model name from input arguments
+        if tool_input:
+            try:
+                args = json.loads(tool_input)
+                self.model_name = args.get("model") or self.model_name
+            except Exception:
+                pass
 
-    def end_tool(self, duration_ms: int, is_error: bool = False, tool_output: Optional[str] = None):
+    def log_activity(self, tool_name: str, log_data: Optional[str] = None):
+        """Update activity status based on log event."""
+        self.state = "busy"
+        now = utc_now()
+        
+        if tool_name not in self.active_tools:
+            self.active_tools[tool_name] = now
+            
+        if not self.active_tool or self.active_tool == "clink":
+            self.active_tool = tool_name
+            self.tool_start_time = now
+            
+        self.last_heartbeat = now
+        
+        if log_data:
+            try:
+                # Handle potential multiple JSON objects in one log chunk
+                lines = log_data.strip().split("\n")
+                for line in lines:
+                    line = line.strip()
+                    if not (line.startswith("{") and line.endswith("}")):
+                        continue
+                        
+                    data = json.loads(line)
+                    msg_type = data.get("type")
+                    
+                    # Update model name if found in log metadata
+                    if "model" in data:
+                        self.model_name = data["model"]
+                    elif "metadata" in data and isinstance(data["metadata"], dict):
+                        self.model_name = data["metadata"].get("model_used") or self.model_name
+
+                    if msg_type == "message":
+                        self.last_status = "Thinking"
+                    elif msg_type == "tool_use":
+                        # Support both 'name' and 'tool_name' keys
+                        name = data.get("tool_name") or data.get("name") or "tool"
+                        tool_id = data.get("tool_id")
+                        if tool_id:
+                            self._tool_name_cache[tool_id] = name
+                            self._tool_start_times[tool_id] = now
+                        self.last_status = f"Calling {name}"
+                    elif msg_type == "tool_result":
+                        # Count completed tool executions
+                        self.total_calls += 1
+                        
+                        tool_id = data.get("tool_id")
+                        status = data.get("status", "completed")
+                        name = self._tool_name_cache.get(tool_id) if tool_id else None
+                        
+                        # Calculate duration if possible
+                        duration = 0
+                        if tool_id and tool_id in self._tool_start_times:
+                            start_time = self._tool_start_times.pop(tool_id)
+                            duration = int((now - start_time).total_seconds() * 1000)
+                            self._durations_1m.append((time.time(), duration))
+                            self._calls_1m.append((time.time(), status == "error"))
+                        
+                        # Check content for error keywords even if status is ok
+                        content = data.get("content") or data.get("output") or ""
+                        if isinstance(content, list):
+                            # Handle content list from certain tool outputs
+                            content = " ".join([str(c) for c in content])
+                        elif isinstance(content, dict):
+                            content = str(content)
+                            
+                        is_content_error = False
+                        if content:
+                            content_lower = content.lower()
+                            # Check for specific error indicators in the output
+                            if "error:" in content_lower or "exception:" in content_lower or "failed:" in content_lower:
+                                is_content_error = True
+                        
+                        if status == "error" or is_content_error:
+                            self.total_errors += 1
+                            # Update window metrics if duration was recorded (fix previous assumption of success)
+                            if self._calls_1m and self._calls_1m[-1][0] == time.time():
+                                self._calls_1m[-1] = (self._calls_1m[-1][0], True)
+                                
+                            self.last_status = f"Error in {name or 'tool'}"
+                        else:
+                            self.last_status = f"Result from {name or 'tool'}"
+                    elif msg_type == "result": # Final result from Gemini CLI
+                        status = data.get("status", "ok")
+                        stats = data.get("stats", {})
+                        
+                        # Increment total calls for the overall turn
+                        self.total_calls += 1
+                        
+                        if status == "error":
+                            self.total_errors += 1
+                            self.last_status = "Error (Gemini API)"
+                        else:
+                            self.last_status = "Responding"
+                        
+                        # Use overall duration from stats if available and not 0
+                        duration = stats.get("duration_ms")
+                        if duration and duration > 0:
+                            self._durations_1m.append((time.time(), duration))
+                            self._calls_1m.append((time.time(), status == "error"))
+                    elif msg_type == "item.started": # Codex format
+                        item = data.get("item", {})
+                        item_id = item.get("id")
+                        if item_id:
+                            self._tool_start_times[item_id] = now
+                            
+                        if item.get("type") == "command_execution":
+                            self.last_status = f"Executing {item.get('command', 'cmd')}"
+                        elif item.get("type") == "reasoning":
+                            self.last_status = "Reasoning"
+                    elif msg_type == "item.completed": # Codex completion/error
+                        item = data.get("item", {})
+                        item_id = item.get("id")
+                        status = item.get("status")
+                        
+                        # Count command executions as tool calls
+                        if item.get("type") == "command_execution":
+                            self.total_calls += 1
+                            
+                            # Calculate duration
+                            if item_id and item_id in self._tool_start_times:
+                                start_time = self._tool_start_times.pop(item_id)
+                                duration = int((now - start_time).total_seconds() * 1000)
+                                self._durations_1m.append((time.time(), duration))
+                                is_error = status in ["failed", "error"]
+                                self._calls_1m.append((time.time(), is_error))
+                        
+                        if status in ["failed", "error"]:
+                            self.total_errors += 1
+                            cmd = item.get("command") or "operation"
+                            self.last_status = f"Error in {cmd}"
+                        elif item.get("type") == "command_execution":
+                             # For successful commands, we might want to update status
+                             self.last_status = f"Completed {item.get('command', 'cmd')}"
+                    else:
+                        # For other types, keep it very short
+                        new_status = msg_type.capitalize() if msg_type else None
+                        if new_status:
+                            self.last_status = new_status
+            except Exception:
+                # Not JSON or parse failed, check for common patterns in text logs
+                log_lower = log_data.lower()
+                if "thinking" in log_lower:
+                    self.last_status = "Thinking"
+                elif "calling tool" in log_lower or "executing" in log_lower:
+                    self.last_status = "Executing"
+                elif "returning" in log_lower:
+                    self.last_status = "Finishing"
+                else:
+                    if len(log_data) < 30:
+                        self.last_status = log_data.strip()
+
+    def end_tool(self, tool_name: Optional[str], duration_ms: int, is_error: bool = False, tool_output: Optional[str] = None):
         """Record tool execution completion."""
-        now = time.time()
+        now_ts = time.time()
         status = "error" if is_error else "success"
+        
+        # Determine which tool actually ended
+        target_tool = tool_name or self.active_tool
         
         # Update lifetime stats
         self.total_calls += 1
         if is_error:
             self.total_errors += 1
 
-        if self.active_tool:
+        if target_tool:
             call = ToolCall(
-                tool=self.active_tool,
-                tool_input=self.active_tool_input,
+                tool=target_tool,
+                tool_input=self.active_tool_inputs.get(target_tool),
                 tool_output=tool_output,
                 duration_ms=duration_ms,
                 status=status,
+                timestamp=utc_now(),
             )
             self.recent_calls.appendleft(call)
 
             # Track for window metrics
-            self._calls_1m.append((now, is_error))
-            self._durations_1m.append((now, duration_ms))
+            self._calls_1m.append((now_ts, is_error))
+            self._durations_1m.append((now_ts, duration_ms))
+            
+            # Remove from active list
+            if target_tool in self.active_tools:
+                del self.active_tools[target_tool]
+            if target_tool in self.active_tool_inputs:
+                del self.active_tool_inputs[target_tool]
 
-        self.state = "idle"
-        self.active_tool = None
-        self.active_tool_input = None
-        self.tool_start_time = None
-        self.last_heartbeat = datetime.now()
+        # Update state based on remaining tools
+        if not self.active_tools:
+            self.state = "idle"
+            self.last_status = f"Completed {target_tool} ({status})" if target_tool else "Idle"
+            self.active_tool = None
+            self.active_tool_input = None
+            self.model_name = None
+            self.tool_start_time = None
+        else:
+            # Still busy with other tools (e.g. parent clink)
+            self.state = "busy"
+            # Pick one of the remaining tools as primary for display
+            self.active_tool = list(self.active_tools.keys())[-1]
+            self.tool_start_time = self.active_tools[self.active_tool]
+            self.last_status = f"Finished {target_tool}, back to {self.active_tool}"
+            
+        self.last_heartbeat = utc_now()
 
     def get_uptime(self) -> float:
         """Calculate current uptime in seconds."""
-        if self.is_timed_out():
+        if self.is_timed_out() or self.state == "offline":
             # If offline, freeze uptime at last heartbeat
             return self.uptime_at_register + (self.last_heartbeat.timestamp() - self.start_time)
         return self.uptime_at_register + (time.time() - self.start_time)
@@ -148,7 +349,7 @@ class InstanceTracker:
 
     def is_timed_out(self) -> bool:
         """Check if instance has exceeded heartbeat timeout."""
-        return datetime.now() - self.last_heartbeat > timedelta(seconds=INSTANCE_TIMEOUT)
+        return utc_now() - self.last_heartbeat > timedelta(seconds=INSTANCE_TIMEOUT)
 
     def to_status(self) -> InstanceStatus:
         """Convert to InstanceStatus model."""
@@ -159,10 +360,12 @@ class InstanceTracker:
             state=state,
             last_heartbeat=self.last_heartbeat,
             active_tool=self.active_tool if state == "busy" else None,
+            model_name=self.model_name if state == "busy" else None,
             tool_start_time=self.tool_start_time if state == "busy" else None,
             recent_calls=list(self.recent_calls),
             error_rate_1m=self.get_error_rate_1m(),
             avg_execution_time_1m=self.get_avg_execution_time_1m(),
+            last_status=self.last_status,
             total_calls=self.total_calls,
             total_errors=self.total_errors,
         )
@@ -237,14 +440,17 @@ class MonitorCoordinator:
                         logger.debug(f"Tool started: {event.tool_name} on {instance_id}")
 
                 elif event.event_type == ToolEventType.TOOL_END:
-                    tracker.end_tool(event.duration_ms or 0, is_error=False, tool_output=event.tool_output)
+                    tracker.end_tool(event.tool_name, event.duration_ms or 0, is_error=False, tool_output=event.tool_output)
                     logger.debug(f"Tool completed: {event.tool_name} on {instance_id} " f"({event.duration_ms}ms)")
 
                 elif event.event_type == ToolEventType.TOOL_ERROR:
-                    tracker.end_tool(event.duration_ms or 0, is_error=True)
+                    tracker.end_tool(event.tool_name, event.duration_ms or 0, is_error=True)
                     logger.warning(f"Tool error: {event.tool_name} on {instance_id} - " f"{event.error_message}")
 
                 elif event.event_type == ToolEventType.TOOL_LOG:
+                    # Mark as busy since we are receiving logs
+                    if event.tool_name:
+                        tracker.log_activity(event.tool_name, event.log_data)
                     # Mark for broadcast after releasing lock
                     broadcast_log_event = event
 
@@ -258,10 +464,12 @@ class MonitorCoordinator:
                     if event.tool_name:
                         tracker.start_tool(event.tool_name, event.tool_input)
                 elif event.event_type == ToolEventType.TOOL_END:
-                    tracker.end_tool(event.duration_ms or 0, is_error=False, tool_output=event.tool_output)
+                    tracker.end_tool(event.tool_name, event.duration_ms or 0, is_error=False, tool_output=event.tool_output)
                 elif event.event_type == ToolEventType.TOOL_ERROR:
-                    tracker.end_tool(event.duration_ms or 0, is_error=True)
+                    tracker.end_tool(event.tool_name, event.duration_ms or 0, is_error=True)
                 elif event.event_type == ToolEventType.TOOL_LOG:
+                    if event.tool_name:
+                        tracker.log_activity(event.tool_name, event.log_data)
                     broadcast_log_event = event
                 elif event.event_type == ToolEventType.HEARTBEAT:
                     tracker.update_heartbeat(event.uptime_seconds)
