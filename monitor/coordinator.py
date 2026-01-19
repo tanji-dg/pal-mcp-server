@@ -302,13 +302,16 @@ class InstanceTracker:
                 del self.active_tool_inputs[target_tool]
 
         # Update state based on remaining tools
-        if not self.active_tools:
+        # If the primary tool finished, force idle state even if sub-tools (from logs) seem active
+        if not self.active_tools or (target_tool and target_tool == self.active_tool and len(self.active_tools) == 0):
             self.state = "idle"
             self.last_status = f"Completed {target_tool} ({status})" if target_tool else "Idle"
             self.active_tool = None
             self.active_tool_input = None
             self.model_name = None
             self.tool_start_time = None
+            self.active_tools.clear() # Ensure all are cleared
+            self.active_tool_inputs.clear()
         else:
             # Still busy with other tools (e.g. parent clink)
             self.state = "busy"
