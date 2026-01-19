@@ -251,39 +251,10 @@
             font-size: 48px;
             margin-bottom: 15px;
         }
-        .config {
-            margin-bottom: 20px;
-            padding: 15px;
-            background: #16213e;
-            border-radius: 10px;
-        }
-        .config label {
-            display: block;
-            margin-bottom: 5px;
-            color: #888;
-        }
-        .config input {
-            width: 100%;
-            max-width: 400px;
-            padding: 8px 12px;
-            border: 1px solid #333;
-            border-radius: 5px;
-            background: #1a1a2e;
-            color: #fff;
-            font-family: monospace;
-        }
-        .config button {
-            margin-top: 10px;
-            padding: 8px 20px;
-            background: #00d4ff;
-            color: #000;
-            border: none;
-            border-radius: 5px;
-            cursor: pointer;
-            font-weight: bold;
-        }
-        .config button:hover {
-            background: #00b8e6;
+        .no-instances {
+            text-align: center;
+            padding: 60px 20px;
+            color: #666;
         }
     </style>
 </head>
@@ -294,12 +265,6 @@
             <div class="status-dot" id="statusDot"></div>
             <span id="statusText">Disconnected</span>
         </div>
-    </div>
-
-    <div class="config">
-        <label>WebSocket URL:</label>
-        <input type="text" id="wsUrl" value="ws://localhost:9876/ws">
-        <button onclick="connect()">Connect</button>
     </div>
 
     <div class="stats">
@@ -313,11 +278,11 @@
         </div>
         <div class="stat-card">
             <div class="stat-value" id="avgExecTime">0ms</div>
-            <div class="stat-label">Avg Exec Time</div>
+            <div class="stat-label">Avg Exec Time (1h)</div>
         </div>
         <div class="stat-card">
             <div class="stat-value" id="errorRate">0%</div>
-            <div class="stat-label">Error Rate</div>
+            <div class="stat-label">Error Rate (1h)</div>
         </div>
     </div>
 
@@ -338,12 +303,15 @@
         let ws = null;
 
         function connect() {
-            const url = document.getElementById('wsUrl').value;
+            // Automatically determine WebSocket URL based on current page location
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const url = `${protocol}//${window.location.host}/ws`;
 
             if (ws) {
                 ws.close();
             }
 
+            console.log(`Connecting to Monitor at ${url}...`);
             ws = new WebSocket(url);
 
             ws.onopen = () => {
@@ -526,12 +494,6 @@
 
         // Auto-connect on load
         window.onload = () => {
-            // Update default WS URL to match current host
-            if (window.location.protocol.startsWith('http')) {
-                const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-                const url = `${protocol}//${window.location.host}/ws`;
-                document.getElementById('wsUrl').value = url;
-            }
             connect();
         };
     </script>
