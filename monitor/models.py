@@ -23,6 +23,7 @@ class ToolEventType(str, Enum):
     TOOL_START = "tool_start"
     TOOL_END = "tool_end"
     TOOL_ERROR = "tool_error"
+    TOOL_LOG = "tool_log"
     HEARTBEAT = "heartbeat"
     REGISTER = "register"
     UNREGISTER = "unregister"
@@ -60,11 +61,19 @@ class InstanceStatus(BaseModel):
     )
     error_rate_1m: float = Field(
         default=0.0,
-        description="Error rate in the last minute (0.0 to 1.0)",
+        description="Error rate in the last window (0.0 to 1.0)",
     )
     avg_execution_time_1m: float = Field(
         default=0.0,
-        description="Average tool execution time in ms over last minute",
+        description="Average tool execution time in ms over last window",
+    )
+    total_calls: int = Field(
+        default=0,
+        description="Total number of tool calls since startup",
+    )
+    total_errors: int = Field(
+        default=0,
+        description="Total number of errors since startup",
     )
 
     def to_dict(self) -> dict:
@@ -96,6 +105,7 @@ class ToolEvent(BaseModel):
     tool_output: Optional[str] = Field(default=None, description="Output result for TOOL_END")
     duration_ms: Optional[int] = Field(default=None, description="Duration for TOOL_END events")
     error_message: Optional[str] = Field(default=None, description="Error message for TOOL_ERROR events")
+    log_data: Optional[str] = Field(default=None, description="Log content for TOOL_LOG events")
     uptime_seconds: Optional[float] = Field(default=None, description="Uptime for HEARTBEAT/REGISTER events")
 
     def to_json(self) -> str:

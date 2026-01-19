@@ -169,31 +169,43 @@ def main():
         logger.error("uvicorn is required. Install with: pip install uvicorn")
         sys.exit(1)
 
-    if transport == "dual":
-        logger.info("Starting in dual mode (HTTP + Unix socket)")
-        asyncio.run(
-            run_dual_mode(
-                host=args.host,
-                port=args.port,
+    try:
+        if transport == "dual":
+            logger.info("Starting in dual mode (HTTP + Unix socket)")
+            asyncio.run(
+                run_dual_mode(
+                    host=args.host,
+                    port=args.port,
+                    socket_path=args.socket,
+                    log_level=args.log_level.lower(),
+                )
+            )
+        elif transport == "unix":
+            logger.info(f"Starting with Unix socket: {args.socket}")
+            run_unix_only(
                 socket_path=args.socket,
                 log_level=args.log_level.lower(),
+                reload=args.reload,
             )
-        )
-    elif transport == "unix":
-        logger.info(f"Starting with Unix socket: {args.socket}")
-        run_unix_only(
-            socket_path=args.socket,
-            log_level=args.log_level.lower(),
-            reload=args.reload,
-        )
-    else:
-        logger.info(f"Starting with HTTP: http://{args.host}:{args.port}")
-        run_http_only(
-            host=args.host,
-            port=args.port,
-            log_level=args.log_level.lower(),
-            reload=args.reload,
-        )
+        else:
+            logger.info(f"Starting with HTTP: http://{args.host}:{args.port}")
+            run_http_only(
+                host=args.host,
+                port=args.port,
+                log_level=args.log_level.lower(),
+                reload=args.reload,
+            )
+    except KeyboardInterrupt:
+        logger.info("Monitor coordinator stopping...")
+    finally:
+        # Cleanup socket on exit
+        if transport in ["unix", "dual"] and os.path.exists(args.socket):
+            try:
+                os.unlink(args.socket)
+                logger.debug(f"Cleaned up socket: {args.socket}")
+            except Exception:
+                pass
+        logger.info("Monitor coordinator stopped.")
 
 
 if __name__ == "__main__":

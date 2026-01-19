@@ -194,13 +194,14 @@
             color: #2ed573;
         }
         .logs-section {
-            margin-top: 15px;
-            border-top: 1px solid #333;
-            padding-top: 15px;
+            margin-top: 20px;
+            background: #16213e;
+            padding: 15px;
+            border-radius: 10px;
         }
-        .logs-section h4 {
+        .logs-section h3 {
+            font-size: 16px;
             color: #888;
-            font-size: 12px;
             margin-bottom: 10px;
         }
         .logs-container {
@@ -208,8 +209,8 @@
             padding: 10px;
             border-radius: 5px;
             font-family: monospace;
-            font-size: 11px;
-            max-height: 200px;
+            font-size: 12px;
+            height: 300px;
             overflow-y: auto;
             display: flex;
             flex-direction: column;
@@ -217,26 +218,29 @@
         }
         .log-entry {
             display: flex;
-            gap: 8px;
+            gap: 10px;
             border-bottom: 1px solid #1a2639;
             padding-bottom: 2px;
+            line-height: 1.4;
         }
         .log-time {
             color: #666;
-            min-width: 60px;
+            min-width: 70px;
+            flex-shrink: 0;
         }
-        .log-level {
+        .log-tool {
+            color: #00d4ff;
             font-weight: bold;
-            min-width: 40px;
+            min-width: 80px;
+            flex-shrink: 0;
         }
-        .log-level.INFO { color: #00d4ff; }
-        .log-level.WARNING { color: #ffa502; }
-        .log-level.ERROR { color: #ff4757; }
-        .log-level.DEBUG { color: #888; }
         .log-msg {
             color: #ddd;
             white-space: pre-wrap;
             word-break: break-all;
+        }
+        .log-msg.error {
+            color: #ff4757;
         }
         .no-instances {
             text-align: center;
@@ -325,6 +329,11 @@
         </div>
     </div>
 
+    <div class="logs-section">
+        <h3>📜 Live Logs</h3>
+        <div class="logs-container" id="logsContainer"></div>
+    </div>
+
     <script>
         let ws = null;
 
@@ -362,6 +371,8 @@
                     const data = JSON.parse(event.data);
                     if (data.type === 'state_update') {
                         updateUI(data);
+                    } else if (data.event_type === 'tool_log') {
+                        appendLog(data);
                     } else if (data.type === 'ping') {
                         ws.send('pong');
                     }
@@ -369,6 +380,35 @@
                     console.error('Parse error:', e);
                 }
             };
+        }
+
+        function appendLog(event) {
+            const container = document.getElementById('logsContainer');
+            const entry = document.createElement('div');
+            entry.className = 'log-entry';
+            
+            const time = new Date(event.timestamp).toLocaleTimeString();
+            const tool = event.tool_name || 'system';
+            const msg = event.log_data || '';
+            
+            // Check for error keywords to highlight
+            const isError = /error|fail|exception/i.test(msg);
+            
+            entry.innerHTML = `
+                <span class="log-time">[${time}]</span>
+                <span class="log-tool">[${tool}]</span>
+                <span class="log-msg ${isError ? 'error' : ''}">${escapeHtml(msg)}</span>
+            `;
+            
+            container.appendChild(entry);
+            
+            // Auto-scroll
+            container.scrollTop = container.scrollHeight;
+            
+            // Limit log entries
+            while (container.children.length > 500) {
+                container.removeChild(container.firstChild);
+            }
         }
 
         function updateUI(data) {
@@ -422,16 +462,20 @@
                                 <div class="metric-label">Uptime</div>
                             </div>
                             <div class="metric">
+                                <div class="metric-value">${inst.total_calls}</div>
+                                <div class="metric-label">Total Calls</div>
+                            </div>
+                            <div class="metric">
+                                <div class="metric-value">${inst.total_errors}</div>
+                                <div class="metric-label">Errors (Life)</div>
+                            </div>
+                            <div class="metric">
                                 <div class="metric-value">${Math.round(inst.avg_execution_time_1m || 0)}ms</div>
-                                <div class="metric-label">Avg Time</div>
+                                <div class="metric-label">Avg Time (1h)</div>
                             </div>
                             <div class="metric">
                                 <div class="metric-value">${((inst.error_rate_1m || 0) * 100).toFixed(1)}%</div>
-                                <div class="metric-label">Error Rate</div>
-                            </div>
-                            <div class="metric">
-                                <div class="metric-value">${recentCalls.length}</div>
-                                <div class="metric-label">Recent Calls</div>
+                                <div class="metric-label">Err Rate (1h)</div>
                             </div>
                         </div>
 
@@ -458,13 +502,19 @@
         }
 
         function truncate(str, n=50) {
-            return (str.length > n) ? str.substr(0, n-1) + '...' : str;
+            if (!str) return '';
+            const s = String(str);
+            return (s.length > n) ? s.substr(0, n-1) + '...' : s;
         }
 
         function escapeHtml(text) {
-            const div = document.createElement('div');
-            div.textContent = text;
-            return div.innerHTML;
+            if (text == null) return '';
+            return String(text)
+                .replace(/&/g, "&amp;")
+                .replace(/</g, "&lt;")
+                .replace(/>/g, "&gt;")
+                .replace(/"/g, "&quot;")
+                .replace(/'/g, "&#039;");
         }
 
         function formatUptime(seconds) {
@@ -476,6 +526,12 @@
 
         // Auto-connect on load
         window.onload = () => {
+            // Update default WS URL to match current host
+            if (window.location.protocol.startsWith('http')) {
+                const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+                const url = `${protocol}//${window.location.host}/ws`;
+                document.getElementById('wsUrl').value = url;
+            }
             connect();
         };
     </script>

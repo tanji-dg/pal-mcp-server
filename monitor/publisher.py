@@ -94,7 +94,8 @@ class MonitorPublisher:
         self._heartbeat_task: Optional[asyncio.Task] = None
         self._running = False
         self._connected = False
-        self._last_error: Optional[str] = None
+        self._connection_error_logged = False
+        self._last_error = None
 
     @property
     def uptime_seconds(self) -> float:
@@ -158,6 +159,14 @@ class MonitorPublisher:
         if not self._running:
             return
 
+        # Give a small window for queued events to be sent
+        if not self._queue.empty():
+            logger.debug("Monitor publisher: Waiting for queue to clear...")
+            for _ in range(20):  # Max 2 seconds
+                if self._queue.empty():
+                    break
+                await asyncio.sleep(0.1)
+
         self._running = False
 
         # Unregister from coordinator
@@ -216,6 +225,8 @@ class MonitorPublisher:
         if not self.enabled:
             return
 
+        logger.debug(f"Publisher: tool_end called for {tool_name}")
+
         # Serialize result to string if present
         tool_output = None
         if result:
@@ -227,9 +238,19 @@ class MonitorPublisher:
                     tool_output = result.model_dump_json()
                 elif hasattr(result, "to_dict"):
                     tool_output = json.dumps(result.to_dict())
+                elif isinstance(result, list):
+                    # Handle list of objects (like TextContent)
+                    try:
+                        tool_output = json.dumps([
+                            item.model_dump() if hasattr(item, "model_dump") else item 
+                            for item in result
+                        ])
+                    except Exception:
+                        tool_output = json.dumps(result) # Try default
                 else:
                     tool_output = json.dumps(result)
-            except Exception:
+            except Exception as e:
+                logger.debug(f"Publisher: Serialization failed: {e}")
                 tool_output = str(result)
 
         event = ToolEvent(
@@ -257,9 +278,24 @@ class MonitorPublisher:
         )
         await self._publish_event(event)
 
+    async def tool_log(self, tool_name: str, log_message: str):
+        """Record a log message from a tool execution."""
+        if not self.enabled:
+            return
+
+        event = ToolEvent(
+            event_type=ToolEventType.TOOL_LOG,
+            instance_id=self.instance_id,
+            tool_name=tool_name,
+            log_data=log_message,
+            uptime_seconds=self.uptime_seconds,
+        )
+        await self._publish_event(event)
+
     async def _publish_event(self, event: ToolEvent):
         """Add event to the send queue (non-blocking)."""
         if not self._running:
+            logger.debug(f"Monitor publisher NOT RUNNING, dropping event: {event.event_type}")
             return
 
         try:
@@ -278,7 +314,12 @@ class MonitorPublisher:
                 json=event.model_dump(mode="json"),
             )
             response.raise_for_status()
+
+            if not self._connected and self._connection_error_logged:
+                logger.info("Monitor coordinator connection restored")
+
             self._connected = True
+            self._connection_error_logged = False
             self._last_error = None
         except Exception as e:
             self._connected = False
@@ -319,13 +360,25 @@ class MonitorPublisher:
                                 json=[e.model_dump(mode="json") for e in batch],
                             )
                             response.raise_for_status()
-                            self._connected = True
-                            self._last_error = None
+
+                        if not self._connected and self._connection_error_logged:
+                            logger.info("Monitor coordinator connection restored")
+
+                        self._connected = True
+                        self._connection_error_logged = False
+                        self._last_error = None
                         batch.clear()
                     except Exception as e:
+                        if not self._connection_error_logged:
+                            logger.warning(
+                                f"Failed to connect to monitor coordinator: {e}. "
+                                "Monitoring events will be queued and retried silently. "
+                                "Check if monitor service is running (./scripts/start_monitor.sh)."
+                            )
+                            self._connection_error_logged = True
+
                         self._connected = False
                         self._last_error = str(e)
-                        logger.debug(f"Failed to send monitor events: {e}")
                         # Keep events in batch for retry
                         await asyncio.sleep(RECONNECT_INTERVAL)
 
@@ -350,8 +403,9 @@ class MonitorPublisher:
 
             except asyncio.CancelledError:
                 break
-            except Exception as e:
-                logger.debug(f"Error in heartbeat loop: {e}")
+            except Exception:
+                # Silently fail, sender loop handles connection error logging
+                pass
 
 
 # Global publisher instance

@@ -17,6 +17,7 @@ from clink import get_registry
 from clink.agents import AgentOutput, CLIAgentError, create_agent
 from clink.models import ResolvedCLIClient, ResolvedCLIRole
 from config import TEMPERATURE_BALANCED
+from monitor.publisher import get_publisher
 from tools.models import ToolModelCategory, ToolOutput
 from tools.shared.base_models import COMMON_FIELD_DESCRIPTIONS
 from tools.shared.exceptions import ToolExecutionError
@@ -164,6 +165,7 @@ class CLinkTool(SimpleTool):
         return {}
 
     async def execute(self, arguments: dict[str, Any]) -> list[TextContent]:
+        logger.debug(f"CLinkTool.execute started with keys: {list(arguments.keys())}")
         self._current_arguments = arguments
         request = self.get_request_model()(**arguments)
 
@@ -217,7 +219,19 @@ class CLinkTool(SimpleTool):
         # ANSI escape sequence pattern for stripping color codes
         ansi_escape = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
 
+        # Session label for logs
+        session_label = f"[{continuation_id[:8]}] " if continuation_id else ""
+
         async def _notification_callback(line: str):
+            # Stream raw output to monitor if enabled
+            try:
+                publisher = get_publisher()
+                if publisher:
+                    # Prefix session ID to raw log for monitor visibility
+                    await publisher.tool_log(client_config.name, f"{session_label}{line}")
+            except Exception:
+                pass
+
             if not request_context:
                 logger.debug(f"CLI RAW (no context): [{client_config.name}] {line.strip()}")
                 return
@@ -305,26 +319,29 @@ class CLinkTool(SimpleTool):
                     if content:
                         # Strip ANSI codes to prevent TUI corruption in the host
                         clean_content = ansi_escape.sub("", content)
+                        # Add session info
+                        display_content = f"{session_label}{clean_content}"
 
                         now = time.monotonic()
-                        if clean_content != state["last_msg"] or (now - state["last_time"]) > MIN_INTERVAL:
-                            state["last_msg"] = clean_content
+                        if display_content != state["last_msg"] or (now - state["last_time"]) > MIN_INTERVAL:
+                            state["last_msg"] = display_content
                             state["last_time"] = now
 
                             # Log the notification we are about to send for server-side monitoring
-                            logger.debug(f"MCP NOTIFICATION: [{client_config.name}] {clean_content}")
+                            logger.debug(f"MCP NOTIFICATION: [{client_config.name}] {display_content}")
 
                             await request_context.session.send_log_message(
                                 level="info",
-                                data=f"[{client_config.name}] {clean_content}",
+                                data=f"[{client_config.name}] {display_content}",
                             )
                         else:
-                            logger.debug(f"MCP NOTIFICATION SKIPPED (rate-limit): {clean_content}")
+                            logger.debug(f"MCP NOTIFICATION SKIPPED (rate-limit): {display_content}")
                 except Exception as e:
                     logger.warning(f"Failed to send notification: {e}")
 
         agent = create_agent(client_config)
         try:
+            logger.debug("Starting agent execution...")
             result = await agent.run(
                 role=role_config,
                 prompt=prompt_text,
@@ -333,6 +350,7 @@ class CLinkTool(SimpleTool):
                 images=images,
                 output_callback=_notification_callback if request_context else None,
             )
+            logger.debug("Agent execution completed.")
         except CLIAgentError as exc:
             metadata = self._build_error_metadata(client_config, exc)
             self._raise_tool_error(
@@ -358,9 +376,10 @@ class CLinkTool(SimpleTool):
             try:
                 self._record_assistant_turn(continuation_id, content, request, model_info)
             except Exception:
-                logger.debug("Failed to record assistant turn for continuation %s", continuation_id, exc_info=True)
+                logger.debug(f"Failed to record assistant turn for continuation {continuation_id}", exc_info=True)
 
         continuation_offer = self._create_continuation_offer(request, model_info)
+        
         if continuation_offer:
             tool_output = self._create_continuation_offer_response(
                 content,

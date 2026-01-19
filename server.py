@@ -88,8 +88,6 @@ from tools.shared.exceptions import ToolExecutionError  # noqa: E402
 log_level = (get_env("LOG_LEVEL", "DEBUG") or "DEBUG").upper()
 
 # Create timezone-aware formatter
-
-
 class LocalTimeFormatter(logging.Formatter):
     def __init__(self, fmt=None, datefmt=None, style="%"):
         super().__init__(fmt, datefmt, style)
@@ -105,71 +103,55 @@ class LocalTimeFormatter(logging.Formatter):
             s = f"{t},{record.msecs:03.0f}"
         return s
 
+# Setup guard to prevent double initialization when re-imported
+if not globals().get("_ALREADY_SETUP"):
+    globals()["_ALREADY_SETUP"] = True
 
-# Configure both console and file logging
-log_format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    # Configure logging
+    log_format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    root_logger = logging.getLogger()
+    
+    # Only clear and setup if no handlers exist
+    if not root_logger.handlers:
+        stderr_level = (get_env("STDERR_LOG_LEVEL", "ERROR") or "ERROR").upper()
+        stderr_handler = logging.StreamHandler(sys.stderr)
+        stderr_handler.setLevel(getattr(logging, stderr_level, logging.ERROR))
+        stderr_handler.setFormatter(LocalTimeFormatter(log_format))
+        root_logger.addHandler(stderr_handler)
 
-# Clear any existing handlers first
-root_logger = logging.getLogger()
-root_logger.handlers.clear()
+    root_logger.setLevel(getattr(logging, log_level, logging.INFO))
 
-# Create and configure stderr handler explicitly
-# Set level to ERROR by default to avoid TUI corruption in MCP hosts like Claude Code
-stderr_level = (get_env("STDERR_LOG_LEVEL", "ERROR") or "ERROR").upper()
-stderr_handler = logging.StreamHandler(sys.stderr)
-stderr_handler.setLevel(getattr(logging, stderr_level, logging.ERROR))
-stderr_handler.setFormatter(LocalTimeFormatter(log_format))
-root_logger.addHandler(stderr_handler)
+    try:
+        log_dir = PROJECT_ROOT / "logs"
+        log_dir.mkdir(exist_ok=True)
+        current_pid = os.getpid()
 
-# Note: MCP stdio_server interferes with stderr during tool execution
-# All logs are properly written to logs/mcp_server.log for monitoring
+        file_handler = RotatingFileHandler(
+            log_dir / f"mcp_server_{current_pid}.log",
+            maxBytes=20 * 1024 * 1024,
+            backupCount=5,
+            encoding="utf-8",
+        )
+        file_handler.setLevel(getattr(logging, log_level, logging.INFO))
+        file_handler.setFormatter(LocalTimeFormatter(log_format))
+        root_logger.addHandler(file_handler)
 
-# Set root logger level
-root_logger.setLevel(getattr(logging, log_level, logging.INFO))
+        mcp_logger = logging.getLogger("mcp_activity")
+        mcp_file_handler = RotatingFileHandler(
+            log_dir / f"mcp_activity_{current_pid}.log",
+            maxBytes=10 * 1024 * 1024,
+            backupCount=2,
+            encoding="utf-8",
+        )
+        mcp_file_handler.setLevel(logging.INFO)
+        mcp_file_handler.setFormatter(LocalTimeFormatter("%(asctime)s - %(message)s"))
+        mcp_logger.addHandler(mcp_file_handler)
+        mcp_logger.setLevel(logging.INFO)
+        mcp_logger.propagate = False
 
-# Add rotating file handler for local log monitoring
-
-try:
-    # Create logs directory in project root
-    log_dir = PROJECT_ROOT / "logs"
-    log_dir.mkdir(exist_ok=True)
-
-    # Use PID in log filenames to allow multiple server instances without conflict
-    current_pid = os.getpid()
-
-    # Main server log with size-based rotation (20MB max per file)
-    # This ensures logs don't grow indefinitely and are properly managed
-    file_handler = RotatingFileHandler(
-        log_dir / f"mcp_server_{current_pid}.log",
-        maxBytes=20 * 1024 * 1024,  # 20MB max file size
-        backupCount=5,  # Keep 10 rotated files (100MB total)
-        encoding="utf-8",
-    )
-    file_handler.setLevel(getattr(logging, log_level, logging.INFO))
-    file_handler.setFormatter(LocalTimeFormatter(log_format))
-    logging.getLogger().addHandler(file_handler)
-
-    # Create a special logger for MCP activity tracking with size-based rotation
-    mcp_logger = logging.getLogger("mcp_activity")
-    mcp_file_handler = RotatingFileHandler(
-        log_dir / f"mcp_activity_{current_pid}.log",
-        maxBytes=10 * 1024 * 1024,  # 20MB max file size
-        backupCount=2,  # Keep 5 rotated files (20MB total)
-        encoding="utf-8",
-    )
-    mcp_file_handler.setLevel(logging.INFO)
-    mcp_file_handler.setFormatter(LocalTimeFormatter("%(asctime)s - %(message)s"))
-    mcp_logger.addHandler(mcp_file_handler)
-    mcp_logger.setLevel(logging.INFO)
-    # Ensure MCP activity only goes to the dedicated file, not to stderr/main log
-    mcp_logger.propagate = False
-
-    # Log setup info directly to root logger since logger isn't defined yet
-    logging.info(f"Logging to: {log_dir / f'mcp_server_{current_pid}.log'}")
-    logging.info(f"Process PID: {current_pid}")
-
-except Exception as e:
-    print(f"Warning: Could not set up file logging: {e}", file=sys.stderr)
+        logging.info(f"Logging initialized. PID: {current_pid}")
+    except Exception as e:
+        print(f"Warning: Could not set up file logging: {e}", file=sys.stderr)
 
 logger = logging.getLogger(__name__)
 
@@ -840,62 +822,62 @@ async def handle_call_tool(name: str, arguments: dict[str, Any]) -> list[TextCon
         if not tool.requires_model():
             logger.debug(f"Tool {name} doesn't require model resolution - skipping model validation")
             # Execute tool directly without model context
-            return await tool.execute(arguments)
+            result_ready = True
+        else:
+            result_ready = False
+            # Handle auto mode at MCP boundary - resolve to specific model
+            if model_name.lower() == "auto":
+                # Get tool category to determine appropriate model
+                tool_category = tool.get_model_category()
+                resolved_model = ModelProviderRegistry.get_preferred_fallback_model(tool_category)
+                logger.info(f"Auto mode resolved to {resolved_model} for {name} (category: {tool_category.value})")
+                model_name = resolved_model
+                # Update arguments with resolved model
+                arguments["model"] = model_name
 
-        # Handle auto mode at MCP boundary - resolve to specific model
-        if model_name.lower() == "auto":
-            # Get tool category to determine appropriate model
-            tool_category = tool.get_model_category()
-            resolved_model = ModelProviderRegistry.get_preferred_fallback_model(tool_category)
-            logger.info(f"Auto mode resolved to {resolved_model} for {name} (category: {tool_category.value})")
-            model_name = resolved_model
-            # Update arguments with resolved model
-            arguments["model"] = model_name
+            # Validate model availability at MCP boundary
+            provider = ModelProviderRegistry.get_provider_for_model(model_name)
+            if not provider:
+                # Get list of available models for error message
+                available_models = list(ModelProviderRegistry.get_available_models(respect_restrictions=True).keys())
+                tool_category = tool.get_model_category()
+                suggested_model = ModelProviderRegistry.get_preferred_fallback_model(tool_category)
 
-        # Validate model availability at MCP boundary
-        provider = ModelProviderRegistry.get_provider_for_model(model_name)
-        if not provider:
-            # Get list of available models for error message
-            available_models = list(ModelProviderRegistry.get_available_models(respect_restrictions=True).keys())
-            tool_category = tool.get_model_category()
-            suggested_model = ModelProviderRegistry.get_preferred_fallback_model(tool_category)
+                error_message = (
+                    f"Model '{model_name}' is not available with current API keys. "
+                    f"Available models: {', '.join(available_models)}. "
+                    f"Suggested model for {name}: '{suggested_model}' "
+                    f"(category: {tool_category.value})"
+                )
+                error_output = ToolOutput(
+                    status="error",
+                    content=error_message,
+                    content_type="text",
+                    metadata={"tool_name": name, "requested_model": model_name},
+                )
+                raise ToolExecutionError(error_output.model_dump_json())
 
-            error_message = (
-                f"Model '{model_name}' is not available with current API keys. "
-                f"Available models: {', '.join(available_models)}. "
-                f"Suggested model for {name}: '{suggested_model}' "
-                f"(category: {tool_category.value})"
+            # Create model context with resolved model and option
+            model_context = ModelContext(model_name, model_option)
+            arguments["_model_context"] = model_context
+            arguments["_resolved_model_name"] = model_name
+
+            logger.debug(
+                f"Model context created for {model_name} with {model_context.capabilities.context_window} token capacity"
             )
-            error_output = ToolOutput(
-                status="error",
-                content=error_message,
-                content_type="text",
-                metadata={"tool_name": name, "requested_model": model_name},
-            )
-            raise ToolExecutionError(error_output.model_dump_json())
+            if model_option:
+                logger.debug(f"Model option stored in context: '{model_option}'")
 
-        # Create model context with resolved model and option
-        model_context = ModelContext(model_name, model_option)
-        arguments["_model_context"] = model_context
-        arguments["_resolved_model_name"] = model_name
+            # EARLY FILE SIZE VALIDATION AT MCP BOUNDARY
+            # Check file sizes before tool execution using resolved model
+            argument_files = arguments.get("absolute_file_paths")
+            if argument_files:
+                logger.debug(f"Checking file sizes for {len(argument_files)} files with model {model_name}")
+                file_size_check = check_total_file_size(argument_files, model_name)
+                if file_size_check:
+                    logger.warning(f"File size check failed for {name} with model {model_name}")
+                    raise ToolExecutionError(ToolOutput(**file_size_check).model_dump_json())
 
-        logger.debug(
-            f"Model context created for {model_name} with {model_context.capabilities.context_window} token capacity"
-        )
-        if model_option:
-            logger.debug(f"Model option stored in context: '{model_option}'")
-
-        # EARLY FILE SIZE VALIDATION AT MCP BOUNDARY
-        # Check file sizes before tool execution using resolved model
-        argument_files = arguments.get("absolute_file_paths")
-        if argument_files:
-            logger.debug(f"Checking file sizes for {len(argument_files)} files with model {model_name}")
-            file_size_check = check_total_file_size(argument_files, model_name)
-            if file_size_check:
-                logger.warning(f"File size check failed for {name} with model {model_name}")
-                raise ToolExecutionError(ToolOutput(**file_size_check).model_dump_json())
-
-        # Execute tool with pre-resolved model context
         # Track execution time for monitoring
         tool_start_time = time.time()
 
@@ -923,6 +905,10 @@ async def handle_call_tool(name: str, arguments: dict[str, Any]) -> list[TextCon
                     await publisher.tool_end(name, tool_duration_ms, result)
                 except Exception as e:
                     logger.debug(f"Failed to publish tool end event: {e}")
+
+        except asyncio.CancelledError:
+            logger.warning(f"Tool execution for '{name}' was cancelled (client disconnected?)")
+            raise
 
         except Exception as tool_error:
             tool_duration_ms = int((time.time() - tool_start_time) * 1000)

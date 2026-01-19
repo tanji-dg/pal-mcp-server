@@ -123,9 +123,9 @@ class BaseCLIAgent:
         if process.stdin:
             try:
                 process.stdin.write(prompt.encode("utf-8"))
-                if process.stdin is not None:
-                    await process.stdin.drain()
-                    await process.stdin.close()
+                await process.stdin.drain()
+                process.stdin.close()
+                await process.stdin.wait_closed()
             except Exception as exc:
                 self._logger.warning(f"Failed to write to stdin: {exc}")
 

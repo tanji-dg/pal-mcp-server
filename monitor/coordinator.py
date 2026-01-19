@@ -47,7 +47,7 @@ logger = logging.getLogger(__name__)
 # Configuration constants
 HEARTBEAT_INTERVAL = 10  # seconds between heartbeats
 INSTANCE_TIMEOUT = 30  # seconds before marking instance as offline
-MAX_RECENT_CALLS = 20  # maximum number of recent calls to keep per instance
+MAX_RECENT_CALLS = 50  # maximum number of recent calls to keep per instance
 BROADCAST_INTERVAL = 1.0  # seconds between state broadcasts
 
 
@@ -64,8 +64,12 @@ class InstanceTracker:
         self.active_tool_input: Optional[str] = None
         self.tool_start_time: Optional[datetime] = None
         self.recent_calls: deque[ToolCall] = deque(maxlen=MAX_RECENT_CALLS)
+        
+        # Lifetime stats
+        self.total_calls: int = 0
+        self.total_errors: int = 0
 
-        # Metrics for last minute
+        # Metrics for last window (1 hour)
         self._calls_1m: list[tuple[float, bool]] = []  # (timestamp, is_error)
         self._durations_1m: list[tuple[float, int]] = []  # (timestamp, duration_ms)
 
@@ -88,6 +92,11 @@ class InstanceTracker:
         """Record tool execution completion."""
         now = time.time()
         status = "error" if is_error else "success"
+        
+        # Update lifetime stats
+        self.total_calls += 1
+        if is_error:
+            self.total_errors += 1
 
         if self.active_tool:
             call = ToolCall(
@@ -99,7 +108,7 @@ class InstanceTracker:
             )
             self.recent_calls.appendleft(call)
 
-            # Track for 1-minute metrics
+            # Track for window metrics
             self._calls_1m.append((now, is_error))
             self._durations_1m.append((now, duration_ms))
 
@@ -111,10 +120,13 @@ class InstanceTracker:
 
     def get_uptime(self) -> float:
         """Calculate current uptime in seconds."""
+        if self.is_timed_out():
+            # If offline, freeze uptime at last heartbeat
+            return self.uptime_at_register + (self.last_heartbeat.timestamp() - self.start_time)
         return self.uptime_at_register + (time.time() - self.start_time)
 
     def get_error_rate_1m(self) -> float:
-        """Calculate error rate over last minute."""
+        """Calculate error rate over last window."""
         self._cleanup_old_metrics()
         if not self._calls_1m:
             return 0.0
@@ -122,15 +134,15 @@ class InstanceTracker:
         return errors / len(self._calls_1m)
 
     def get_avg_execution_time_1m(self) -> float:
-        """Calculate average execution time over last minute."""
+        """Calculate average execution time over last window."""
         self._cleanup_old_metrics()
         if not self._durations_1m:
             return 0.0
         return sum(d for _, d in self._durations_1m) / len(self._durations_1m)
 
     def _cleanup_old_metrics(self):
-        """Remove metrics older than 1 minute."""
-        cutoff = time.time() - 60
+        """Remove metrics older than 1 hour (3600s)."""
+        cutoff = time.time() - 3600
         self._calls_1m = [(t, e) for t, e in self._calls_1m if t > cutoff]
         self._durations_1m = [(t, d) for t, d in self._durations_1m if t > cutoff]
 
@@ -151,6 +163,8 @@ class InstanceTracker:
             recent_calls=list(self.recent_calls),
             error_rate_1m=self.get_error_rate_1m(),
             avg_execution_time_1m=self.get_avg_execution_time_1m(),
+            total_calls=self.total_calls,
+            total_errors=self.total_errors,
         )
 
 
@@ -174,9 +188,13 @@ class MonitorCoordinator:
 
     async def start(self):
         """Start the coordinator background tasks."""
-        self._running = True
-        self._broadcast_task = asyncio.create_task(self._broadcast_loop())
-        logger.info("Monitor coordinator started")
+        async with self._lock:
+            if self._running:
+                return
+
+            self._running = True
+            self._broadcast_task = asyncio.create_task(self._broadcast_loop())
+            logger.info("Monitor coordinator started")
 
     async def stop(self):
         """Stop the coordinator and cleanup."""
@@ -191,6 +209,8 @@ class MonitorCoordinator:
 
     async def process_event(self, event: ToolEvent):
         """Process an incoming event from an MCP server instance."""
+        broadcast_log_event = None
+
         async with self._lock:
             instance_id = event.instance_id
 
@@ -201,8 +221,9 @@ class MonitorCoordinator:
 
             elif event.event_type == ToolEventType.UNREGISTER:
                 if instance_id in self.instances:
-                    del self.instances[instance_id]
-                    logger.info(f"Instance unregistered: {instance_id}")
+                    # Don't delete, just mark as offline to keep history in dashboard
+                    self.instances[instance_id].state = "offline"
+                    logger.info(f"Instance marked offline: {instance_id}")
 
             elif instance_id in self.instances:
                 tracker = self.instances[instance_id]
@@ -223,6 +244,10 @@ class MonitorCoordinator:
                     tracker.end_tool(event.duration_ms or 0, is_error=True)
                     logger.warning(f"Tool error: {event.tool_name} on {instance_id} - " f"{event.error_message}")
 
+                elif event.event_type == ToolEventType.TOOL_LOG:
+                    # Mark for broadcast after releasing lock
+                    broadcast_log_event = event
+
             else:
                 # Auto-register instance on first event
                 self.instances[instance_id] = InstanceTracker(instance_id, event.uptime_seconds or 0.0)
@@ -236,8 +261,36 @@ class MonitorCoordinator:
                     tracker.end_tool(event.duration_ms or 0, is_error=False, tool_output=event.tool_output)
                 elif event.event_type == ToolEventType.TOOL_ERROR:
                     tracker.end_tool(event.duration_ms or 0, is_error=True)
+                elif event.event_type == ToolEventType.TOOL_LOG:
+                    broadcast_log_event = event
                 elif event.event_type == ToolEventType.HEARTBEAT:
                     tracker.update_heartbeat(event.uptime_seconds)
+
+        # Broadcast log if needed (outside lock to prevent deadlock)
+        if broadcast_log_event:
+            await self.broadcast_log(broadcast_log_event)
+
+    async def broadcast_log(self, event: ToolEvent):
+        """Broadcast log event to all connected clients."""
+        if not self.websocket_clients:
+            return
+
+        # Prepare message for dashboard
+        # Add type field explicitly if not present in serialized output or different from event_type
+        message = event.to_json()
+        
+        # Broadcast to all clients
+        async with self._lock:
+            disconnected = set()
+            for client in self.websocket_clients:
+                try:
+                    await client.send_text(message)
+                except Exception:
+                    disconnected.add(client)
+
+            # Remove disconnected clients
+            for client in disconnected:
+                self.websocket_clients.discard(client)
 
     async def add_websocket_client(self, websocket: WebSocket):
         """Add a new WebSocket client connection."""
