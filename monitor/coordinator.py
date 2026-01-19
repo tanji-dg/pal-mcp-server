@@ -71,6 +71,7 @@ class InstanceTracker:
         self.active_tool: Optional[str] = None # Primary/most recent tool
         self.active_tool_input: Optional[str] = None
         self.model_name: Optional[str] = None
+        self.active_role: Optional[str] = None
         self.tool_start_time: Optional[datetime] = None
         self.recent_calls: deque[ToolCall] = deque(maxlen=MAX_RECENT_CALLS)
         
@@ -106,12 +107,13 @@ class InstanceTracker:
         self.tool_start_time = now
         self.last_heartbeat = now
         self.last_status = f"Starting {tool_name}..."
-        
-        # Try to extract model name from input arguments
+
+        # Try to extract model/role name from input arguments
         if tool_input:
             try:
                 args = json.loads(tool_input)
                 self.model_name = args.get("model") or self.model_name
+                self.active_role = args.get("role") or self.active_role
             except Exception:
                 pass
 
@@ -368,6 +370,7 @@ class InstanceTracker:
             last_heartbeat=self.last_heartbeat,
             active_tool=self.active_tool if state == "busy" else None,
             model_name=self.model_name if state == "busy" else None,
+            active_role=self.active_role if state == "busy" else None,
             tool_start_time=self.tool_start_time if state == "busy" else None,
             recent_calls=list(self.recent_calls),
             error_rate_1m=self.get_error_rate_1m(),

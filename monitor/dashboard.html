@@ -120,6 +120,16 @@
             margin-left: 8px;
             border: 1px solid #a55eea44;
         }
+        .role-tag {
+            background: #20bf6b22;
+            color: #20bf6b;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: bold;
+            margin-left: 8px;
+            border: 1px solid #20bf6b44;
+        }
         .instance-phase {
             background: #ffa50222;
             color: #ffa502;
@@ -612,6 +622,7 @@
                             <span class="instance-id" title="${inst.instance_id}">${inst.instance_id}</span>
                             ${inst.active_tool ? `<span class="active-tool-tag">${inst.active_tool}</span>` : ''}
                             ${inst.model_name ? `<span class="model-tag">${inst.model_name}</span>` : ''}
+                            ${inst.active_role ? `<span class="role-tag">${inst.active_role}</span>` : ''}
                             ${inst.last_status && inst.state === 'busy' ? `<span class="instance-phase">${inst.last_status}</span>` : ''}
                             <span class="instance-state ${inst.state}">${inst.state}</span>
                         </div>

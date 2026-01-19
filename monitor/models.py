@@ -60,6 +60,7 @@ class InstanceStatus(BaseModel):
     )
     active_tool: Optional[str] = Field(default=None, description="Currently executing tool name, null if idle")
     model_name: Optional[str] = Field(default=None, description="AI model name currently in use")
+    active_role: Optional[str] = Field(default=None, description="Active role name (e.g. for clink tool)")
     tool_start_time: Optional[datetime] = Field(default=None, description="When the active tool started execution")
     recent_calls: list[ToolCall] = Field(
         default_factory=list,
