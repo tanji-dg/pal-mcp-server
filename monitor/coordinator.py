@@ -305,6 +305,7 @@ class InstanceTracker:
                 tool_output=tool_output,
                 duration_ms=duration_ms,
                 status=status,
+                model_name=self.model_name if target_tool == self.active_tool else None,
                 timestamp=utc_now(),
             )
             self.recent_calls.appendleft(call)

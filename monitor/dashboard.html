@@ -657,7 +657,10 @@
                                     ${recentCalls.map(call => `
                                         <div class="call-item ${call.status}">
                                             <div class="call-header">
-                                                <span class="call-name">${call.tool}</span>
+                                                <span class="call-name">
+                                                    ${call.tool}
+                                                    ${call.model_name ? `<span class="model-tag" style="font-size: 9px; padding: 1px 4px;">${call.model_name}</span>` : ''}
+                                                </span>
                                                 <span class="call-duration">${call.duration_ms}ms</span>
                                             </div>
                                             ${call.tool_input ? `<div class="call-detail input" title="${escapeHtml(call.tool_input)}">Input: ${truncate(call.tool_input)}</div>` : ''}

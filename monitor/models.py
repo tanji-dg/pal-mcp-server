@@ -42,6 +42,7 @@ class ToolCall(BaseModel):
     tool_output: Optional[str] = Field(None, description="Output result (JSON string)")
     duration_ms: int = Field(..., description="Execution duration in milliseconds")
     status: str = Field(..., description="Execution status: 'success' or 'error'")
+    model_name: Optional[str] = Field(default=None, description="AI model used for this call")
     timestamp: datetime = Field(default_factory=utc_now, description="When the call completed")
 
 
