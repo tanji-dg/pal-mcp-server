@@ -303,7 +303,11 @@ class InstanceTracker:
 
         # Update state based on remaining tools
         # If the primary tool finished, force idle state even if sub-tools (from logs) seem active
-        if not self.active_tools or (target_tool and target_tool == self.active_tool and len(self.active_tools) == 0):
+        # Also specifically handle 'clink' which acts as a container
+        is_primary_completion = (target_tool and target_tool == self.active_tool)
+        is_clink_completion = (target_tool == "clink")
+
+        if not self.active_tools or is_primary_completion or is_clink_completion:
             self.state = "idle"
             self.last_status = f"Completed {target_tool} ({status})" if target_tool else "Idle"
             self.active_tool = None
