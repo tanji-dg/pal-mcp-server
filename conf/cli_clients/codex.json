@@ -14,8 +14,17 @@
       "role_args": []
     },
     "planner": {
-      "prompt_path": "systemprompts/clink/default_planner.txt",
+      "prompt_path": "systemprompts/clink/default.txt",
       "role_args": []
+    },
+    "bugfix": {
+      "prompt_path": "systemprompts/clink/default_codereviewer.txt",
+      "role_args": [
+	"-m",
+	"gpt-5.2-codex",
+	"-c",
+       	"reasoning_effort=medium"
+      ]
     },
     "codereviewer": {
       "prompt_path": "systemprompts/clink/codex_codereviewer.txt",
