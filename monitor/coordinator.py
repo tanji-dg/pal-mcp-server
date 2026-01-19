@@ -199,24 +199,40 @@ class InstanceTracker:
                             self.last_status = f"Error in {name or 'tool'}"
                         else:
                             self.last_status = f"Result from {name or 'tool'}"
-                    elif msg_type == "result": # Final result from Gemini CLI
+                    elif msg_type == "result": # Final result from Gemini CLI or Claude CLI
+                        # Check if this is Claude CLI output (has 'subtype') or Gemini (has 'stats')
+                        is_claude = "subtype" in data
+
                         status = data.get("status", "ok")
                         stats = data.get("stats", {})
-                        
+
                         # Increment total calls for the overall turn
                         self.total_calls += 1
-                        
-                        if status == "error":
+
+                        if status == "error" or data.get("is_error"):
                             self.total_errors += 1
-                            self.last_status = "Error (Gemini API)"
+                            if is_claude:
+                                # For Claude, check permission_denials
+                                denials = data.get("permission_denials")
+                                if denials:
+                                    self.last_status = "Permission Denied"
+                                else:
+                                    self.last_status = "Error (Claude API)"
+                            else:
+                                self.last_status = "Error (Gemini API)"
                         else:
                             self.last_status = "Responding"
-                        
-                        # Use overall duration from stats if available and not 0
-                        duration = stats.get("duration_ms")
+
+                        # Use overall duration
+                        duration = 0
+                        if is_claude:
+                            duration = data.get("duration_ms", 0)
+                        else:
+                            duration = stats.get("duration_ms", 0)
+
                         if duration and duration > 0:
                             self._durations_1m.append((time.time(), duration))
-                            self._calls_1m.append((time.time(), status == "error"))
+                            self._calls_1m.append((time.time(), status == "error" or data.get("is_error", False)))
                     elif msg_type == "item.started": # Codex format
                         item = data.get("item", {})
                         item_id = item.get("id")
