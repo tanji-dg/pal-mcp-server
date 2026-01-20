@@ -451,6 +451,11 @@
                 </div>
                 <div class="toggle-control">
                     <label>
+                        <input type="checkbox" id="autoScroll" onchange="toggleAutoScroll()"> Auto Scroll
+                    </label>
+                </div>
+                <div class="toggle-control">
+                    <label>
                         <input type="checkbox" id="tzLocal" onchange="toggleTz()"> LocalTime
                     </label>
                 </div>
@@ -469,6 +474,7 @@
         let hideOffline = localStorage.getItem('monitor_hide_offline') === 'true';
         let hideIdle = localStorage.getItem('monitor_hide_idle') === 'true';
         let terminalView = localStorage.getItem('monitor_terminal_view') === 'true';
+        let autoScroll = localStorage.getItem('monitor_auto_scroll') !== 'false'; // Default true
 
         function initControls() {
             const tzCb = document.getElementById('tzLocal');
@@ -482,6 +488,9 @@
 
             const termCb = document.getElementById('terminalView');
             if (termCb) termCb.checked = terminalView;
+
+            const scrollCb = document.getElementById('autoScroll');
+            if (scrollCb) scrollCb.checked = autoScroll;
         }
 
         function toggleTz() {
@@ -512,6 +521,15 @@
             // Clear logs as formats are incompatible
             document.getElementById('logsContainer').innerHTML = '';
             lastLogEntryRef = null;
+        }
+
+        function toggleAutoScroll() {
+            autoScroll = document.getElementById('autoScroll').checked;
+            localStorage.setItem('monitor_auto_scroll', autoScroll);
+            if (autoScroll) {
+                const container = document.getElementById('logsContainer');
+                container.scrollTop = container.scrollHeight;
+            }
         }
 
         function refreshLogTimes() {
@@ -647,7 +665,9 @@
             container.appendChild(entry);
             
             // Auto-scroll
-            container.scrollTop = container.scrollHeight;
+            if (autoScroll) {
+                container.scrollTop = container.scrollHeight;
+            }
         }
 
         function renderTerminalLog(event, container) {
@@ -671,7 +691,9 @@
                 const contentSpan = lastLogEntryRef.element.querySelector('.term-content');
                 if (contentSpan) {
                     contentSpan.textContent += parsed.text;
-                    container.scrollTop = container.scrollHeight;
+                    if (autoScroll) {
+                        container.scrollTop = container.scrollHeight;
+                    }
                     return;
                 }
             }
@@ -690,7 +712,10 @@
             `;
             
             container.appendChild(entry);
-            container.scrollTop = container.scrollHeight;
+            
+            if (autoScroll) {
+                container.scrollTop = container.scrollHeight;
+            }
 
             // Update reference for merging
             if (parsed.isDelta) {
@@ -780,20 +805,30 @@
                         if (resultText && resultText.length < 100) {
                              return { type: 'system', text: `> Finished: ${resultText}`, isDelta: false };
                         }
-                        return { type: 'system', text: `> Finished (Cost: $${data.total_cost_usd || 0})`, isDelta: false };
+                        const cost = data.total_cost_usd;
+                        const costStr = (typeof cost === 'number' && cost > 0) ? ` (Cost: $${cost.toFixed(4)})` : '';
+                        return { type: 'system', text: `> Finished${costStr}`, isDelta: false };
                     }
 
-                    // 6. Codex Events (item.started, item.completed)
+                    // 6. Codex Events (item.started, item.completed, turn.completed)
+                    if (data.type === 'turn.completed') {
+                        return null; // Ignore turn completion
+                    }
+
                     if (data.type === 'item.started' || data.type === 'item.completed') {
                         const item = data.item || {};
                         const itemType = item.type;
                         
-                        // Reasoning -> Thinking
+                        // Reasoning -> Thinking (Ignore completed)
                         if (itemType === 'reasoning') {
                             if (data.type === 'item.started' && item.text) {
                                 return { type: 'thinking', text: item.text, isDelta: true };
                             }
-                            // Ignore completed reasoning as it just confirms end
+                            return null;
+                        }
+                        
+                        // Message -> Ignore (Content usually streamed via deltas or item.started if text present)
+                        if (itemType === 'message') {
                             return null;
                         }
                         
