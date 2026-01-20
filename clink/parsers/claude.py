@@ -143,6 +143,10 @@ class ClaudeJSONParser(BaseParser):
             "raw": payload,
             "is_error": bool(payload.get("is_error")),
         }
+        
+        # Check for top-level error object (common in API errors)
+        if "error" in payload and isinstance(payload["error"], dict):
+            metadata["is_error"] = True
 
         if model_name:
             metadata["model_used"] = model_name
