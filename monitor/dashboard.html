@@ -880,13 +880,18 @@
                             const thinking = content.find(c => c.type === 'thinking');
                             if (thinking) {
                                 const text = thinking.thinking || thinking.text || '';
-                                return { type: 'thinking', text: text, isDelta: false };
+                                if (text) return { type: 'thinking', text: text, isDelta: false };
                             }
 
                             content = content
                                 .filter(c => c.type === 'text' || typeof c === 'string')
                                 .map(c => c.text || c)
                                 .join('');
+                        }
+                        
+                        // Support top-level thinking field
+                        if (!content && data.thinking) {
+                            content = data.thinking;
                         }
                         
                         // Check for delta flag or if it looks like a partial chunk
@@ -902,10 +907,12 @@
                     // 2. Claude specific: content_block_delta
                     // {"type":"content_block_delta", "index":0, "delta":{"type":"text_delta", "text":"..."}}
                     if (data.type === 'content_block_delta' && data.delta) {
-                        if (data.delta.text || data.delta.thinking) {
-                            return { type: 'thinking', text: data.delta.text || data.delta.thinking, isDelta: true };
+                        const delta = data.delta;
+                        const text = delta.text || delta.thinking;
+                        if (text) {
+                            return { type: 'thinking', text: text, isDelta: true };
                         }
-                        if (data.delta.type === 'input_json_delta') {
+                        if (delta.type === 'input_json_delta') {
                             return null; // Ignore JSON streaming for tools
                         }
                     }

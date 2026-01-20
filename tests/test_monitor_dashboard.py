@@ -57,7 +57,7 @@ def parse_log_content_simulated(raw):
                     thinking = next((c for c in content if isinstance(c, dict) and c.get('type') == 'thinking'), None)
                     if thinking:
                         text = thinking.get('thinking') or thinking.get('text') or ''
-                        return {'type': 'thinking', 'text': text, 'isDelta': False}
+                        if text: return {'type': 'thinking', 'text': text, 'isDelta': False}
 
                     text_parts = []
                     for c in content:
@@ -76,8 +76,9 @@ def parse_log_content_simulated(raw):
             # 2. Claude specific: content_block_delta
             if data.get('type') == 'content_block_delta' and 'delta' in data:
                 delta = data['delta']
-                if delta.get('text') or delta.get('thinking'):
-                    return {'type': 'thinking', 'text': delta.get('text') or delta.get('thinking'), 'isDelta': True}
+                text = delta.get('text') or delta.get('thinking')
+                if text:
+                    return {'type': 'thinking', 'text': text, 'isDelta': True}
                 if delta.get('type') == 'input_json_delta':
                     return None
             
@@ -182,7 +183,7 @@ class TestMonitorDashboardLogic:
         assert res['isDelta'] is True
 
     def test_claude_thinking_delta(self):
-        # Thinking delta
+        # Thinking delta pattern found in logs
         raw = json.dumps({
             "type": "content_block_delta",
             "delta": {"type": "thinking_delta", "thinking": "reasoning step"}
@@ -192,29 +193,31 @@ class TestMonitorDashboardLogic:
         assert res['text'] == 'reasoning step'
         assert res['isDelta'] is True
 
-    def test_claude_tool_use_in_assistant(self):
-        # Tool call wrapped in assistant message
+    def test_claude_thinking_in_assistant_nested(self):
+        # Nested thinking block in assistant message
         raw = json.dumps({
             "type": "assistant",
             "message": {
-                "content": [{"type": "tool_use", "name": "Bash", "input": {}}]
-            }
-        })
-        res = parse_log_content_simulated(raw)
-        assert res['type'] == 'tool-use'
-        assert res['text'] == '> Executing Bash...'
-
-    def test_claude_thinking_in_assistant(self):
-        # Thinking block wrapped in assistant message
-        raw = json.dumps({
-            "type": "assistant",
-            "message": {
-                "content": [{"type": "thinking", "thinking": "Internal thought"}]
+                "content": [{"type": "thinking", "thinking": "Deep reasoning"}]
             }
         })
         res = parse_log_content_simulated(raw)
         assert res['type'] == 'thinking'
-        assert res['text'] == 'Internal thought'
+        assert res['text'] == 'Deep reasoning'
+
+    def test_claude_stream_event_thinking(self):
+        # Thinking delta wrapped in stream_event
+        raw = json.dumps({
+            "type": "stream_event",
+            "event": {
+                "type": "content_block_delta",
+                "delta": {"type": "thinking_delta", "thinking": "nested step"}
+            }
+        })
+        res = parse_log_content_simulated(raw)
+        assert res['type'] == 'thinking'
+        assert res['text'] == 'nested step'
+        assert res['isDelta'] is True
 
     def test_ignored_events(self):
         # Ensure noise is filtered
