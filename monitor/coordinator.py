@@ -79,8 +79,11 @@ class InstanceTracker:
         self.recent_logs: deque[ToolEvent] = deque(maxlen=100) # Buffer last 100 log lines
         
         # Current status for display
-        self.last_status: Optional[str] = None
+        self.last_status = None
         self._tool_name_cache: dict[str, str] = {} # Map tool_id -> name
+        
+        # Reliability: track last completion to prevent late logs from reviving 'busy' state
+        self.last_completion_time: datetime = utc_now()
         
         # Lifetime stats
         self.total_calls: int = 0
@@ -137,6 +140,9 @@ class InstanceTracker:
             is_start_event = log_data and ('"type": "tool_use"' in log_data or '"type": "item.started"' in log_data)
             
             if is_fresh or is_start_event:
+                # If it's a start event but it's older than our last completion, ignore it (late log)
+                if not is_fresh and original_event and original_event.timestamp < self.last_completion_time:
+                    return
                 self.state = "busy"
             else:
                 # Still record heartbeat and update status if it's short, but stay idle
@@ -271,9 +277,6 @@ class InstanceTracker:
                         self._calls_1m.append((now_ts, status == "error" or is_content_error))
                         self._durations_1m.append((now_ts, duration_ms))
 
-                        # If a tool result is seen, and it's from the primary tool, it's near completion
-                        if name and name == self.active_tool:
-                             self.last_status = f"Finishing {name}"
                     elif msg_type == "user":
                         # Handle Claude tool results embedded in user message
                         message = data.get("message", {})
@@ -444,6 +447,7 @@ class InstanceTracker:
         """Record tool execution completion."""
         now_ts = time.time()
         status = "error" if is_error else "success"
+        self.last_completion_time = utc_now()
 
         # Determine which tool actually ended
         target_tool = tool_name or self.active_tool

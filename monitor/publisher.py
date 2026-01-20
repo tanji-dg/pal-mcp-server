@@ -41,7 +41,7 @@ logger = logging.getLogger(__name__)
 # Configuration defaults
 DEFAULT_COORDINATOR_URL = "http://localhost:9876"
 DEFAULT_SOCKET_PATH = "/tmp/pal-monitor.sock"
-EVENT_QUEUE_SIZE = 100
+EVENT_QUEUE_SIZE = 1000
 RECONNECT_INTERVAL = 5.0  # seconds
 HEARTBEAT_INTERVAL = 10.0  # seconds
 SEND_TIMEOUT = 5.0  # seconds
@@ -162,7 +162,7 @@ class MonitorPublisher:
         # Give a small window for queued events to be sent
         if not self._queue.empty():
             logger.debug("Monitor publisher: Waiting for queue to clear...")
-            for _ in range(20):  # Max 2 seconds
+            for _ in range(50):  # Max 5 seconds
                 if self._queue.empty():
                     break
                 await asyncio.sleep(0.1)
@@ -346,11 +346,14 @@ class MonitorPublisher:
         batch: list[ToolEvent] = []
         batch_timeout = 0.5  # seconds
 
-        while self._running:
+        # Continue as long as we are running OR there are events left in the queue
+        while self._running or not self._queue.empty():
             try:
                 # Collect events from queue
                 try:
-                    event = await asyncio.wait_for(self._queue.get(), timeout=batch_timeout)
+                    # Use a shorter timeout when stopping to drain quickly
+                    wait_time = batch_timeout if self._running else 0.1
+                    event = await asyncio.wait_for(self._queue.get(), timeout=wait_time)
                     batch.append(event)
 
                     # Drain queue for batching
