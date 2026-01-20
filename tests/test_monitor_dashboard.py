@@ -113,10 +113,13 @@ def parse_log_content_simulated(raw):
                 cost_str = f' (Cost: ${cost:.4f})' if isinstance(cost, (int, float)) and cost > 0 else ''
                 return {'type': 'system', 'text': f'> Finished{cost_str}', 'isDelta': False}
 
-            # 7. Initialization
-            if data.get('type') == 'init' or (data.get('type') == 'system' and data.get('subtype') == 'init'):
+            # 7. Initialization & Status
+            if data.get('type') == 'init' or (data.get('type') == 'system' and data.get('subtype') in ['init', 'status']):
+                if data.get('subtype') == 'status' and data.get('status'):
+                    return {'type': 'system', 'text': f"> System Status: {data.get('status')}", 'isDelta': False}
+                
                 model = data.get('model') or 'unknown model'
-                return {'type': 'system', 'text': f'> Initialized (Model: {model})', 'isDelta': False}
+                return {'type': 'system', 'text': f"> Initialized (Model: {model})", 'isDelta': False}
 
             # 8. Codex Events
             if data.get('type') == 'turn.completed':
@@ -199,6 +202,12 @@ class TestMonitorDashboardLogic:
         res = parse_log_content_simulated(raw)
         assert res['type'] == 'system'
         assert "gemini-pro" in res['text']
+
+    def test_system_status(self):
+        raw = '{"type":"system","subtype":"status","status":"compacting"}'
+        res = parse_log_content_simulated(raw)
+        assert res['type'] == 'system'
+        assert "System Status: compacting" in res['text']
 
     def test_codex_events(self):
         # Reasoning

@@ -780,14 +780,16 @@
             try {
                 if (raw.trim().startsWith('{')) {
                     let data = JSON.parse(raw);
+                    let wasStreamEvent = false;
                     
                     // Unwrap Claude stream_event wrapper
                     if (data.type === 'stream_event' && data.event) {
                         data = data.event;
+                        wasStreamEvent = true;
                     }
                     
                     // Ignore internal stream/control events
-                    if (data.type === 'stream' || data.type === 'ping') {
+                    if (data.type === 'stream' || data.type === 'ping' || data.type === 'user') {
                         return null; // Return null to skip rendering
                     }
 
@@ -814,7 +816,13 @@
                             // Check for tool_use in content list
                             const toolUse = content.find(c => c.type === 'tool_use');
                             if (toolUse) {
-                                return { type: 'tool-use', text: `> Executing ${toolUse.name}...`, isDelta: false };
+                                let details = '';
+                                if (toolUse.input) {
+                                    if (toolUse.input.command) details = `: ${toolUse.input.command}`;
+                                    else details = `: ${JSON.stringify(toolUse.input)}`;
+                                }
+                                if (details.length > 80) details = details.substr(0, 80) + '...';
+                                return { type: 'tool-use', text: `> Executing ${toolUse.name}${details}`, isDelta: false };
                             }
 
                             content = content
@@ -835,13 +843,30 @@
 
                     // 2. Claude specific: content_block_delta
                     // {"type":"content_block_delta", "index":0, "delta":{"type":"text_delta", "text":"..."}}
-                    if (data.type === 'content_block_delta' && data.delta && data.delta.text) {
-                        return { type: 'thinking', text: data.delta.text, isDelta: true };
+                    if (data.type === 'content_block_delta' && data.delta) {
+                        if (data.delta.text) {
+                            return { type: 'thinking', text: data.delta.text, isDelta: true };
+                        }
+                        if (data.delta.type === 'input_json_delta') {
+                            return null; // Ignore JSON streaming for tools
+                        }
                     }
                     
-                    // 3. Tool Use
+                    // 3. Error (Top level)
+                    if (data.type === 'error') {
+                        return { type: 'error', text: `! Error: ${data.message || 'unknown error'}`, isDelta: false };
+                    }
+                    
+                    // 4. Tool Use
                     if (data.type === 'tool_use') {
-                        return { type: 'tool-use', text: `> Executing ${data.name || data.tool_name}...`, isDelta: false };
+                        let details = '';
+                        const input = data.input || data.parameters; // Gemini uses parameters
+                        if (input) {
+                            if (input.command) details = `: ${input.command}`;
+                            else details = `: ${JSON.stringify(input)}`;
+                        }
+                        if (details.length > 80) details = details.substr(0, 80) + '...';
+                        return { type: 'tool-use', text: `> Executing ${data.name || data.tool_name}${details}`, isDelta: false };
                     }
                     
                     // 4. Tool Result
@@ -873,8 +898,11 @@
                         return { type: 'system', text: `> Finished${costStr}`, isDelta: false };
                     }
 
-                    // 6. Initialization (Gemini/Claude)
-                    if (data.type === 'init' || (data.type === 'system' && data.subtype === 'init')) {
+                    // 7. Initialization & Status (Gemini/Claude)
+                    if (data.type === 'init' || (data.type === 'system' && (data.subtype === 'init' || data.subtype === 'status'))) {
+                        if (data.subtype === 'status' && data.status) {
+                            return { type: 'system', text: `> System Status: ${data.status}`, isDelta: false };
+                        }
                         const model = data.model || 'unknown model';
                         return { type: 'system', text: `> Initialized (Model: ${model})`, isDelta: false };
                     }
@@ -915,6 +943,11 @@
                                 return { type: 'tool-result', text: `< Command finished: ${item.command}`, isDelta: false };
                             }
                         }
+                    }
+
+                    // Final safety: if it was a stream event and we reached here, ignore it
+                    if (wasStreamEvent) {
+                        return null;
                     }
                 }
             } catch (e) {
