@@ -172,6 +172,23 @@
             background: #ff4757;
             color: #fff;
         }
+        .kill-btn {
+            background: #ff4757;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            padding: 2px 8px;
+            font-size: 11px;
+            cursor: pointer;
+            margin-left: 10px;
+            display: none; /* Hidden by default, shown via JS if active */
+        }
+        .kill-btn:hover {
+            background: #ff6b81;
+        }
+        .instance-card:hover .kill-btn {
+            display: inline-block;
+        }
         .instance-metrics {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
@@ -238,10 +255,11 @@
         .call-detail {
             font-size: 10px;
             color: #aaa;
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            padding-top: 2px;
+            white-space: pre-wrap; /* Allow line breaks */
+            word-break: break-all;
+            padding-top: 4px;
+            border-top: 1px solid #ffffff11;
+            margin-top: 4px;
         }
         .call-detail.input {
             color: #00d4ff;
@@ -471,6 +489,8 @@
         let ws = null;
         let lastData = null; // Cache last data for re-rendering
         let lastLogEntryRef = null; // { id: string, type: string, element: HTMLElement }
+        let allLogs = []; // Buffer for re-rendering when switching views
+        const MAX_LOGS = 500;
 
         // Load preferences
         let useLocalTime = localStorage.getItem('monitor_use_localtime') !== 'false';
@@ -521,9 +541,26 @@
         function toggleTerminalView() {
             terminalView = document.getElementById('terminalView').checked;
             localStorage.setItem('monitor_terminal_view', terminalView);
-            // Clear logs as formats are incompatible
-            document.getElementById('logsContainer').innerHTML = '';
+            reRenderLogs();
+        }
+
+        function reRenderLogs() {
+            const container = document.getElementById('logsContainer');
+            container.innerHTML = '';
             lastLogEntryRef = null;
+            
+            // Temporary disable autoScroll during batch re-render for performance
+            const oldAutoScroll = autoScroll;
+            autoScroll = false;
+            
+            allLogs.forEach(log => {
+                appendLog(log, false); // Don't buffer again
+            });
+            
+            autoScroll = oldAutoScroll;
+            if (autoScroll) {
+                container.scrollTop = container.scrollHeight;
+            }
         }
 
         function toggleAutoScroll() {
@@ -610,7 +647,7 @@
                     if (data.type === 'state_update') {
                         updateUI(data);
                     } else if (data.event_type === 'tool_log') {
-                        appendLog(data);
+                        appendLog(data, true); // Buffer this new log
                     } else if (data.type === 'ping') {
                         ws.send('pong');
                     }
@@ -620,7 +657,14 @@
             };
         }
 
-        function appendLog(event) {
+        function appendLog(event, buffer = true) {
+            if (buffer) {
+                allLogs.push(event);
+                if (allLogs.length > MAX_LOGS) {
+                    allLogs.shift();
+                }
+            }
+
             const container = document.getElementById('logsContainer');
             
             if (terminalView) {
@@ -629,9 +673,11 @@
                 renderRawLog(event, container);
             }
 
-            // Limit log entries
-            while (container.children.length > 500) {
-                container.removeChild(container.firstChild);
+            // Limit DOM entries (should match MAX_LOGS or slightly more for terminal chunks)
+            if (!terminalView) { // Terminal view handles merging, so line count != log count
+                while (container.children.length > MAX_LOGS) {
+                    container.removeChild(container.firstChild);
+                }
             }
         }
 
@@ -744,6 +790,15 @@
                     if (data.type === 'stream' || data.type === 'ping') {
                         return null; // Return null to skip rendering
                     }
+
+                    // Ignore Claude stream lifecycle events
+                    const ignoredClaudeEvents = [
+                        'message_start', 'content_block_start', 
+                        'message_delta', 'message_stop', 'content_block_stop'
+                    ];
+                    if (ignoredClaudeEvents.includes(data.type)) {
+                        return null;
+                    }
                     
                     // 1. Standard Message / Assistant (Claude/Gemini)
                     if (data.type === 'message' || data.type === 'assistant') {
@@ -818,7 +873,13 @@
                         return { type: 'system', text: `> Finished${costStr}`, isDelta: false };
                     }
 
-                    // 6. Codex Events (item.started, item.completed, turn.completed)
+                    // 6. Initialization (Gemini/Claude)
+                    if (data.type === 'init' || (data.type === 'system' && data.subtype === 'init')) {
+                        const model = data.model || 'unknown model';
+                        return { type: 'system', text: `> Initialized (Model: ${model})`, isDelta: false };
+                    }
+
+                    // 7. Codex Events (item.started, item.completed, turn.completed)
                     if (data.type === 'turn.completed') {
                         return null; // Ignore turn completion
                     }
@@ -928,6 +989,7 @@
                             ${inst.active_role ? `<span class="role-tag">${inst.active_role}</span>` : ''}
                             ${inst.last_status && inst.state === 'busy' ? `<span class="instance-phase">${inst.last_status}</span>` : ''}
                             <span class="instance-state ${inst.state}">${inst.state}</span>
+                            ${inst.state !== 'offline' ? `<button class="kill-btn" onclick="killInstance('${inst.instance_id}')" title="Terminate Process">💀</button>` : ''}
                         </div>
 
                         <div class="instance-metrics">
@@ -966,8 +1028,8 @@
                                                 </span>
                                                 <span class="call-duration">${formatDuration(call.duration_ms)}</span>
                                             </div>
-                                            ${call.tool_input ? `<div class="call-detail input" title="${escapeHtml(call.tool_input)}">Input: ${truncate(call.tool_input)}</div>` : ''}
-                                            ${call.tool_output ? `<div class="call-detail output" title="${escapeHtml(call.tool_output)}">Output: ${truncate(call.tool_output)}</div>` : ''}
+                                            ${call.tool_input ? `<div class="call-detail input">In: ${formatToolData(call.tool_input)}</div>` : ''}
+                                            ${call.tool_output ? `<div class="call-detail output">Out: ${formatToolData(call.tool_output)}</div>` : ''}
                                         </div>
                                     `).join('')}
                                 </div>
@@ -976,6 +1038,27 @@
                     </div>
                 `;
             }).join('');
+        }
+
+        function formatToolData(raw) {
+            if (!raw) return '';
+            try {
+                const data = JSON.parse(raw);
+                // If it's a command execution, prettify the command string
+                if (data.command && typeof data.command === 'string') {
+                    // Prettify by adding newlines after &&, ||, ;
+                    let cmd = data.command;
+                    cmd = cmd.replace(/ && /g, ' &&\n  ');
+                    cmd = cmd.replace(/ \|\| /g, ' ||\n  ');
+                    cmd = cmd.replace(/; /g, ';\n  ');
+                    return escapeHtml(cmd);
+                }
+                // Prettify general JSON
+                return escapeHtml(JSON.stringify(data, null, 2));
+            } catch (e) {
+                // Not JSON or parse failed, return as is (truncated)
+                return escapeHtml(truncate(raw, 500));
+            }
         }
 
         function truncate(str, n=50) {
@@ -1008,6 +1091,25 @@
             if (seconds < 3600) return Math.round(seconds / 60) + 'm';
             if (seconds < 86400) return Math.round(seconds / 3600) + 'h';
             return Math.round(seconds / 86400) + 'd';
+        }
+
+        async function killInstance(instanceId) {
+            if (!confirm(`Are you sure you want to terminate instance ${instanceId}?`)) {
+                return;
+            }
+            try {
+                const res = await fetch(`/api/instances/${instanceId}/kill`, { method: 'POST' });
+                const data = await res.json();
+                if (res.ok) {
+                    console.log('Instance terminated:', data);
+                    // UI will update on next WebSocket message
+                } else {
+                    alert(`Failed to kill instance: ${data.detail}`);
+                }
+            } catch (e) {
+                console.error('Error killing instance:', e);
+                alert('Error killing instance. See console.');
+            }
         }
 
         // Auto-connect on load
