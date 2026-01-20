@@ -342,6 +342,48 @@
             padding: 60px 20px;
             color: #666;
         }
+        /* Terminal View Styles */
+        .log-entry.terminal {
+            display: block; /* Stack vertically, no flex row */
+            border-bottom: none;
+            padding-bottom: 0;
+            font-family: 'Consolas', 'Monaco', monospace;
+        }
+        .term-line {
+            display: flex;
+            align-items: flex-start;
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
+        .term-meta {
+            color: #666;
+            margin-right: 8px;
+            font-size: 10px;
+            user-select: none;
+            flex-shrink: 0;
+            padding-top: 2px;
+        }
+        .term-content {
+            color: #eee;
+            flex-grow: 1;
+        }
+        .term-content.thinking {
+            color: #b2bec3;
+        }
+        .term-content.tool-use {
+            color: #ffa502;
+            font-weight: bold;
+        }
+        .term-content.tool-result {
+            color: #2ed573;
+        }
+        .term-content.error {
+            color: #ff4757;
+        }
+        .term-content.system {
+            color: #00d4ff;
+            font-style: italic;
+        }
     </style>
 </head>
 <body>
@@ -404,6 +446,11 @@
                 </div>
                 <div class="toggle-control">
                     <label>
+                        <input type="checkbox" id="terminalView" onchange="toggleTerminalView()"> Terminal View
+                    </label>
+                </div>
+                <div class="toggle-control">
+                    <label>
                         <input type="checkbox" id="tzLocal" onchange="toggleTz()"> LocalTime
                     </label>
                 </div>
@@ -415,11 +462,13 @@
     <script>
         let ws = null;
         let lastData = null; // Cache last data for re-rendering
+        let lastLogEntryRef = null; // { id: string, type: string, element: HTMLElement }
 
         // Load preferences
         let useLocalTime = localStorage.getItem('monitor_use_localtime') !== 'false';
         let hideOffline = localStorage.getItem('monitor_hide_offline') === 'true';
         let hideIdle = localStorage.getItem('monitor_hide_idle') === 'true';
+        let terminalView = localStorage.getItem('monitor_terminal_view') === 'true';
 
         function initControls() {
             const tzCb = document.getElementById('tzLocal');
@@ -430,6 +479,9 @@
 
             const idleCb = document.getElementById('hideIdle');
             if (idleCb) idleCb.checked = hideIdle;
+
+            const termCb = document.getElementById('terminalView');
+            if (termCb) termCb.checked = terminalView;
         }
 
         function toggleTz() {
@@ -454,8 +506,16 @@
             }
         }
 
+        function toggleTerminalView() {
+            terminalView = document.getElementById('terminalView').checked;
+            localStorage.setItem('monitor_terminal_view', terminalView);
+            // Clear logs as formats are incompatible
+            document.getElementById('logsContainer').innerHTML = '';
+            lastLogEntryRef = null;
+        }
+
         function refreshLogTimes() {
-            const entries = document.querySelectorAll('.log-entry');
+            const entries = document.querySelectorAll('.log-entry:not(.terminal)');
             entries.forEach(entry => {
                 const timestamp = entry.getAttribute('data-timestamp');
                 if (timestamp) {
@@ -541,6 +601,20 @@
 
         function appendLog(event) {
             const container = document.getElementById('logsContainer');
+            
+            if (terminalView) {
+                renderTerminalLog(event, container);
+            } else {
+                renderRawLog(event, container);
+            }
+
+            // Limit log entries
+            while (container.children.length > 500) {
+                container.removeChild(container.firstChild);
+            }
+        }
+
+        function renderRawLog(event, container) {
             const entry = document.createElement('div');
             entry.className = 'log-entry';
             // Store raw timestamp for timezone switching
@@ -574,11 +648,147 @@
             
             // Auto-scroll
             container.scrollTop = container.scrollHeight;
+        }
+
+        function renderTerminalLog(event, container) {
+            const parsed = parseLogContent(event.log_data);
+            if (!parsed) return;
+
+            const session = (event.session_id || event.instance_id || '').split('@')[0].substr(0, 8);
             
-            // Limit log entries
-            while (container.children.length > 500) {
-                container.removeChild(container.firstChild);
+            // Attempt to merge with previous line if:
+            // 1. Same session
+            // 2. Same content type (e.g. thinking -> thinking)
+            // 3. Is a delta update
+            // 4. Previous element exists
+            const canMerge = lastLogEntryRef 
+                && lastLogEntryRef.id === session 
+                && lastLogEntryRef.type === parsed.type 
+                && parsed.isDelta
+                && document.body.contains(lastLogEntryRef.element);
+
+            if (canMerge) {
+                const contentSpan = lastLogEntryRef.element.querySelector('.term-content');
+                if (contentSpan) {
+                    contentSpan.textContent += parsed.text;
+                    container.scrollTop = container.scrollHeight;
+                    return;
+                }
             }
+
+            // Create new line
+            const entry = document.createElement('div');
+            entry.className = 'log-entry terminal';
+            
+            const time = formatLogTime(event.timestamp).split(' ')[0]; // Just time part
+            
+            entry.innerHTML = `
+                <div class="term-line">
+                    <span class="term-meta">[${session}]</span>
+                    <span class="term-content ${parsed.type}">${escapeHtml(parsed.text)}</span>
+                </div>
+            `;
+            
+            container.appendChild(entry);
+            container.scrollTop = container.scrollHeight;
+
+            // Update reference for merging
+            if (parsed.isDelta) {
+                lastLogEntryRef = { id: session, type: parsed.type, element: entry };
+            } else {
+                lastLogEntryRef = null;
+            }
+        }
+
+        function parseLogContent(raw) {
+            if (!raw) return { type: 'unknown', text: '', isDelta: false };
+            
+            try {
+                if (raw.trim().startsWith('{')) {
+                    const data = JSON.parse(raw);
+                    
+                    // Ignore internal stream/control events
+                    if (data.type === 'stream' || data.type === 'ping') {
+                        return null; // Return null to skip rendering
+                    }
+                    
+                    // 1. Standard Message / Assistant (Claude/Gemini)
+                    if (data.type === 'message' || data.type === 'assistant') {
+                        let content = data.content || data.thought;
+                        
+                        // Handle Claude message object (nested in 'message' field)
+                        if (data.message && data.message.content) {
+                             content = data.message.content;
+                        }
+                        
+                        // Handle Claude content list (e.g. [{"type":"text", "text":"..."}, {"type":"tool_use", ...}])
+                        if (Array.isArray(content)) {
+                            // Check for tool_use in content list
+                            const toolUse = content.find(c => c.type === 'tool_use');
+                            if (toolUse) {
+                                return { type: 'tool-use', text: `> Executing ${toolUse.name}...`, isDelta: false };
+                            }
+
+                            content = content
+                                .filter(c => c.type === 'text' || typeof c === 'string')
+                                .map(c => c.text || c)
+                                .join('');
+                        }
+                        
+                        // Check for delta flag or if it looks like a partial chunk
+                        // Gemini sends 'delta': true
+                        // Claude stream usually sends 'message' type for chunks or 'content_block_delta'
+                        const isDelta = data.delta === true || data.type === 'message'; 
+                        
+                        if (content && typeof content === 'string') {
+                            return { type: 'thinking', text: content, isDelta: isDelta };
+                        }
+                    }
+
+                    // 2. Claude specific: content_block_delta
+                    // {"type":"content_block_delta", "index":0, "delta":{"type":"text_delta", "text":"..."}}
+                    if (data.type === 'content_block_delta' && data.delta && data.delta.text) {
+                        return { type: 'thinking', text: data.delta.text, isDelta: true };
+                    }
+                    
+                    // 3. Tool Use
+                    if (data.type === 'tool_use') {
+                        return { type: 'tool-use', text: `> Executing ${data.name || data.tool_name}...`, isDelta: false };
+                    }
+                    
+                    // 4. Tool Result
+                    if (data.type === 'tool_result') {
+                        const isError = data.status === 'error' || data.is_error;
+                        let text = data.content || data.output || '';
+                        // Extract text from list content if needed
+                        if (Array.isArray(text)) text = text.join(' ');
+                        if (typeof text !== 'string') text = JSON.stringify(text);
+                        // Truncate
+                        if (text.length > 300) text = text.substr(0, 300) + '...';
+                        return { type: isError ? 'error' : 'tool-result', text: `< ${text}`, isDelta: false };
+                    }
+
+                    // 5. Final Result
+                    if (data.type === 'result') {
+                        // Extract result content if available, otherwise just summary
+                        let resultText = '';
+                        if (data.result) {
+                             if (typeof data.result === 'string') resultText = data.result;
+                             else if (Array.isArray(data.result)) resultText = data.result.join('\n');
+                        }
+                        
+                        if (resultText && resultText.length < 100) {
+                             return { type: 'system', text: `> Finished: ${resultText}`, isDelta: false };
+                        }
+                        return { type: 'system', text: `> Finished (Cost: $${data.total_cost_usd || 0})`, isDelta: false };
+                    }
+                }
+            } catch (e) {
+                // Ignore parse errors, treat as raw text
+            }
+            
+            // Fallback for raw text
+            return { type: 'raw', text: raw, isDelta: false };
         }
 
         function updateUI(data) {
