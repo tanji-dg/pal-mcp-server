@@ -72,6 +72,7 @@ class InstanceTracker:
         
         self.active_tool: Optional[str] = None # Primary/most recent tool
         self.active_tool_input: Optional[str] = None
+        self.session_id: Optional[str] = None
         self.model_name: Optional[str] = None
         self.active_role: Optional[str] = None
         self.tool_start_time: Optional[datetime] = None
@@ -114,13 +115,14 @@ class InstanceTracker:
         self.last_heartbeat = now
         self.last_status = f"Starting {tool_name}..."
 
-        # Try to extract model/role name from input arguments
+        # Try to extract model/role/session name from input arguments
         if tool_input:
             try:
                 args = json.loads(tool_input)
                 # For clink, cli_name is the most useful identifier for 'model'
                 self.model_name = args.get("model") or args.get("cli_name") or self.model_name
                 self.active_role = args.get("role") or self.active_role
+                self.session_id = args.get("continuation_id") or self.session_id
             except Exception:
                 pass
 
@@ -131,6 +133,9 @@ class InstanceTracker:
         # Store log in buffer if event provided
         if original_event:
             self.recent_logs.append(original_event)
+            # Capture session_id from event if present
+            if original_event.session_id:
+                self.session_id = original_event.session_id
 
         # If we are already idle, don't let logs pull us back to busy
         # unless it's explicitly a tool start we might have missed,
@@ -144,6 +149,10 @@ class InstanceTracker:
                 if not is_fresh and original_event and original_event.timestamp < self.last_completion_time:
                     return
                 self.state = "busy"
+                # If fresh, pick clink as default tool name if none provided
+                if not self.active_tool:
+                    self.active_tool = tool_name or "clink"
+                    self.tool_start_time = now
             else:
                 # Still record heartbeat and update status if it's short, but stay idle
                 self.last_heartbeat = now
@@ -180,6 +189,10 @@ class InstanceTracker:
                     is_json_log = True
                     msg_type = data.get("type")
                     
+                    # Capture session_id from log if available
+                    if "session_id" in data:
+                        self.session_id = data["session_id"]
+
                     # Unwrap Claude stream_event wrapper
                     if msg_type == "stream_event" and "event" in data and isinstance(data["event"], dict):
                         data = data["event"]
@@ -493,6 +506,7 @@ class InstanceTracker:
             self.last_status = f"Completed {target_tool} ({status})" if target_tool else "Idle"
             self.active_tool = None
             self.active_tool_input = None
+            self.session_id = None
             self.model_name = None
             self.tool_start_time = None
             self.active_tools.clear() # Ensure all are cleared
@@ -548,6 +562,7 @@ class InstanceTracker:
             state=state,
             last_heartbeat=self.last_heartbeat,
             active_tool=self.active_tool if state == "busy" else None,
+            session_id=self.session_id if state == "busy" else None,
             model_name=self.model_name if state == "busy" else None,
             active_role=self.active_role if state == "busy" else None,
             tool_start_time=self.tool_start_time if state == "busy" else None,

@@ -60,6 +60,7 @@ class InstanceStatus(BaseModel):
         description="Timestamp of last communication",
     )
     active_tool: Optional[str] = Field(default=None, description="Currently executing tool name, null if idle")
+    session_id: Optional[str] = Field(default=None, description="Current session/conversation ID")
     model_name: Optional[str] = Field(default=None, description="AI model name currently in use")
     active_role: Optional[str] = Field(default=None, description="Active role name (e.g. for clink tool)")
     tool_start_time: Optional[datetime] = Field(default=None, description="When the active tool started execution")

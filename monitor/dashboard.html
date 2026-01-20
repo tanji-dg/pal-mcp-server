@@ -130,6 +130,17 @@
             margin-left: 8px;
             border: 1px solid #20bf6b44;
         }
+        .session-tag {
+            background: #ffa50222;
+            color: #ffa502;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: bold;
+            font-family: monospace;
+            margin-left: 8px;
+            border: 1px solid #ffa50244;
+        }
         .instance-phase {
             background: #ffa50222;
             color: #ffa502;
@@ -1131,6 +1142,7 @@
                         <div class="instance-header">
                             <span class="instance-id" title="${inst.instance_id}">${inst.instance_id}</span>
                             <div style="display: flex; align-items: center; gap: 8px;">
+                                ${inst.session_id ? `<span class="session-tag" title="Session ID: ${inst.session_id}">[${inst.session_id.substr(0, 8)}]</span>` : ''}
                                 ${inst.active_tool ? `<span class="active-tool-tag">${inst.active_tool}</span>` : ''}
                                 ${inst.model_name ? `<span class="model-tag">${inst.model_name}</span>` : ''}
                                 ${inst.active_role ? `<span class="role-tag">${inst.active_role}</span>` : ''}

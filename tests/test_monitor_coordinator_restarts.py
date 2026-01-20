@@ -80,3 +80,29 @@ class TestMonitorCoordinatorRestartReliability:
         # Should become BUSY
         assert tracker.state == "busy"
         assert tracker.last_status == "Calling Bash"
+
+    def test_session_id_tracking(self, tracker):
+        """Verify that session_id is captured from various event sources."""
+        # 1. From tool start input
+        args = json.dumps({"continuation_id": "session_123"})
+        tracker.start_tool("clink", args)
+        assert tracker.session_id == "session_123"
+        
+        # 2. From log data
+        log_data = json.dumps({"type": "message", "session_id": "session_456"})
+        tracker.log_activity("clink", log_data)
+        assert tracker.session_id == "session_456"
+        
+        # 3. From original event object
+        log_event = ToolEvent(
+            event_type=ToolEventType.TOOL_LOG,
+            instance_id="test",
+            tool_name="clink",
+            session_id="session_789"
+        )
+        tracker.log_activity("clink", None, original_event=log_event)
+        assert tracker.session_id == "session_789"
+        
+        # 4. Cleared on completion
+        tracker.end_tool("clink", 100)
+        assert tracker.session_id is None
