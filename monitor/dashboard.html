@@ -730,7 +730,12 @@
             
             try {
                 if (raw.trim().startsWith('{')) {
-                    const data = JSON.parse(raw);
+                    let data = JSON.parse(raw);
+                    
+                    // Unwrap Claude stream_event wrapper
+                    if (data.type === 'stream_event' && data.event) {
+                        data = data.event;
+                    }
                     
                     // Ignore internal stream/control events
                     if (data.type === 'stream' || data.type === 'ping') {
