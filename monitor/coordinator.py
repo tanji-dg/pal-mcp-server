@@ -263,7 +263,8 @@ class InstanceTracker:
                         duration_ms = 0
                         if tool_id and tool_id in self._tool_start_times:
                             start_t = self._tool_start_times.pop(tool_id)
-                            duration_ms = int((now.timestamp() - start_t.timestamp()) * 1000)
+                            diff = now.timestamp() - start_t.timestamp()
+                            duration_ms = max(1, int(diff * 1000))
 
                         # Update metrics
                         self.total_calls += 1
@@ -286,7 +287,7 @@ class InstanceTracker:
                         self.recent_calls.appendleft(call)
                         
                         # Track for window metrics
-                        now_ts = time.time()
+                        now_ts = now.timestamp()
                         self._calls_1m.append((now_ts, status == "error" or is_content_error))
                         self._durations_1m.append((now_ts, duration_ms))
 
@@ -461,6 +462,9 @@ class InstanceTracker:
         now_ts = time.time()
         status = "error" if is_error else "success"
         self.last_completion_time = utc_now()
+        
+        # Ensure at least 1ms duration for metrics if it was a real tool execution
+        effective_duration = max(1, duration_ms) if duration_ms is not None else 0
 
         # Determine which tool actually ended
         target_tool = tool_name or self.active_tool
@@ -478,7 +482,7 @@ class InstanceTracker:
                 tool=target_tool,
                 tool_input=self.active_tool_inputs.get(target_tool),
                 tool_output=tool_output,
-                duration_ms=duration_ms,
+                duration_ms=effective_duration,
                 status=status,
                 model_name=effective_model,
                 timestamp=utc_now(),
@@ -487,7 +491,7 @@ class InstanceTracker:
 
             # Track for window metrics
             self._calls_1m.append((now_ts, is_error))
-            self._durations_1m.append((now_ts, duration_ms))
+            self._durations_1m.append((now_ts, effective_duration))
             
             # Remove from active list
             if target_tool in self.active_tools:
@@ -506,7 +510,7 @@ class InstanceTracker:
             self.last_status = f"Completed {target_tool} ({status})" if target_tool else "Idle"
             self.active_tool = None
             self.active_tool_input = None
-            self.session_id = None
+            # DO NOT clear session_id here to maintain correlation in dashboard
             self.model_name = None
             self.tool_start_time = None
             self.active_tools.clear() # Ensure all are cleared
@@ -562,7 +566,7 @@ class InstanceTracker:
             state=state,
             last_heartbeat=self.last_heartbeat,
             active_tool=self.active_tool if state == "busy" else None,
-            session_id=self.session_id if state == "busy" else None,
+            session_id=self.session_id, # Always include session_id for correlation
             model_name=self.model_name if state == "busy" else None,
             active_role=self.active_role if state == "busy" else None,
             tool_start_time=self.tool_start_time if state == "busy" else None,
