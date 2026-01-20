@@ -171,10 +171,17 @@ class InstanceTracker:
                     is_json_log = True
                     msg_type = data.get("type")
                     
+                    # Unwrap Claude stream_event wrapper
+                    if msg_type == "stream_event" and "event" in data and isinstance(data["event"], dict):
+                        data = data["event"]
+                        msg_type = data.get("type")
+
                     # Update model name if found in log metadata
                     new_model = None
                     if "model" in data:
                         new_model = data["model"]
+                    elif "message" in data and isinstance(data["message"], dict) and "model" in data["message"]:
+                        new_model = data["message"]["model"]
                     elif "model_used" in data:
                         new_model = data["model_used"]
                     elif "metadata" in data and isinstance(data["metadata"], dict):
@@ -351,13 +358,45 @@ class InstanceTracker:
                     elif msg_type == "item.completed": # Codex completion/error
                         item = data.get("item", {})
                         status = item.get("status")
+                        item_id = item.get("id")
+                        item_type = item.get("type")
+
+                        # Calculate duration
+                        duration_ms = 0
+                        if item_id and item_id in self._tool_start_times:
+                            start_t = self._tool_start_times.pop(item_id)
+                            duration_ms = int((now.timestamp() - start_t.timestamp()) * 1000)
 
                         if status in ["failed", "error"]:
                             cmd = item.get("command") or "operation"
                             self.last_status = f"Error in {cmd}"
-                        elif item.get("type") == "command_execution":
-                             # For successful commands, we might want to update status
-                             self.last_status = f"Completed {item.get('command', 'cmd')}"
+                            is_error = True
+                        else:
+                            is_error = False
+                            if item_type == "command_execution":
+                                 self.last_status = f"Completed {item.get('command', 'cmd')}"
+
+                        # Record metrics for command executions
+                        if item_type == "command_execution":
+                            self.total_calls += 1
+                            if is_error:
+                                self.total_errors += 1
+                            
+                            # Add to recent calls
+                            cmd_name = item.get("command", "command").split(" ")[0]
+                            call = ToolCall(
+                                tool=cmd_name,
+                                duration_ms=duration_ms,
+                                status="error" if is_error else "success",
+                                model_name=self.model_name,
+                                timestamp=utc_now(),
+                            )
+                            self.recent_calls.appendleft(call)
+                            
+                            # Track window metrics
+                            now_ts = time.time()
+                            self._calls_1m.append((now_ts, is_error))
+                            self._durations_1m.append((now_ts, duration_ms))
                     else:
                         # For other types, keep it very short
                         new_status = msg_type.capitalize() if msg_type else None
@@ -774,7 +813,7 @@ def create_app() -> FastAPI:
     async def get_history():
         """Get conversation history from storage."""
         storage = get_storage_backend()
-        conversations = storage.list_all()
+        conversations = storage.list_all(include_expired=True)
         
         # Format for frontend
         formatted = {}
