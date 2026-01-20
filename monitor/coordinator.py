@@ -130,10 +130,13 @@ class InstanceTracker:
             self.recent_logs.append(original_event)
 
         # If we are already idle, don't let logs pull us back to busy
-        # unless it's explicitly a tool start we might have missed.
+        # unless it's explicitly a tool start we might have missed,
+        # OR we are a fresh tracker (monitor restart) and this is our first activity.
         if self.state == "idle":
-            # Only go busy if the log explicitly indicates a tool is starting
-            if log_data and ('"type": "tool_use"' in log_data or '"type": "item.started"' in log_data):
+            is_fresh = self.active_tool is None and self.total_calls == 0
+            is_start_event = log_data and ('"type": "tool_use"' in log_data or '"type": "item.started"' in log_data)
+            
+            if is_fresh or is_start_event:
                 self.state = "busy"
             else:
                 # Still record heartbeat and update status if it's short, but stay idle
@@ -397,11 +400,30 @@ class InstanceTracker:
                             now_ts = time.time()
                             self._calls_1m.append((now_ts, is_error))
                             self._durations_1m.append((now_ts, duration_ms))
-                    else:
-                        # For other types, keep it very short
-                        new_status = msg_type.capitalize() if msg_type else None
-                        if new_status:
-                            self.last_status = new_status
+                    elif msg_type == "error":
+                         # Capture error as payload if no result yet
+                         if not payload:
+                             payload = data
+                    
+                    # Handle raw API errors or objects with error field
+                    error_obj = data.get("error")
+                    if isinstance(error_obj, dict):
+                        # Look for retry delay info
+                        delay_info = ""
+                        details = error_obj.get("details", [])
+                        if isinstance(details, list):
+                            for detail in details:
+                                if not isinstance(detail, dict):
+                                    continue
+                                # Check metadata for quotaResetDelay
+                                metadata = detail.get("metadata", {})
+                                if isinstance(metadata, dict) and "quotaResetDelay" in metadata:
+                                    delay_info = f" (Quota resets in {metadata['quotaResetDelay']})"
+                                # Check retryDelay field
+                                if "retryDelay" in detail:
+                                    delay_info = f" (Retry in {detail['retryDelay']})"
+                        
+                        self.last_status = f"Rate Limited{delay_info}"
             except Exception:
                 pass
 
