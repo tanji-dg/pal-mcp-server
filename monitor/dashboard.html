@@ -953,6 +953,16 @@
 
                     // 5. Final Result
                     if (data.type === 'result') {
+                        const isError = data.status === 'error' || data.is_error;
+                        
+                        if (isError) {
+                            let errorMsg = "Operation failed";
+                            if (data.error) {
+                                errorMsg = data.error.message || JSON.stringify(data.error);
+                            }
+                            return { type: 'error', text: `! Failed: ${errorMsg}`, isDelta: false };
+                        }
+
                         // Extract result content if available, otherwise just summary
                         let resultText = '';
                         if (data.result) {

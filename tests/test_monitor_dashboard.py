@@ -106,6 +106,11 @@ def parse_log_content_simulated(raw):
 
             # 6. Final Result
             if data.get('type') == 'result':
+                is_error = data.get('status') == 'error' or data.get('is_error')
+                if is_error:
+                    msg = data.get('error', {}).get('message') or 'Operation failed'
+                    return {'type': 'error', 'text': f'! Failed: {msg}', 'isDelta': False}
+
                 result_text = ''
                 if data.get('result'):
                     if isinstance(data['result'], str):
@@ -162,6 +167,17 @@ def parse_log_content_simulated(raw):
 
 class TestMonitorDashboardLogic:
     """Comprehensive tests for dashboard parsing logic."""
+
+    def test_result_error(self):
+        # Result type with error status
+        raw = json.dumps({
+            "type": "result",
+            "status": "error",
+            "error": {"message": "Resource exhausted"}
+        })
+        res = parse_log_content_simulated(raw)
+        assert res['type'] == 'error'
+        assert res['text'] == '! Failed: Resource exhausted'
 
     def test_thinking_delta(self):
         # Gemini style
