@@ -782,6 +782,12 @@
                     let data = JSON.parse(raw);
                     let wasStreamEvent = false;
                     
+                    // Handle API errors without 'type' field
+                    if (!data.type && data.error) {
+                        const msg = data.error.message || JSON.stringify(data.error);
+                        return { type: 'error', text: `! API Error: ${msg}`, isDelta: false };
+                    }
+                    
                     // Unwrap Claude stream_event wrapper
                     if (data.type === 'stream_event' && data.event) {
                         data = data.event;

@@ -225,6 +225,32 @@
         .summary-header::before {
             content: "📝";
         }
+        /* Thinking Block */
+        .thinking-block {
+            margin-bottom: 15px;
+            padding: 10px;
+            background: #2f364011;
+            border: 1px solid #2f364044;
+            border-left: 3px solid #7f8fa6;
+            border-radius: 4px;
+            font-size: 13px;
+            color: #bdc3c7;
+            font-style: italic;
+        }
+        .thinking-header {
+            color: #7f8fa6;
+            font-weight: bold;
+            font-size: 10px;
+            text-transform: uppercase;
+            margin-bottom: 5px;
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            font-style: normal;
+        }
+        .thinking-header::before {
+            content: "💭";
+        }
         /* Tab for view mode */
         .view-tabs {
             display: flex;
@@ -393,9 +419,13 @@
                         // 1. Escape HTML first
                         text = escapeHtml(text);
 
-                        // 2. Format <SUMMARY> blocks
+                        // 2. Format <SUMMARY> and <thinking> blocks
                         text = text.replace(/&lt;SUMMARY&gt;([\s\S]*?)&lt;\/SUMMARY&gt;/gi, (match, summary) => {
                             return `<div class="summary-block"><div class="summary-header">Summary</div><div class="message-content">${summary.trim()}</div></div>`;
+                        });
+                        
+                        text = text.replace(/&lt;thinking&gt;([\s\S]*?)&lt;\/thinking&gt;/gi, (match, thought) => {
+                            return `<div class="thinking-block"><div class="thinking-header">Thinking Process</div><div class="message-content">${thought.trim()}</div></div>`;
                         });
 
                         // 3. Format bash code blocks (Terminal-like)
