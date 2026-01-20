@@ -393,6 +393,24 @@ class CLinkTool(SimpleTool):
         metadata = self._build_success_metadata(client_config, role_config, result)
         metadata = self._prune_metadata(metadata, client_config, reason="normal")
 
+        # Check for error status in parsed result (even if CLI return code was 0)
+        if result.parsed.metadata.get("is_error"):
+            error_content = result.parsed.content
+            # Record error turn before raising to ensure persistence
+            try:
+                error_model_info = {
+                    "provider": client_config.name,
+                    "model_name": result.parsed.metadata.get("model_used") or "error"
+                }
+                self._record_assistant_turn(continuation_id, error_content, request, error_model_info)
+            except Exception:
+                logger.debug("Failed to record error turn for parsed error", exc_info=True)
+                
+            self._raise_tool_error(
+                error_content,
+                metadata=metadata
+            )
+
         # If content is empty for Claude, try to construct it from metadata
         if client_config.name == "claude" and not result.parsed.content.strip():
             raw_metadata = result.parsed.metadata.get("raw")
