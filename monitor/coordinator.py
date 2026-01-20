@@ -26,13 +26,14 @@ import asyncio
 import json
 import logging
 import os
+import signal
 import time
 from collections import deque
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.responses import HTMLResponse
 
 from monitor.models import (
@@ -75,6 +76,7 @@ class InstanceTracker:
         self.active_role: Optional[str] = None
         self.tool_start_time: Optional[datetime] = None
         self.recent_calls: deque[ToolCall] = deque(maxlen=MAX_RECENT_CALLS)
+        self.recent_logs: deque[ToolEvent] = deque(maxlen=100) # Buffer last 100 log lines
         
         # Current status for display
         self.last_status: Optional[str] = None
@@ -119,9 +121,13 @@ class InstanceTracker:
             except Exception:
                 pass
 
-    def log_activity(self, tool_name: str, log_data: Optional[str] = None):
+    def log_activity(self, tool_name: str, log_data: Optional[str] = None, original_event: Optional[ToolEvent] = None):
         """Update activity status based on log event."""
         now = utc_now()
+        
+        # Store log in buffer if event provided
+        if original_event:
+            self.recent_logs.append(original_event)
 
         # If we are already idle, don't let logs pull us back to busy
         # unless it's explicitly a tool start we might have missed.
@@ -258,6 +264,55 @@ class InstanceTracker:
                         # If a tool result is seen, and it's from the primary tool, it's near completion
                         if name and name == self.active_tool:
                              self.last_status = f"Finishing {name}"
+                    elif msg_type == "user":
+                        # Handle Claude tool results embedded in user message
+                        message = data.get("message", {})
+                        content_list = message.get("content", [])
+                        if isinstance(content_list, list):
+                            for item in content_list:
+                                if isinstance(item, dict) and item.get("type") == "tool_result":
+                                    self.total_calls += 1
+                                    
+                                    tool_id = item.get("tool_use_id")
+                                    name = self._tool_name_cache.get(tool_id) if tool_id else None
+                                    is_error = item.get("is_error", False)
+                                    
+                                    # Check content for error keywords
+                                    content_str = item.get("content", "")
+                                    if isinstance(content_str, str):
+                                        lower = content_str.lower()
+                                        if "error:" in lower or "exception:" in lower or "failed:" in lower:
+                                            is_error = True
+                                    
+                                    # Calculate duration
+                                    duration_ms = 0
+                                    if tool_id and tool_id in self._tool_start_times:
+                                        start_t = self._tool_start_times.pop(tool_id)
+                                        duration_ms = int((now.timestamp() - start_t.timestamp()) * 1000)
+
+                                    if is_error:
+                                        self.total_errors += 1
+                                        self.last_status = f"Error in {name or 'tool'}"
+                                    else:
+                                        self.last_status = f"Result from {name or 'tool'}"
+
+                                    # Add to recent calls
+                                    call = ToolCall(
+                                        tool=name or "tool",
+                                        tool_input=None,
+                                        tool_output=content_str[:1000] if isinstance(content_str, str) else None,
+                                        duration_ms=duration_ms,
+                                        status="error" if is_error else "success",
+                                        model_name=self.model_name,
+                                        timestamp=utc_now(),
+                                    )
+                                    self.recent_calls.appendleft(call)
+                                    
+                                    # Track metrics
+                                    now_ts = time.time()
+                                    self._calls_1m.append((now_ts, is_error))
+                                    self._durations_1m.append((now_ts, duration_ms))
+
                     elif msg_type == "result": # Final result from Gemini CLI or Claude CLI
                         # Check if this is Claude CLI output (has 'subtype') or Gemini (has 'stats')
                         is_claude = "subtype" in data
@@ -519,7 +574,7 @@ class MonitorCoordinator:
                 elif event.event_type == ToolEventType.TOOL_LOG:
                     # Mark as busy since we are receiving logs
                     if event.tool_name:
-                        tracker.log_activity(event.tool_name, event.log_data)
+                        tracker.log_activity(event.tool_name, event.log_data, original_event=event)
                     # Mark for broadcast after releasing lock
                     broadcast_log_event = event
 
@@ -538,7 +593,7 @@ class MonitorCoordinator:
                     tracker.end_tool(event.tool_name, event.duration_ms or 0, is_error=True, model_name=event.model_name)
                 elif event.event_type == ToolEventType.TOOL_LOG:
                     if event.tool_name:
-                        tracker.log_activity(event.tool_name, event.log_data)
+                        tracker.log_activity(event.tool_name, event.log_data, original_event=event)
                     broadcast_log_event = event
                 elif event.event_type == ToolEventType.HEARTBEAT:
                     tracker.update_heartbeat(event.uptime_seconds)
@@ -579,8 +634,16 @@ class MonitorCoordinator:
         state = await self.get_aggregated_state()
         try:
             await websocket.send_text(state.to_json())
+            
+            # Send buffered logs from all instances
+            async with self._lock:
+                for instance in self.instances.values():
+                    # Send oldest first
+                    for log_event in instance.recent_logs:
+                        await websocket.send_text(log_event.to_json())
+                        
         except Exception as e:
-            logger.warning(f"Failed to send initial state: {e}")
+            logger.warning(f"Failed to send initial data: {e}")
 
     async def remove_websocket_client(self, websocket: WebSocket):
         """Remove a WebSocket client connection."""
@@ -729,6 +792,46 @@ def create_app() -> FastAPI:
                     "raw": content
                 }
         return {"conversations": formatted}
+
+    @app.post("/api/instances/{instance_id}/kill")
+    async def kill_instance(instance_id: str):
+        """Terminate a specific MCP server instance."""
+        coordinator = get_coordinator()
+        
+        # 1. Check if instance is tracked
+        if instance_id not in coordinator.instances:
+            raise HTTPException(status_code=404, detail="Instance not found")
+            
+        # 2. Extract PID
+        try:
+            pid_str, host = instance_id.split("@", 1)
+            pid = int(pid_str)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid instance ID format (expected PID@HOSTNAME)")
+
+        # 3. Terminate process
+        try:
+            logger.warning(f"Killing instance {instance_id} (PID {pid}) requested via API")
+            os.kill(pid, signal.SIGTERM)
+            
+            # Mark as offline immediately
+            async with coordinator._lock:
+                if instance_id in coordinator.instances:
+                    coordinator.instances[instance_id].state = "offline"
+                    coordinator.instances[instance_id].last_status = "Terminated by user"
+            
+            return {"status": "ok", "message": f"Signal SIGTERM sent to PID {pid}"}
+        except ProcessLookupError:
+            # Process already gone
+            async with coordinator._lock:
+                if instance_id in coordinator.instances:
+                    coordinator.instances[instance_id].state = "offline"
+            return {"status": "ok", "message": "Process was already terminated"}
+        except PermissionError:
+            raise HTTPException(status_code=403, detail="Permission denied to kill process")
+        except Exception as e:
+            logger.error(f"Failed to kill instance {instance_id}: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
 
     @app.get("/health")
     async def health_check():
