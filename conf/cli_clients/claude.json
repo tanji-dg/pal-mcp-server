@@ -4,8 +4,11 @@
   "additional_args": [
     "--permission-mode",
     "acceptEdits",
-    "--model",
-    "sonnet"
+    "-p",
+    "--output-format",
+    "stream-json",
+    "--verbose",
+    "--include-partial-messages"
   ],
   "env": {
     "CI": "true",
@@ -22,7 +25,14 @@
     },
     "codereviewer": {
       "prompt_path": "systemprompts/clink/default_codereviewer.txt",
-      "role_args": []
+      "role_args": ["--settings", "/home/htanji/.claude/settings.json.thinking"]
+    },
+    "pro": {
+      "prompt_path": "systemprompts/clink/default_codereviewer.txt",
+      "role_args": [
+    	"--model",
+	"claude-sonnet-4-5-20250929"
+      ]
     },
     "developer": {
       "prompt_path": "systemprompts/clink/default.txt",

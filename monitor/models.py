@@ -127,6 +127,7 @@ class ToolEvent(BaseModel):
     duration_ms: Optional[int] = Field(default=None, description="Duration for TOOL_END events")
     error_message: Optional[str] = Field(default=None, description="Error message for TOOL_ERROR events")
     log_data: Optional[str] = Field(default=None, description="Log content for TOOL_LOG events")
+    model_name: Optional[str] = Field(default=None, description="Model name for TOOL_END events")
     uptime_seconds: Optional[float] = Field(default=None, description="Uptime for HEARTBEAT/REGISTER events")
 
     def to_json(self) -> str:

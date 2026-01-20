@@ -196,31 +196,42 @@ class MonitorPublisher:
 
         logger.info("Monitor publisher stopped")
 
-    async def tool_start(self, tool_name: str, arguments: Optional[dict] = None):
+    async def tool_start(self, tool_name: str, arguments: Optional[dict] = None, model_name: Optional[str] = None):
         """Record that a tool has started execution."""
         if not self.enabled:
             return
 
-        # Serialize arguments to string if present
+        # Serialize arguments to string if present, stripping internal keys
         tool_input = None
         if arguments:
             import json
 
+            # Create a clean version of arguments for monitoring (remove internal/non-serializable)
+            clean_args = {
+                k: v for k, v in arguments.items()
+                if not k.startswith("_") and isinstance(v, (str, int, float, bool, list, dict, type(None)))
+            }
+
             try:
-                tool_input = json.dumps(arguments)
+                tool_input = json.dumps(clean_args)
             except Exception:
-                tool_input = str(arguments)
+                # If even clean_args fails, try to stringify individual values
+                try:
+                    tool_input = json.dumps({k: str(v) for k, v in clean_args.items()})
+                except Exception:
+                    tool_input = str(clean_args)
 
         event = ToolEvent(
             event_type=ToolEventType.TOOL_START,
             instance_id=self.instance_id,
             tool_name=tool_name,
             tool_input=tool_input,
+            model_name=model_name,
             uptime_seconds=self.uptime_seconds,
         )
         await self._publish_event(event)
 
-    async def tool_end(self, tool_name: str, duration_ms: int, result: Optional[Any] = None):
+    async def tool_end(self, tool_name: str, duration_ms: int, result: Optional[Any] = None, model_name: Optional[str] = None):
         """Record that a tool has completed successfully."""
         if not self.enabled:
             return
@@ -259,11 +270,12 @@ class MonitorPublisher:
             tool_name=tool_name,
             tool_output=tool_output,
             duration_ms=duration_ms,
+            model_name=model_name,
             uptime_seconds=self.uptime_seconds,
         )
         await self._publish_event(event)
 
-    async def tool_error(self, tool_name: str, duration_ms: int, error_message: str):
+    async def tool_error(self, tool_name: str, duration_ms: int, error_message: str, model_name: Optional[str] = None):
         """Record that a tool execution resulted in an error."""
         if not self.enabled:
             return
@@ -273,6 +285,7 @@ class MonitorPublisher:
             instance_id=self.instance_id,
             tool_name=tool_name,
             duration_ms=duration_ms,
+            model_name=model_name,
             error_message=error_message[:500],  # Truncate long error messages
             uptime_seconds=self.uptime_seconds,
         )

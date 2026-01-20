@@ -262,7 +262,9 @@ class CLinkTool(SimpleTool):
                                 payload_content = data.get("content") or data.get("thought")
                                 if role == "assistant" and payload_content:
                                     # Only notify about thinking/progress messages, not final answers
-                                    if data.get("delta") is True:
+                                    # For Gemini: check for 'delta' flag
+                                    # For Claude: all stream-json message chunks are deltas
+                                    if data.get("delta") is True or client_config.name == "claude":
                                         content = f"🧠 Thinking: {payload_content}"
                             elif msg_type == "tool_use":
                                 name = data.get("tool_name")
@@ -320,6 +322,7 @@ class CLinkTool(SimpleTool):
                         # Strip ANSI codes to prevent TUI corruption in the host
                         clean_content = ansi_escape.sub("", content)
                         # Add session info
+                        session_label = f"[{effective_session_id[:8]}] " if effective_session_id != "standalone" else ""
                         display_content = f"{session_label}{clean_content}"
 
                         now = time.monotonic()
@@ -361,11 +364,46 @@ class CLinkTool(SimpleTool):
         metadata = self._build_success_metadata(client_config, role_config, result)
         metadata = self._prune_metadata(metadata, client_config, reason="normal")
 
-        content, metadata = self._apply_output_limit(
-            client_config,
-            result.parsed.content,
-            metadata,
-        )
+        # If content is empty for Claude, try to construct it from metadata
+        if client_config.name == "claude" and not result.parsed.content.strip():
+            raw_metadata = result.parsed.metadata.get("raw")
+            if raw_metadata and isinstance(raw_metadata, dict):
+                # Attempt to parse usage/cost information for a meaningful message
+                cost = raw_metadata.get("total_cost_usd")
+                usage = raw_metadata.get("usage", {})
+                model_usage = raw_metadata.get("modelUsage", {})
+                num_turns = raw_metadata.get("num_turns")
+                duration_ms = raw_metadata.get("duration_ms")
+
+                content_parts = ["Claude CLI execution completed successfully, but returned no direct textual result."]
+                if num_turns is not None:
+                    content_parts.append(f"Turns: {num_turns}")
+                if duration_ms is not None:
+                    content_parts.append(f"Duration: {duration_ms}ms")
+                if cost is not None:
+                    content_parts.append(f"Total Cost: ${cost:.6f}")
+                if usage:
+                    content_parts.append("Usage Details:")
+                    if usage.get("input_tokens") is not None:
+                        content_parts.append(f"  Input Tokens: {usage['input_tokens']:,}")
+                    if usage.get("output_tokens") is not None:
+                        content_parts.append(f"  Output Tokens: {usage['output_tokens']:,}")
+                if model_usage:
+                    for model, stats in model_usage.items():
+                        content_parts.append(f"Model ({model}):")
+                        if stats.get("inputTokens") is not None:
+                            content_parts.append(f"  Input Tokens: {stats['inputTokens']:,}")
+                        if stats.get("outputTokens") is not None:
+                            content_parts.append(f"  Output Tokens: {stats['outputTokens']:,}")
+                        if stats.get("costUSD") is not None:
+                            content_parts.append(f"  Cost: ${stats['costUSD']:.6f}")
+
+                content = "\n".join(content_parts)
+                logger.info(f"Generated content for empty Claude response: {content}")
+            else:
+                content = "Claude CLI execution completed, but no textual result was returned and metadata was unparseable."
+        else:
+            content = result.parsed.content
 
         model_info = {
             "provider": client_config.name,

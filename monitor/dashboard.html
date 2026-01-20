@@ -591,7 +591,7 @@
             const avgTime = instancesWithMetrics.length > 0
                 ? Math.round(instancesWithMetrics.reduce((sum, i) => sum + (i.avg_execution_time_1m || 0), 0) / instancesWithMetrics.length)
                 : 0;
-            document.getElementById('avgExecTime').textContent = avgTime + 'ms';
+            document.getElementById('avgExecTime').textContent = formatDuration(avgTime);
 
             const avgError = instancesWithMetrics.length > 0
                 ? (instancesWithMetrics.reduce((sum, i) => sum + (i.error_rate_1m || 0), 0) / instancesWithMetrics.length * 100).toFixed(1)
@@ -641,7 +641,7 @@
                                 <div class="metric-label">Errors (Life)</div>
                             </div>
                             <div class="metric">
-                                <div class="metric-value">${Math.round(inst.avg_execution_time_1m || 0)}ms</div>
+                                <div class="metric-value">${formatDuration(Math.round(inst.avg_execution_time_1m || 0))}</div>
                                 <div class="metric-label">Avg Time (1h)</div>
                             </div>
                             <div class="metric">
@@ -661,7 +661,7 @@
                                                     ${call.tool}
                                                     ${call.model_name ? `<span class="model-tag" style="font-size: 9px; padding: 1px 4px;">${call.model_name}</span>` : ''}
                                                 </span>
-                                                <span class="call-duration">${call.duration_ms}ms</span>
+                                                <span class="call-duration">${formatDuration(call.duration_ms)}</span>
                                             </div>
                                             ${call.tool_input ? `<div class="call-detail input" title="${escapeHtml(call.tool_input)}">Input: ${truncate(call.tool_input)}</div>` : ''}
                                             ${call.tool_output ? `<div class="call-detail output" title="${escapeHtml(call.tool_output)}">Output: ${truncate(call.tool_output)}</div>` : ''}
@@ -689,6 +689,15 @@
                 .replace(/>/g, "&gt;")
                 .replace(/"/g, "&quot;")
                 .replace(/'/g, "&#039;");
+        }
+
+        function formatDuration(ms) {
+            if (ms < 1000) return Math.round(ms) + 'ms';
+            const seconds = ms / 1000;
+            if (seconds < 60) return seconds.toFixed(1) + 's';
+            const minutes = Math.floor(seconds / 60);
+            const remainingSeconds = Math.round(seconds % 60);
+            return `${minutes}m ${remainingSeconds}s`;
         }
 
         function formatUptime(seconds) {

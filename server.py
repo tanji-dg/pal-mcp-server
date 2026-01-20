@@ -802,6 +802,14 @@ async def handle_call_tool(name: str, arguments: dict[str, Any]) -> list[TextCon
 
         # Get model from arguments or use default
         model_name = arguments.get("model") or DEFAULT_MODEL
+
+        # SPECIAL HANDLING FOR CLINK: Resolve model from config early for better monitoring
+        if name == "clink" and (not model_name or model_name == "auto"):
+            clink_resolved = resolve_clink_model(arguments)
+            if clink_resolved:
+                model_name = clink_resolved
+                logger.debug(f"Resolved clink model early for monitoring: {model_name}")
+
         logger.debug(f"Initial model for {name}: {model_name}")
 
         # Parse model:option format if present
@@ -833,7 +841,7 @@ async def handle_call_tool(name: str, arguments: dict[str, Any]) -> list[TextCon
                 from monitor.publisher import get_publisher
 
                 publisher = get_publisher()
-                await publisher.tool_start(name, arguments)
+                await publisher.tool_start(name, arguments, model_name=model_name)
             except Exception as e:
                 logger.debug(f"Failed to publish tool start event: {e}")
 
@@ -909,14 +917,47 @@ async def handle_call_tool(name: str, arguments: dict[str, Any]) -> list[TextCon
             if MONITOR_ENABLED:
                 try:
                     from monitor.publisher import get_publisher
+                    import json
+
+                    # Attempt to extract effective model name from result if possible (e.g. for clink)
+                    effective_model_name = arguments.get("_resolved_model_name") or model_name
+                    if result and isinstance(result, list) and len(result) > 0:
+                        from mcp.types import TextContent
+                        if isinstance(result[0], TextContent) and result[0].text:
+                            try:
+                                res_data = json.loads(result[0].text)
+                                if isinstance(res_data, dict):
+                                    res_metadata = res_data.get("metadata", {})
+                                    # For clink tools, combining provider and model is most descriptive
+                                    p_used = res_metadata.get("provider_used") or res_metadata.get("cli_name")
+                                    m_used = res_metadata.get("model_used") or res_metadata.get("model_name")
+
+                                    if p_used and m_used:
+                                        effective_model_name = f"{p_used}({m_used})"
+                                    elif p_used:
+                                        effective_model_name = p_used
+                                    elif m_used:
+                                        effective_model_name = m_used
+                            except Exception:
+                                pass
 
                     publisher = get_publisher()
-                    await publisher.tool_end(name, tool_duration_ms, result)
+                    await publisher.tool_end(name, tool_duration_ms, result, model_name=effective_model_name)
                 except Exception as e:
                     logger.debug(f"Failed to publish tool end event: {e}")
 
         except asyncio.CancelledError:
             logger.warning(f"Tool execution for '{name}' was cancelled (client disconnected?)")
+
+            # Publish tool error event to monitor so it doesn't stay BUSY
+            if MONITOR_ENABLED:
+                try:
+                    from monitor.publisher import get_publisher
+                    publisher = get_publisher()
+                    duration = int((time.time() - tool_start_time) * 1000)
+                    await publisher.tool_error(name, duration, "Operation cancelled", model_name=model_name)
+                except Exception:
+                    pass
             raise
 
         except Exception as tool_error:
@@ -927,8 +968,11 @@ async def handle_call_tool(name: str, arguments: dict[str, Any]) -> list[TextCon
                 try:
                     from monitor.publisher import get_publisher
 
+                    # Attempt to extract model name for error event
+                    effective_model_name = arguments.get("_resolved_model_name") or model_name
+
                     publisher = get_publisher()
-                    await publisher.tool_error(name, tool_duration_ms, str(tool_error))
+                    await publisher.tool_error(name, tool_duration_ms, str(tool_error), model_name=effective_model_name)
                 except Exception as e:
                     logger.debug(f"Failed to publish tool error event: {e}")
 

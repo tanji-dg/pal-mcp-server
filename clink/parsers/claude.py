@@ -17,52 +17,114 @@ class ClaudeJSONParser(BaseParser):
         if not stdout.strip():
             raise ParserError("Claude CLI returned empty stdout while JSON output was expected")
 
+        # Try to parse as single JSON or list first (legacy/simple behavior)
         try:
             loaded = json.loads(stdout)
-        except json.JSONDecodeError as exc:  # pragma: no cover - defensive logging
-            raise ParserError(f"Failed to decode Claude CLI JSON output: {exc}") from exc
+            is_stream = False
+        except json.JSONDecodeError:
+            # Failed to parse as single JSON, likely stream-json format (multiple objects)
+            loaded = None
+            is_stream = True
 
-        events: list[dict[str, Any]] | None = None
-        assistant_entry: dict[str, Any] | None = None
+        payload = None
+        events: list[dict[str, Any]] = []
+        accumulated_content = []
+        model_from_system = None
 
-        if isinstance(loaded, dict):
-            payload: dict[str, Any] = loaded
-        elif isinstance(loaded, list):
-            events = [item for item in loaded if isinstance(item, dict)]
-            result_entry = next(
-                (item for item in events if item.get("type") == "result" or "result" in item),
-                None,
-            )
-            assistant_entry = next(
-                (item for item in reversed(events) if item.get("type") == "assistant"),
-                None,
-            )
-            payload = result_entry or assistant_entry or (events[-1] if events else {})
-            if not payload:
-                raise ParserError("Claude CLI JSON array did not contain any parsable objects")
+        if not is_stream and loaded is not None:
+            # ... (existing non-stream logic)
+            if isinstance(loaded, dict):
+                payload = loaded
+            elif isinstance(loaded, list):
+                events = [item for item in loaded if isinstance(item, dict)]
+                result_entry = next(
+                    (item for item in events if item.get("type") == "result" or "result" in item),
+                    None,
+                )
+                assistant_entry = next(
+                    (item for item in reversed(events) if item.get("type") == "assistant"),
+                    None,
+                )
+                payload = result_entry or assistant_entry or (events[-1] if events else {})
+                if not payload:
+                    raise ParserError("Claude CLI JSON array did not contain any parsable objects")
+            else:
+                raise ParserError("Claude CLI returned unexpected JSON payload")
         else:
-            raise ParserError("Claude CLI returned unexpected JSON payload")
+            # Stream parsing logic
+            for line in stdout.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    data = json.loads(line)
+                    events.append(data)
+                    
+                    msg_type = data.get("type")
+                    if msg_type == "message":
+                        # Accumulate partial content (if --include-partial-messages is used)
+                        content = data.get("content")
+                        if content and isinstance(content, str):
+                            accumulated_content.append(content)
+                    elif msg_type == "assistant":
+                        # Final message in stream
+                        message_obj = data.get("message")
+                        if isinstance(message_obj, dict):
+                            content_list = message_obj.get("content")
+                            if isinstance(content_list, list):
+                                for item in content_list:
+                                    if isinstance(item, dict) and item.get("type") == "text":
+                                        text = item.get("text")
+                                        if text:
+                                            accumulated_content.append(text)
+                            elif isinstance(content_list, str):
+                                accumulated_content.append(content_list)
+                    elif msg_type == "result":
+                        payload = data
+                    elif msg_type == "system":
+                         # Capture model info from init
+                         if data.get("subtype") == "init":
+                             model_from_system = data.get("model")
+                             if not payload:
+                                 payload = data
+                    elif msg_type == "error":
+                         # Capture error as payload if no result yet
+                         if not payload:
+                             payload = data
+                except json.JSONDecodeError:
+                    continue
+            
+            if not payload and events:
+                # If no explicit result, look for last useful event
+                payload = events[-1]
 
-        metadata = self._build_metadata(payload, stderr)
-        if events is not None:
+        if not payload and not accumulated_content:
+             raise ParserError("Failed to extract valid JSON payload from Claude CLI output")
+
+        metadata = self._build_metadata(payload or {}, stderr, model_name=model_from_system)
+        if events:
             metadata["raw_events"] = events
+        if loaded is not None and not is_stream:
             metadata["raw"] = loaded
 
-        result = payload.get("result")
+        # 1. Try explicit result field
+        result = payload.get("result") if payload else None
         content: str = ""
         if isinstance(result, str):
             content = result.strip()
         elif isinstance(result, list):
-            # Some CLI flows may emit a list of strings; join them conservatively.
-            joined = [part.strip() for part in result if isinstance(part, str) and part.strip()]
-            content = "\n".join(joined)
+             joined = [part.strip() for part in result if isinstance(part, str) and part.strip()]
+             content = "\n".join(joined)
+        
+        # 2. If no result content, use accumulated stream content
+        if not content and accumulated_content:
+            content = "".join(accumulated_content).strip()
 
         if content:
             return ParsedCLIResponse(content=content, metadata=metadata)
 
-        message = self._extract_message(payload)
-        if message is None and assistant_entry and assistant_entry is not payload:
-            message = self._extract_message(assistant_entry)
+        # 3. Fallback to message extraction
+        message = self._extract_message(payload or {})
         if message:
             return ParsedCLIResponse(content=message, metadata=metadata)
 
@@ -76,11 +138,14 @@ class ClaudeJSONParser(BaseParser):
 
         raise ParserError("Claude CLI response did not contain a textual result")
 
-    def _build_metadata(self, payload: dict[str, Any], stderr: str) -> dict[str, Any]:
+    def _build_metadata(self, payload: dict[str, Any], stderr: str, model_name: str | None = None) -> dict[str, Any]:
         metadata: dict[str, Any] = {
             "raw": payload,
             "is_error": bool(payload.get("is_error")),
         }
+
+        if model_name:
+            metadata["model_used"] = model_name
 
         type_field = payload.get("type")
         if isinstance(type_field, str):
@@ -103,8 +168,15 @@ class ClaudeJSONParser(BaseParser):
         model_usage = payload.get("modelUsage")
         if isinstance(model_usage, dict) and model_usage:
             metadata["model_usage"] = model_usage
-            first_model = next(iter(model_usage.keys()))
-            metadata["model_used"] = first_model
+            if "model_used" not in metadata:
+                first_model = next(iter(model_usage.keys()))
+                metadata["model_used"] = first_model
+
+        # Also check direct model field often found in 'assistant' or 'message' events
+        if "model_used" not in metadata:
+            direct_model = payload.get("model") or (payload.get("message") or {}).get("model")
+            if isinstance(direct_model, str):
+                metadata["model_used"] = direct_model
 
         permission_denials = payload.get("permission_denials")
         if isinstance(permission_denials, list) and permission_denials:
