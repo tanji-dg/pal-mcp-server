@@ -29,7 +29,7 @@ import os
 import time
 from collections import deque
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
@@ -43,6 +43,7 @@ from monitor.models import (
     ToolEventType,
     utc_now,
 )
+from utils.storage_backend import get_storage_backend
 
 logger = logging.getLogger(__name__)
 
@@ -692,6 +693,42 @@ def create_app() -> FastAPI:
                 content="<h1>Dashboard not found</h1><p>dashboard.html is missing</p>",
                 status_code=404,
             )
+
+    @app.get("/history", response_class=HTMLResponse)
+    async def history_page():
+        """Serve the conversation history viewer."""
+        history_path = os.path.join(os.path.dirname(__file__), "history.html")
+        try:
+            with open(history_path, encoding="utf-8") as f:
+                return HTMLResponse(content=f.read())
+        except FileNotFoundError:
+            return HTMLResponse(
+                content="<h1>History view not found</h1><p>history.html is missing</p>",
+                status_code=404,
+            )
+
+    @app.get("/api/history")
+    async def get_history():
+        """Get conversation history from storage."""
+        storage = get_storage_backend()
+        conversations = storage.list_all()
+        
+        # Format for frontend
+        formatted = {}
+        for cid, (content, expires_at) in conversations.items():
+            try:
+                # Content is stored as JSON string
+                parsed_content = json.loads(content)
+                formatted[cid] = {
+                    "content": parsed_content,
+                    "expires_at": datetime.fromtimestamp(expires_at, tz=timezone.utc).isoformat()
+                }
+            except json.JSONDecodeError:
+                formatted[cid] = {
+                    "error": "Failed to parse content",
+                    "raw": content
+                }
+        return {"conversations": formatted}
 
     @app.get("/health")
     async def health_check():

@@ -1,27 +1,21 @@
 """
-In-memory storage backend for conversation threads
+SQLite storage backend for conversation threads
 
-This module provides a thread-safe, in-memory alternative to Redis for storing
-conversation contexts. It's designed for ephemeral MCP server sessions where
-conversations only need to persist during a single Claude session.
-
-⚠️  PROCESS-SPECIFIC STORAGE: This storage is confined to a single Python process.
-    Data stored in one process is NOT accessible from other processes or subprocesses.
-    This is why simulator tests that run server.py as separate subprocesses cannot
-    share conversation state between tool calls.
+Replaces the in-memory/JSON-file storage with a robust SQLite database to handle
+concurrent access from multiple MCP server processes safely.
 
 Key Features:
-- Thread-safe operations using locks
-- TTL support with automatic expiration
-- Background cleanup thread for memory management
-- Singleton pattern for consistent state within a single process
-- Drop-in replacement for Redis storage (for single-process scenarios)
+- Process-safe concurrent access (SQLite handling locking)
+- Persistent storage in logs/conversations.db
+- Automatic cleanup of expired entries
 """
 
 import json
 import logging
+import sqlite3
 import threading
 import time
+from pathlib import Path
 from typing import Optional
 
 from config import PROJECT_ROOT
@@ -30,55 +24,102 @@ from utils.env import get_env
 logger = logging.getLogger(__name__)
 
 
-class InMemoryStorage:
-    """Thread-safe in-memory storage with file persistence for conversation threads"""
+class SQLiteStorage:
+    """Thread-safe and process-safe storage using SQLite"""
 
     def __init__(self):
-        self._store: dict[str, tuple[str, float]] = {}
-        self._lock = threading.Lock()
-
-        # Persistence configuration
         self._storage_dir = PROJECT_ROOT / "logs"
         self._storage_dir.mkdir(exist_ok=True)
-        self._persistence_file = self._storage_dir / "conversations.json"
+        self._db_path = self._storage_dir / "conversations.db"
+        
+        self._init_db()
 
-        # Match Redis behavior: cleanup interval based on conversation timeout
+        # Cleanup settings
         timeout_hours = int(get_env("CONVERSATION_TIMEOUT_HOURS", "24") or "24")
         self._cleanup_interval = (timeout_hours * 3600) // 10
-        self._cleanup_interval = max(300, self._cleanup_interval)  # Minimum 5 minutes
+        self._cleanup_interval = max(300, self._cleanup_interval)
         self._shutdown = False
-
-        # Load existing conversations from disk
-        self._load_from_disk()
 
         # Start background cleanup thread
         self._cleanup_thread = threading.Thread(target=self._cleanup_worker, daemon=True)
         self._cleanup_thread.start()
 
-        logger.info(f"Storage initialized with {timeout_hours}h timeout, cleanup every {self._cleanup_interval//60}m")
+        logger.info(f"SQLite storage initialized at {self._db_path}")
+
+    def _get_conn(self):
+        """Get a new database connection"""
+        return sqlite3.connect(str(self._db_path), timeout=10.0)
+
+    def _init_db(self):
+        """Initialize database schema"""
+        try:
+            with self._get_conn() as conn:
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS conversations (
+                        id TEXT PRIMARY KEY,
+                        content TEXT NOT NULL,
+                        expires_at REAL NOT NULL
+                    )
+                """)
+                # Create index for cleanup optimization
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_expires_at ON conversations(expires_at)")
+                conn.commit()
+        except sqlite3.Error as e:
+            logger.error(f"Failed to initialize SQLite DB: {e}")
 
     def set_with_ttl(self, key: str, ttl_seconds: int, value: str) -> None:
-        """Store value with expiration time and persist to disk"""
-        with self._lock:
-            expires_at = time.time() + ttl_seconds
-            self._store[key] = (value, expires_at)
+        """Store value with expiration time"""
+        expires_at = time.time() + ttl_seconds
+        try:
+            with self._get_conn() as conn:
+                conn.execute(
+                    "INSERT OR REPLACE INTO conversations (id, content, expires_at) VALUES (?, ?, ?)",
+                    (key, value, expires_at)
+                )
+                conn.commit()
             logger.debug(f"Stored key {key} with TTL {ttl_seconds}s")
-            self._save_to_disk_locked()
+        except sqlite3.Error as e:
+            logger.error(f"Failed to set key {key}: {e}")
 
     def get(self, key: str) -> Optional[str]:
         """Retrieve value if not expired"""
-        with self._lock:
-            if key in self._store:
-                value, expires_at = self._store[key]
-                if time.time() < expires_at:
-                    logger.debug(f"Retrieved key {key}")
-                    return value
-                else:
-                    # Clean up expired entry
-                    del self._store[key]
-                    logger.debug(f"Key {key} expired and removed")
-                    self._save_to_disk_locked()
+        try:
+            with self._get_conn() as conn:
+                cursor = conn.execute(
+                    "SELECT content, expires_at FROM conversations WHERE id = ?", 
+                    (key,)
+                )
+                row = cursor.fetchone()
+                
+                if row:
+                    content, expires_at = row
+                    if time.time() < expires_at:
+                        logger.debug(f"Retrieved key {key}")
+                        return content
+                    else:
+                        # Lazy delete on read if expired
+                        conn.execute("DELETE FROM conversations WHERE id = ?", (key,))
+                        conn.commit()
+                        logger.debug(f"Key {key} expired (on read)")
+        except sqlite3.Error as e:
+            logger.error(f"Failed to get key {key}: {e}")
         return None
+
+    def list_all(self) -> dict[str, tuple[str, float]]:
+        """List all active conversations. Returns dict {id: (content, expires_at)}"""
+        current_time = time.time()
+        result = {}
+        try:
+            with self._get_conn() as conn:
+                cursor = conn.execute(
+                    "SELECT id, content, expires_at FROM conversations WHERE expires_at > ?", 
+                    (current_time,)
+                )
+                for row in cursor.fetchall():
+                    result[row[0]] = (row[1], row[2])
+        except sqlite3.Error as e:
+            logger.error(f"Failed to list conversations: {e}")
+        return result
 
     def setex(self, key: str, ttl_seconds: int, value: str) -> None:
         """Redis-compatible setex method"""
@@ -91,46 +132,20 @@ class InMemoryStorage:
             self._cleanup_expired()
 
     def _cleanup_expired(self):
-        """Remove all expired entries and update disk"""
-        with self._lock:
-            current_time = time.time()
-            expired_keys = [k for k, (_, exp) in self._store.items() if exp < current_time]
-            for key in expired_keys:
-                del self._store[key]
-
-            if expired_keys:
-                logger.debug(f"Cleaned up {len(expired_keys)} expired conversation threads")
-                self._save_to_disk_locked()
-
-    def _save_to_disk_locked(self):
-        """Save the current store to disk. MUST be called with self._lock held."""
+        """Remove all expired entries"""
+        current_time = time.time()
         try:
-            with open(self._persistence_file, "w", encoding="utf-8") as f:
-                json.dump(self._store, f, ensure_ascii=False)
-        except Exception as e:
-            logger.error(f"Failed to persist conversations to disk: {e}")
-
-    def _load_from_disk(self):
-        """Load conversations from disk on startup"""
-        if not self._persistence_file.exists():
-            return
-
-        try:
-            with open(self._persistence_file, encoding="utf-8") as f:
-                data = json.load(f)
-
-                # Filter out already expired entries during load
-                current_time = time.time()
-                loaded_count = 0
-                for key, (value, expires_at) in data.items():
-                    if expires_at > current_time:
-                        self._store[key] = (value, expires_at)
-                        loaded_count += 1
-
-                if loaded_count > 0:
-                    logger.info(f"Loaded {loaded_count} conversation threads from {self._persistence_file}")
-        except Exception as e:
-            logger.error(f"Failed to load conversations from disk: {e}")
+            with self._get_conn() as conn:
+                cursor = conn.execute(
+                    "DELETE FROM conversations WHERE expires_at < ?", 
+                    (current_time,)
+                )
+                count = cursor.rowcount
+                if count > 0:
+                    conn.commit()
+                    logger.debug(f"Cleaned up {count} expired conversation threads")
+        except sqlite3.Error as e:
+            logger.error(f"Cleanup failed: {e}")
 
     def shutdown(self):
         """Graceful shutdown of background thread"""
@@ -144,12 +159,11 @@ _storage_instance = None
 _storage_lock = threading.Lock()
 
 
-def get_storage_backend() -> InMemoryStorage:
+def get_storage_backend() -> SQLiteStorage:
     """Get the global storage instance (singleton pattern)"""
     global _storage_instance
     if _storage_instance is None:
         with _storage_lock:
             if _storage_instance is None:
-                _storage_instance = InMemoryStorage()
-                logger.info("Initialized in-memory conversation storage")
+                _storage_instance = SQLiteStorage()
     return _storage_instance
