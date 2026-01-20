@@ -50,40 +50,48 @@ class TestMonitorRegression:
         # The log_event object itself should have been enriched
         assert log_event.session_id == session_id
 
-    def test_duration_calculation_non_zero(self, tracker):
-        """Verify that duration calculation in log_activity doesn't result in 0ms if start time exists."""
+    def test_duration_calculation_from_json_timestamps(self, tracker):
+        """Verify that duration calculation uses internal JSON timestamps if provided."""
         tracker.start_tool("clink")
         
-        # Tool Use
+        # Simulate a log chunk with two events having distinct internal timestamps
+        start_ts = "2026-01-20T11:00:00.000Z"
+        end_ts = "2026-01-20T11:00:01.500Z" # 1500ms later
+        
+        # Start tool via log
         tracker.log_activity("clink", json.dumps({
             "type": "tool_use",
             "tool_id": "t1",
-            "name": "Bash"
+            "name": "Bash",
+            "timestamp": start_ts
         }))
         
-        # Simulate immediate result (delta < 1ms)
-        # We keep the start time identical to 'now'
-        start_time = tracker._tool_start_times["t1"]
-        
-        # Result
+        # Result via log in same session/tracker
         tracker.log_activity("clink", json.dumps({
             "type": "tool_result",
             "tool_id": "t1",
-            "status": "success"
-        }), original_event=ToolEvent(
-            event_type=ToolEventType.TOOL_LOG,
-            instance_id=tracker.instance_id,
-            timestamp=start_time # Exact same time
-        ))
+            "status": "success",
+            "timestamp": end_ts
+        }))
         
         last_call = tracker.recent_calls[0]
-        # Should be at least 1ms, not 0
-        assert last_call.duration_ms >= 1
+        # Should be exactly 1500ms based on JSON timestamps
+        assert last_call.duration_ms == 1500
+
+    def test_true_zero_ms_reported_as_zero(self, tracker):
+        """Verify that 0ms is NOT hidden by max(1, ...) if events are identical in time."""
+        tracker.start_tool("clink")
+        ts = "2026-01-20T11:00:00.000Z"
         
-        # Check window metrics
-        assert len(tracker._durations_1m) == 1
-        assert tracker._durations_1m[0][1] >= 1
-        assert tracker.get_avg_execution_time_1m() >= 1.0
+        tracker.log_activity("clink", json.dumps({
+            "type": "tool_use", "tool_id": "t1", "name": "Bash", "timestamp": ts
+        }))
+        tracker.log_activity("clink", json.dumps({
+            "type": "tool_result", "tool_id": "t1", "status": "success", "timestamp": ts
+        }))
+        
+        # Should be 0ms, reporting the measurement failure honestly
+        assert tracker.recent_calls[0].duration_ms == 0
 
     def test_to_status_id_visibility(self, tracker):
         """Verify session_id is visible in status even if idle."""
