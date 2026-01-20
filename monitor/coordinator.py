@@ -46,7 +46,7 @@ from monitor.models import (
 )
 from utils.storage_backend import get_storage_backend
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger(__name__) 
 
 # Configuration constants
 HEARTBEAT_INTERVAL = 10  # seconds between heartbeats
@@ -68,7 +68,7 @@ class InstanceTracker:
         # Support for nested/parallel tool calls
         self.active_tools: dict[str, datetime] = {} # tool_name -> start_time
         self.active_tool_inputs: dict[str, str] = {} # tool_name -> input
-        self._tool_start_times: dict[str, datetime] = {} # tool_id -> start_time (for log-based duration tracking)
+        self._tool_start_times: dict[str, float] = {} # tool_id -> start_timestamp (float)
         
         self.active_tool: Optional[str] = None # Primary/most recent tool
         self.active_tool_input: Optional[str] = None
@@ -129,6 +129,8 @@ class InstanceTracker:
     def log_activity(self, tool_name: str, log_data: Optional[str] = None, original_event: Optional[ToolEvent] = None):
         """Update activity status based on log event."""
         now = utc_now()
+        # High-precision monotonic time for arrival tracking within the same process
+        precise_now = time.monotonic()
         
         # Store log in buffer if event provided
         if original_event:
@@ -189,13 +191,14 @@ class InstanceTracker:
                     is_json_log = True
                     msg_type = data.get("type")
                     
-                    # Use JSON's internal timestamp if available for higher precision
-                    event_time = now
+                    # Determine high-precision event time
+                    # Prioritize internal JSON timestamp if available
+                    event_time_ts = precise_now
                     if "timestamp" in data:
                         try:
                             # Handle ISO format: 2026-01-20T11:26:13.055Z
                             ts_str = data["timestamp"].replace("Z", "+00:00")
-                            event_time = datetime.fromisoformat(ts_str)
+                            event_time_ts = datetime.fromisoformat(ts_str).timestamp()
                         except Exception:
                             pass
 
@@ -246,7 +249,8 @@ class InstanceTracker:
                         tool_id = data.get("tool_id")
                         if tool_id:
                             self._tool_name_cache[tool_id] = name
-                            self._tool_start_times[tool_id] = event_time
+                            # Store start time as high-precision float timestamp
+                            self._tool_start_times[tool_id] = event_time_ts
                         self.last_status = f"Calling {name}"
                     elif msg_type == "tool_result":
                         # Sub-tool execution finished (detected via logs)
@@ -272,9 +276,9 @@ class InstanceTracker:
                         # Calculate duration
                         duration_ms = 0
                         if tool_id and tool_id in self._tool_start_times:
-                            start_t = self._tool_start_times.pop(tool_id)
-                            diff = event_time.timestamp() - start_t.timestamp()
-                            duration_ms = int(diff * 1000)
+                            start_t_val = self._tool_start_times.pop(tool_id)
+                            # Accurate difference calculation (in seconds -> ms)
+                            duration_ms = int((event_time_ts - start_t_val) * 1000)
 
                         # Update metrics
                         self.total_calls += 1
@@ -297,10 +301,14 @@ class InstanceTracker:
                         self.recent_calls.appendleft(call)
                         
                         # Track for window metrics
-                        now_ts = event_time.timestamp()
+                        # Use arrival time for metrics window
+                        now_ts = now.timestamp()
                         self._calls_1m.append((now_ts, status == "error" or is_content_error))
                         self._durations_1m.append((now_ts, duration_ms))
 
+                        # If a tool result is seen, and it's from the primary tool, it's near completion
+                        if name and name == self.active_tool:
+                             self.last_status = f"Finishing {name}"
                     elif msg_type == "user":
                         # Handle Claude tool results embedded in user message
                         message = data.get("message", {})
@@ -324,8 +332,8 @@ class InstanceTracker:
                                     # Calculate duration
                                     duration_ms = 0
                                     if tool_id and tool_id in self._tool_start_times:
-                                        start_t = self._tool_start_times.pop(tool_id)
-                                        duration_ms = int((now.timestamp() - start_t.timestamp()) * 1000)
+                                        start_t_val = self._tool_start_times.pop(tool_id)
+                                        duration_ms = int((event_time_ts - start_t_val) * 1000)
 
                                     if is_error:
                                         self.total_errors += 1
@@ -346,7 +354,7 @@ class InstanceTracker:
                                     self.recent_calls.appendleft(call)
                                     
                                     # Track metrics
-                                    now_ts = time.time()
+                                    now_ts = now.timestamp()
                                     self._calls_1m.append((now_ts, is_error))
                                     self._durations_1m.append((now_ts, duration_ms))
 
@@ -379,7 +387,8 @@ class InstanceTracker:
                         item = data.get("item", {})
                         item_id = item.get("id")
                         if item_id:
-                            self._tool_start_times[item_id] = now
+                            # Use arriving monotonic time for high-precision delta
+                            self._tool_start_times[item_id] = event_time_ts
 
                         if item.get("type") == "command_execution":
                             self.last_status = f"Executing {item.get('command', 'cmd')}"
@@ -394,8 +403,8 @@ class InstanceTracker:
                         # Calculate duration
                         duration_ms = 0
                         if item_id and item_id in self._tool_start_times:
-                            start_t = self._tool_start_times.pop(item_id)
-                            duration_ms = int((now.timestamp() - start_t.timestamp()) * 1000)
+                            start_t_ts = self._tool_start_times.pop(item_id)
+                            duration_ms = int((event_time_ts - start_t_ts) * 1000)
 
                         if status in ["failed", "error"]:
                             cmd = item.get("command") or "operation"
@@ -424,7 +433,7 @@ class InstanceTracker:
                             self.recent_calls.appendleft(call)
                             
                             # Track window metrics
-                            now_ts = time.time()
+                            now_ts = now.timestamp()
                             self._calls_1m.append((now_ts, is_error))
                             self._durations_1m.append((now_ts, duration_ms))
                     elif msg_type == "error":
@@ -517,7 +526,7 @@ class InstanceTracker:
             self.last_status = f"Completed {target_tool} ({status})" if target_tool else "Idle"
             self.active_tool = None
             self.active_tool_input = None
-            # DO NOT clear session_id here to maintain correlation in dashboard
+            # session_id is preserved until next tool_start or log_activity updates it
             self.model_name = None
             self.tool_start_time = None
             self.active_tools.clear() # Ensure all are cleared
