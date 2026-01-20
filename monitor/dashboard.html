@@ -782,6 +782,36 @@
                         }
                         return { type: 'system', text: `> Finished (Cost: $${data.total_cost_usd || 0})`, isDelta: false };
                     }
+
+                    // 6. Codex Events (item.started, item.completed)
+                    if (data.type === 'item.started' || data.type === 'item.completed') {
+                        const item = data.item || {};
+                        const itemType = item.type;
+                        
+                        // Reasoning -> Thinking
+                        if (itemType === 'reasoning') {
+                            if (data.type === 'item.started' && item.text) {
+                                return { type: 'thinking', text: item.text, isDelta: true };
+                            }
+                            // Ignore completed reasoning as it just confirms end
+                            return null;
+                        }
+                        
+                        // Command Execution -> Tool Use/Result
+                        if (itemType === 'command_execution') {
+                            if (data.type === 'item.started') {
+                                return { type: 'tool-use', text: `> Executing ${item.command}...`, isDelta: false };
+                            }
+                            if (data.type === 'item.completed') {
+                                const isError = item.status === 'failed' || item.status === 'error';
+                                if (isError) {
+                                    return { type: 'error', text: `! Command failed: ${item.command}`, isDelta: false };
+                                }
+                                // Success completion
+                                return { type: 'tool-result', text: `< Command finished: ${item.command}`, isDelta: false };
+                            }
+                        }
+                    }
                 }
             } catch (e) {
                 // Ignore parse errors, treat as raw text
