@@ -399,6 +399,11 @@
                 </div>
                 <div class="toggle-control">
                     <label>
+                        <input type="checkbox" id="hideIdle" onchange="toggleHideIdle()"> Hide Idle
+                    </label>
+                </div>
+                <div class="toggle-control">
+                    <label>
                         <input type="checkbox" id="tzLocal" onchange="toggleTz()"> LocalTime
                     </label>
                 </div>
@@ -414,6 +419,7 @@
         // Load preferences
         let useLocalTime = localStorage.getItem('monitor_use_localtime') !== 'false';
         let hideOffline = localStorage.getItem('monitor_hide_offline') === 'true';
+        let hideIdle = localStorage.getItem('monitor_hide_idle') === 'true';
 
         function initControls() {
             const tzCb = document.getElementById('tzLocal');
@@ -421,6 +427,9 @@
 
             const offlineCb = document.getElementById('hideOffline');
             if (offlineCb) offlineCb.checked = hideOffline;
+
+            const idleCb = document.getElementById('hideIdle');
+            if (idleCb) idleCb.checked = hideIdle;
         }
 
         function toggleTz() {
@@ -432,6 +441,14 @@
         function toggleHideOffline() {
             hideOffline = document.getElementById('hideOffline').checked;
             localStorage.setItem('monitor_hide_offline', hideOffline);
+            if (lastData) {
+                updateUI(lastData);
+            }
+        }
+
+        function toggleHideIdle() {
+            hideIdle = document.getElementById('hideIdle').checked;
+            localStorage.setItem('monitor_hide_idle', hideIdle);
             if (lastData) {
                 updateUI(lastData);
             }
@@ -568,25 +585,28 @@
             lastData = data; // Cache for filtering updates
             let instances = data.instances || [];
 
-            // Filter offline instances if enabled
-            const allInstancesCount = instances.length;
+            // Filter instances based on preferences
             if (hideOffline) {
                 instances = instances.filter(i => i.state !== 'offline');
             }
+            if (hideIdle) {
+                instances = instances.filter(i => i.state !== 'idle');
+            }
 
-            // Update stats (always use full counts for stats)
-            document.getElementById('totalInstances').textContent = allInstancesCount;
+            // Update stats (always use full counts for stats from original data)
+            const allInstances = data.instances || [];
+            document.getElementById('totalInstances').textContent = allInstances.length;
             document.getElementById('busyInstances').textContent =
-                (data.instances || []).filter(i => i.state === 'busy').length;
+                allInstances.filter(i => i.state === 'busy').length;
 
-            const totalCalls = instances.reduce((sum, i) => sum + (i.total_calls || 0), 0);
+            const totalCalls = allInstances.reduce((sum, i) => sum + (i.total_calls || 0), 0);
             document.getElementById('totalCalls').textContent = totalCalls;
 
-            const totalErrors = instances.reduce((sum, i) => sum + (i.total_errors || 0), 0);
+            const totalErrors = allInstances.reduce((sum, i) => sum + (i.total_errors || 0), 0);
             document.getElementById('totalErrors').textContent = totalErrors;
 
             // Only count instances that have actually made calls in the window for averaging
-            const instancesWithMetrics = instances.filter(i => (i.recent_calls && i.recent_calls.length > 0) || i.total_calls > 0);
+            const instancesWithMetrics = allInstances.filter(i => (i.recent_calls && i.recent_calls.length > 0) || i.total_calls > 0);
             
             const avgTime = instancesWithMetrics.length > 0
                 ? Math.round(instancesWithMetrics.reduce((sum, i) => sum + (i.avg_execution_time_1m || 0), 0) / instancesWithMetrics.length)
