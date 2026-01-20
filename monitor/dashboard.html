@@ -477,6 +477,11 @@
                 </div>
                 <div class="toggle-control">
                     <label>
+                        <input type="checkbox" id="fullOutput" onchange="toggleFullOutput()"> Full Output
+                    </label>
+                </div>
+                <div class="toggle-control">
+                    <label>
                         <input type="checkbox" id="tzLocal" onchange="toggleTz()"> LocalTime
                     </label>
                 </div>
@@ -498,6 +503,7 @@
         let hideIdle = localStorage.getItem('monitor_hide_idle') === 'true';
         let terminalView = localStorage.getItem('monitor_terminal_view') === 'true';
         let autoScroll = localStorage.getItem('monitor_auto_scroll') !== 'false'; // Default true
+        let fullOutput = localStorage.getItem('monitor_full_output') === 'true';
 
         function initControls() {
             const tzCb = document.getElementById('tzLocal');
@@ -514,12 +520,21 @@
 
             const scrollCb = document.getElementById('autoScroll');
             if (scrollCb) scrollCb.checked = autoScroll;
+
+            const fullCb = document.getElementById('fullOutput');
+            if (fullCb) fullCb.checked = fullOutput;
         }
 
         function toggleTz() {
             useLocalTime = document.getElementById('tzLocal').checked;
             localStorage.setItem('monitor_use_localtime', useLocalTime);
             refreshLogTimes();
+        }
+
+        function toggleFullOutput() {
+            fullOutput = document.getElementById('fullOutput').checked;
+            localStorage.setItem('monitor_full_output', fullOutput);
+            reRenderLogs();
         }
 
         function toggleHideOffline() {
@@ -784,8 +799,20 @@
                     
                     // Handle API errors without 'type' field
                     if (!data.type && data.error) {
-                        const msg = data.error.message || JSON.stringify(data.error);
-                        return { type: 'error', text: `! API Error: ${msg}`, isDelta: false };
+                        let msg = data.error.message || JSON.stringify(data.error);
+                        let delayInfo = "";
+                        
+                        // Extract delay info if available
+                        if (data.error.details && Array.isArray(data.error.details)) {
+                            for (const detail of data.error.details) {
+                                if (detail.metadata && detail.metadata.quotaResetDelay) {
+                                    delayInfo = ` [Quota Reset: ${detail.metadata.quotaResetDelay}]`;
+                                } else if (detail.retryDelay) {
+                                    delayInfo = ` [Retry Delay: ${detail.retryDelay}]`;
+                                }
+                            }
+                        }
+                        return { type: 'error', text: `! API Error: ${msg}${delayInfo}`, isDelta: false };
                     }
                     
                     // Unwrap Claude stream_event wrapper
@@ -795,10 +822,25 @@
                     }
                     
                     // Ignore internal stream/control events
-                    if (data.type === 'stream' || data.type === 'ping' || data.type === 'user') {
-                        return null; // Return null to skip rendering
+                    if (data.type === 'stream' || data.type === 'ping') {
+                        return null; 
                     }
 
+                    // Handle Claude tool results nested in user message
+                    if (data.type === 'user' && data.message && Array.isArray(data.message.content)) {
+                        const toolResult = data.message.content.find(c => c.type === 'tool_result');
+                        if (toolResult) {
+                            let text = toolResult.content || '';
+                            if (typeof text !== 'string') text = JSON.stringify(text);
+                            // Truncate unless Full Output is enabled
+                            if (!fullOutput && text.length > 300) {
+                                text = text.substr(0, 300) + '...';
+                            }
+                            return { type: toolResult.is_error ? 'error' : 'tool-result', text: `< ${text}`, isDelta: false };
+                        }
+                        return null; // Ignore other user messages
+                    }
+                    
                     // Ignore Claude stream lifecycle events
                     const ignoredClaudeEvents = [
                         'message_start', 'content_block_start', 
@@ -827,8 +869,18 @@
                                     if (toolUse.input.command) details = `: ${toolUse.input.command}`;
                                     else details = `: ${JSON.stringify(toolUse.input)}`;
                                 }
-                                if (details.length > 80) details = details.substr(0, 80) + '...';
+                                // Truncate unless Full Output is enabled
+                                if (!fullOutput && details.length > 80) {
+                                    details = details.substr(0, 80) + '...';
+                                }
                                 return { type: 'tool-use', text: `> Executing ${toolUse.name}${details}`, isDelta: false };
+                            }
+
+                            // Check for thinking in content list
+                            const thinking = content.find(c => c.type === 'thinking');
+                            if (thinking) {
+                                const text = thinking.thinking || thinking.text || '';
+                                return { type: 'thinking', text: text, isDelta: false };
                             }
 
                             content = content
@@ -850,8 +902,8 @@
                     // 2. Claude specific: content_block_delta
                     // {"type":"content_block_delta", "index":0, "delta":{"type":"text_delta", "text":"..."}}
                     if (data.type === 'content_block_delta' && data.delta) {
-                        if (data.delta.text) {
-                            return { type: 'thinking', text: data.delta.text, isDelta: true };
+                        if (data.delta.text || data.delta.thinking) {
+                            return { type: 'thinking', text: data.delta.text || data.delta.thinking, isDelta: true };
                         }
                         if (data.delta.type === 'input_json_delta') {
                             return null; // Ignore JSON streaming for tools
@@ -871,7 +923,10 @@
                             if (input.command) details = `: ${input.command}`;
                             else details = `: ${JSON.stringify(input)}`;
                         }
-                        if (details.length > 80) details = details.substr(0, 80) + '...';
+                        // Truncate unless Full Output is enabled
+                        if (!fullOutput && details.length > 80) {
+                            details = details.substr(0, 80) + '...';
+                        }
                         return { type: 'tool-use', text: `> Executing ${data.name || data.tool_name}${details}`, isDelta: false };
                     }
                     
@@ -882,8 +937,10 @@
                         // Extract text from list content if needed
                         if (Array.isArray(text)) text = text.join(' ');
                         if (typeof text !== 'string') text = JSON.stringify(text);
-                        // Truncate
-                        if (text.length > 300) text = text.substr(0, 300) + '...';
+                        // Truncate unless Full Output is enabled
+                        if (!fullOutput && text.length > 300) {
+                            text = text.substr(0, 300) + '...';
+                        }
                         return { type: isError ? 'error' : 'tool-result', text: `< ${text}`, isDelta: false };
                     }
 
@@ -1023,12 +1080,14 @@
                     <div class="instance-card ${inst.state}">
                         <div class="instance-header">
                             <span class="instance-id" title="${inst.instance_id}">${inst.instance_id}</span>
-                            ${inst.active_tool ? `<span class="active-tool-tag">${inst.active_tool}</span>` : ''}
-                            ${inst.model_name ? `<span class="model-tag">${inst.model_name}</span>` : ''}
-                            ${inst.active_role ? `<span class="role-tag">${inst.active_role}</span>` : ''}
-                            ${inst.last_status && inst.state === 'busy' ? `<span class="instance-phase">${inst.last_status}</span>` : ''}
-                            <span class="instance-state ${inst.state}">${inst.state}</span>
-                            ${inst.state !== 'offline' ? `<button class="kill-btn" onclick="killInstance('${inst.instance_id}')" title="Terminate Process">💀</button>` : ''}
+                            <div style="display: flex; align-items: center; gap: 8px;">
+                                ${inst.active_tool ? `<span class="active-tool-tag">${inst.active_tool}</span>` : ''}
+                                ${inst.model_name ? `<span class="model-tag">${inst.model_name}</span>` : ''}
+                                ${inst.active_role ? `<span class="role-tag">${inst.active_role}</span>` : ''}
+                                ${inst.last_status && inst.state === 'busy' ? `<span class="instance-phase">${inst.last_status}</span>` : ''}
+                                <span class="instance-state ${inst.state}">${inst.state}</span>
+                                ${inst.state !== 'offline' ? `<button class="kill-btn" onclick="killInstance('${inst.instance_id}')" title="Terminate Process">💀</button>` : ''}
+                            </div>
                         </div>
 
                         <div class="instance-metrics">
@@ -1081,6 +1140,7 @@
 
         function formatToolData(raw) {
             if (!raw) return '';
+            let processed = '';
             try {
                 const data = JSON.parse(raw);
                 // If it's a command execution, prettify the command string
@@ -1090,14 +1150,19 @@
                     cmd = cmd.replace(/ && /g, ' &&\n  ');
                     cmd = cmd.replace(/ \|\| /g, ' ||\n  ');
                     cmd = cmd.replace(/; /g, ';\n  ');
-                    return escapeHtml(cmd);
+                    processed = cmd;
+                } else {
+                    // Prettify general JSON
+                    processed = JSON.stringify(data, null, 2);
                 }
-                // Prettify general JSON
-                return escapeHtml(JSON.stringify(data, null, 2));
             } catch (e) {
-                // Not JSON or parse failed, return as is (truncated)
-                return escapeHtml(truncate(raw, 500));
+                // Not JSON or parse failed
+                processed = raw;
             }
+            
+            // Always enforce a strict limit for display in the instance cards
+            // to prevent the UI from becoming unusable with large payloads.
+            return escapeHtml(truncate(processed, 500));
         }
 
         function truncate(str, n=50) {
