@@ -59,16 +59,22 @@ class GeminiJSONParser(BaseParser):
                             if content:
                                 accumulated_response.append(content)
 
-                    # Prioritize result type which contains final content and stats
-                    elif msg_type == "result":
+                    # Update payload based on priority
+                    if msg_type == "result":
                         payload = data
-                    # Also support legacy format without explicit type but having response/text
+                    elif msg_type == "error" or ("error" in data and not msg_type):
+                        if payload is None or payload.get("type") not in ("result",):
+                            payload = data
                     elif not msg_type and ("response" in data or "text" in data):
+                        if payload is None or payload.get("type") not in ("result", "error"):
+                            payload = data
+                    elif payload is None:
+                        # Last resort: any valid JSON object
                         payload = data
                 except json.JSONDecodeError:
                     continue
 
-        if not payload and not accumulated_response:
+        if payload is None and not accumulated_response:
             # Fallback to older robust extraction if split/parse failed
             brace_index = stdout.find("{")
             if brace_index != -1:
@@ -77,7 +83,7 @@ class GeminiJSONParser(BaseParser):
                 except json.JSONDecodeError:
                     pass
 
-        if not payload and not accumulated_response:
+        if payload is None and not accumulated_response:
             raise ParserError("Failed to extract valid JSON payload from Gemini CLI output")
 
         # Resolve final response text
@@ -95,6 +101,10 @@ class GeminiJSONParser(BaseParser):
             metadata["model_used"] = model_from_init
 
         if payload:
+            # Mark as error if payload contains an error object
+            if "error" in payload and isinstance(payload["error"], dict):
+                metadata["is_error"] = True
+
             stats = payload.get("stats")
             if isinstance(stats, dict):
                 metadata["stats"] = stats
@@ -114,7 +124,7 @@ class GeminiJSONParser(BaseParser):
                 metadata["stderr"] = stderr.strip()
             return ParsedCLIResponse(content=response_text, metadata=metadata)
 
-        fallback_message, extra_metadata = self._build_fallback_message(payload, stderr)
+        fallback_message, extra_metadata = self._build_fallback_message(payload or {}, stderr)
         if fallback_message:
             metadata.update(extra_metadata)
             if stderr and stderr.strip():
@@ -129,6 +139,26 @@ class GeminiJSONParser(BaseParser):
         stderr_text = stderr.strip() if stderr else ""
         stderr_lower = stderr_text.lower()
         extra_metadata: dict[str, Any] = {"empty_response": True}
+
+        # Check for structured error first
+        error_field = payload.get("error")
+        if isinstance(error_field, dict):
+            msg = error_field.get("message") or "Unknown API error"
+            
+            # Extract delay info if present (matches logic in coordinator/dashboard)
+            delay_info = ""
+            details = error_field.get("details", [])
+            if isinstance(details, list):
+                for detail in details:
+                    if not isinstance(detail, dict):
+                        continue
+                    metadata = detail.get("metadata", {})
+                    if isinstance(metadata, dict) and "quotaResetDelay" in metadata:
+                        delay_info = f" (Quota resets in {metadata['quotaResetDelay']})"
+                    elif "retryDelay" in detail:
+                        delay_info = f" (Retry delay: {detail['retryDelay']})"
+            
+            return f"{msg}{delay_info}", extra_metadata
 
         if "429" in stderr_lower or "rate limit" in stderr_lower:
             extra_metadata["rate_limit_status"] = 429
