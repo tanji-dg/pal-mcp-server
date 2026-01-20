@@ -659,6 +659,18 @@
             });
         }
 
+        function getShortId(sessionId, instanceId) {
+            // Priority: Session ID (thread:...) > PID (from instanceId)
+            let rawId = sessionId || (instanceId ? instanceId.split('@')[0] : 'system');
+            
+            // Special handling for conversation IDs: strip 'thread:' prefix
+            if (rawId.startsWith('thread:')) {
+                rawId = rawId.substr(7);
+            }
+            
+            return rawId.substr(0, 8);
+        }
+
         function connect() {
             // Automatically determine WebSocket URL based on current page location
             const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -744,15 +756,7 @@
             
             const time = formatLogTime(event.timestamp);
             const tool = event.tool_name || 'system';
-            
-            // Session ID logic: priority: session_id > instance_id
-            let session = '-';
-            if (event.session_id) {
-                session = event.session_id.substr(0, 8);
-            } else if (event.instance_id) {
-                // Use part of PID if session is missing
-                session = event.instance_id.split('@')[0];
-            }
+            const session = getShortId(event.session_id, event.instance_id);
             
             const msg = event.log_data || '';
             
@@ -778,7 +782,7 @@
             const parsed = parseLogContent(event.log_data);
             if (!parsed) return;
 
-            const session = (event.session_id || event.instance_id || '').split('@')[0].substr(0, 8);
+            const session = getShortId(event.session_id, event.instance_id);
             
             // Attempt to merge with previous line if:
             // 1. Same session
@@ -1136,13 +1140,14 @@
             container.innerHTML = instances.map(inst => {
                 const uptime = formatUptime(inst.uptime_seconds);
                 const recentCalls = (inst.recent_calls || []).slice(0, 5);
+                const shortId = getShortId(inst.session_id, inst.instance_id);
 
                 return `
                     <div class="instance-card ${inst.state}">
                         <div class="instance-header">
                             <span class="instance-id" title="${inst.instance_id}">${inst.instance_id}</span>
                             <div style="display: flex; align-items: center; gap: 8px;">
-                                ${inst.session_id ? `<span class="session-tag" title="Session ID: ${inst.session_id}">[${inst.session_id.substr(0, 8)}]</span>` : ''}
+                                <span class="session-tag" title="Correlating ID: ${inst.session_id || inst.instance_id}">[${shortId}]</span>
                                 ${inst.active_tool ? `<span class="active-tool-tag">${inst.active_tool}</span>` : ''}
                                 ${inst.model_name ? `<span class="model-tag">${inst.model_name}</span>` : ''}
                                 ${inst.active_role ? `<span class="role-tag">${inst.active_role}</span>` : ''}

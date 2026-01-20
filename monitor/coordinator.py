@@ -655,6 +655,11 @@ class MonitorCoordinator:
                     # Mark as busy since we are receiving logs
                     if event.tool_name:
                         tracker.log_activity(event.tool_name, event.log_data, original_event=event)
+                    
+                    # Enrich event with session_id from tracker if missing
+                    if not event.session_id and tracker.session_id:
+                        event.session_id = tracker.session_id
+                        
                     # Mark for broadcast after releasing lock
                     broadcast_log_event = event
 
