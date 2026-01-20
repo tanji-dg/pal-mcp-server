@@ -13,7 +13,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from clink.constants import DEFAULT_STREAM_LIMIT
+from clink.constants import DEFAULT_STREAM_LIMIT, FATAL_ERROR_KEYWORDS
 from clink.models import ResolvedCLIClient, ResolvedCLIRole
 from clink.parsers import BaseParser, ParsedCLIResponse, ParserError, get_parser
 
@@ -163,6 +163,18 @@ class BaseCLIAgent:
                     break
                 decoded_line = line.decode("utf-8", errors="replace")
                 buffer.append(decoded_line)
+                
+                # Check for fatal errors in stderr to abort early (e.g. quota exhausted)
+                if stream_name == "stderr":
+                    for keyword in FATAL_ERROR_KEYWORDS:
+                        if keyword in decoded_line:
+                            self._logger.error(f"Detected fatal error keyword '{keyword}' in stderr. Aborting.")
+                            raise CLIAgentError(
+                                f"Fatal CLI error detected: {decoded_line.strip()}",
+                                stdout="".join(stdout_buffer),
+                                stderr="".join(stderr_buffer) + decoded_line,
+                            )
+
                 # Emit real-time log entry for tests and callers (format eagerly so mocks capture text)
                 self._logger.debug("[CLI OUTPUT] %s", decoded_line.rstrip("\n"))
                 # Invoke output callback if provided (supports sync and async)

@@ -11,6 +11,14 @@ DEFAULT_TIMEOUT_SECONDS = 3600  # 1 hour
 DEFAULT_IDLE_TIMEOUT_SECONDS = 600  # 10 minutes
 DEFAULT_STREAM_LIMIT = 10 * 1024 * 1024  # 10MB per stream
 
+FATAL_ERROR_KEYWORDS = [
+    "Resource has been exhausted",
+    "Your quota will reset after",
+    "quotaResetDelay",
+    "API key not valid",
+    "Permission denied",
+]
+
 BUILTIN_PROMPTS_DIR = PROJECT_ROOT / "systemprompts" / "clink"
 CONFIG_DIR = PROJECT_ROOT / "conf" / "cli_clients"
 USER_CONFIG_DIR = Path.home() / ".pal" / "cli_clients"
