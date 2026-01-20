@@ -360,7 +360,19 @@ class SimpleTool(BaseTool):
                         logger.warning(f"Thread {continuation_id} not found, preparing prompt normally")
                         prompt = await self.prepare_prompt(request)
             else:
-                # New conversation, prepare prompt normally
+                # New conversation - Create thread and record user turn immediately before generation
+                from utils.conversation_memory import create_thread, add_turn
+                initial_request_dict = self.get_request_as_dict(request)
+                continuation_id = create_thread(tool_name=self.get_name(), initial_request=initial_request_dict)
+                
+                user_prompt = self.get_request_prompt(request)
+                user_files = self.get_request_files(request)
+                user_images = self.get_request_images(request)
+                add_turn(continuation_id, "user", user_prompt, files=user_files, images=user_images, tool_name=self.get_name())
+                
+                # Update current arguments so the tool knows the new continuation_id
+                self._current_arguments["continuation_id"] = continuation_id
+                
                 prompt = await self.prepare_prompt(request)
 
                 # Add follow-up instructions for new conversations
@@ -369,8 +381,10 @@ class SimpleTool(BaseTool):
                 follow_up_instructions = get_follow_up_instructions(0)
                 prompt = f"{prompt}\n\n{follow_up_instructions}"
                 logger.debug(
-                    f"Added follow-up instructions for new {self.get_name()} conversation"
-                )  # Validate images if any were provided
+                    f"Created new thread {continuation_id} and recorded user turn before execution"
+                )
+
+            # Validate images if any were provided
             if images:
                 image_validation_error = self._validate_image_limits(
                     images, model_context=self._model_context, continuation_id=continuation_id
@@ -424,15 +438,25 @@ class SimpleTool(BaseTool):
             # Resolve model capabilities for feature gating
             supports_thinking = capabilities.supports_extended_thinking
 
-            # Generate content with provider abstraction
-            model_response = provider.generate_content(
-                prompt=prompt,
-                model_name=self._current_model_name,
-                system_prompt=system_prompt,
-                temperature=temperature,
-                thinking_mode=thinking_mode if supports_thinking else None,
-                images=images if images else None,
-            )
+            try:
+                # Generate content with provider abstraction
+                model_response = provider.generate_content(
+                    prompt=prompt,
+                    model_name=self._current_model_name,
+                    system_prompt=system_prompt,
+                    temperature=temperature,
+                    thinking_mode=thinking_mode if supports_thinking else None,
+                    images=images if images else None,
+                )
+            except Exception as generation_error:
+                # Record error turn before raising to ensure persistence
+                error_msg = f"Error during content generation: {generation_error}"
+                try:
+                    model_info = {"provider": provider, "model_name": self._current_model_name}
+                    self._record_assistant_turn(continuation_id, error_msg, request, model_info)
+                except Exception:
+                    logger.debug("Failed to record error turn", exc_info=True)
+                raise generation_error
 
             logger.info(f"Received response from {provider.get_provider_type().value} API for {self.get_name()}")
 

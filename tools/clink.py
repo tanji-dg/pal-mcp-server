@@ -210,6 +210,24 @@ class CLinkTool(SimpleTool):
         # Prepare output callback for real-time notifications
         request_context = arguments.get("_request_context")
 
+        # --- ENSURE CONVERSATION PERSISTENCE START ---
+        from utils.conversation_memory import create_thread, add_turn, get_thread
+        
+        # If no continuation_id, create a new thread immediately to record the user's intent
+        is_new_thread = False
+        if not continuation_id:
+            initial_request_dict = self.get_request_as_dict(request)
+            continuation_id = create_thread(tool_name=self.get_name(), initial_request=initial_request_dict)
+            is_new_thread = True
+            
+            # Record user turn for the new thread
+            user_prompt = self.get_request_prompt(request)
+            user_files = self.get_request_files(request)
+            user_images = self.get_request_images(request)
+            add_turn(continuation_id, "user", user_prompt, files=user_files, images=user_images, tool_name=self.get_name())
+            logger.debug(f"Created new thread {continuation_id} and recorded user turn before execution")
+        # --- ENSURE CONVERSATION PERSISTENCE END ---
+
         # Track last notification to avoid spamming the UI
         state = {"last_msg": "", "last_time": 0.0}
         # Mapping from tool_id to tool_name for Gemini stream-json events
@@ -354,12 +372,23 @@ class CLinkTool(SimpleTool):
                 output_callback=_notification_callback if request_context else None,
             )
             logger.debug("Agent execution completed.")
-        except CLIAgentError as exc:
-            metadata = self._build_error_metadata(client_config, exc)
-            self._raise_tool_error(
-                f"CLI '{client_config.name}' execution failed: {exc}",
-                metadata=metadata,
-            )
+        except Exception as exc:
+            # Record error turn before raising to ensure persistence
+            error_msg = f"Error during CLI execution: {exc}"
+            try:
+                model_info = {"provider": client_config.name, "model_name": "error"}
+                self._record_assistant_turn(continuation_id, error_msg, request, model_info)
+            except Exception:
+                logger.debug("Failed to record error turn", exc_info=True)
+
+            if isinstance(exc, CLIAgentError):
+                metadata = self._build_error_metadata(client_config, exc)
+                self._raise_tool_error(
+                    f"CLI '{client_config.name}' execution failed: {exc}",
+                    metadata=metadata,
+                )
+            else:
+                self._raise_tool_error(str(exc))
 
         metadata = self._build_success_metadata(client_config, role_config, result)
         metadata = self._prune_metadata(metadata, client_config, reason="normal")
@@ -410,12 +439,18 @@ class CLinkTool(SimpleTool):
             "model_name": result.parsed.metadata.get("model_used"),
         }
 
-        if continuation_id:
+        # assistant turn should not be recorded again if it was a new thread (already handled by continuation offer)
+        # but for clink we've already ensured continuation_id is set now.
+        if continuation_id and not is_new_thread:
             try:
                 self._record_assistant_turn(continuation_id, content, request, model_info)
             except Exception:
                 logger.debug(f"Failed to record assistant turn for continuation {continuation_id}", exc_info=True)
 
+        # Continuation offer logic needs updated continuation_id
+        # We need to make sure request.continuation_id is updated for _create_continuation_offer
+        request.continuation_id = continuation_id
+        
         continuation_offer = self._create_continuation_offer(request, model_info)
         
         if continuation_offer:
