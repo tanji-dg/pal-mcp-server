@@ -19,6 +19,10 @@ from clink.parsers import BaseParser, ParsedCLIResponse, ParserError, get_parser
 
 logger = logging.getLogger("clink.agent")
 
+def get_publisher():
+    from monitor.publisher import get_publisher as _get_publisher
+    return _get_publisher()
+
 
 @dataclass
 class AgentOutput:
@@ -154,8 +158,19 @@ class BaseCLIAgent:
             output_callback: callable[[str], None] | None,
             stream_name: str,
         ):
+            publisher = get_publisher()
+            
             self._logger.debug(f"[_read_stream] Starting for stream: {stream_name}")
             while True:
+                # Check for interruption from dashboard/monitor
+                if publisher.is_interrupted():
+                    self._logger.warning(f"Interruption requested. Killing process {process.pid}")
+                    try:
+                        process.kill()
+                    except ProcessLookupError:
+                        pass
+                    raise InterruptedError("Task interrupted by user via monitor dashboard")
+
                 line = await stream.readline()
                 self._logger.debug(f"[_read_stream] Read line from {stream_name}: {line!r}")
                 if not line:
@@ -265,6 +280,16 @@ class BaseCLIAgent:
                 asyncio.gather(*tasks_to_gather),
                 timeout=total_timeout if total_timeout is not None and total_timeout > 0 else None,
             )
+        except InterruptedError:
+            # Process was already killed in _read_stream, escalate immediately
+            # Try a quick cleanup but don't block
+            if process.returncode is None:
+                try:
+                    # Non-blocking check/cleanup
+                    await asyncio.wait_for(process.wait(), timeout=0.1)
+                except Exception:
+                    pass
+            raise
         except asyncio.TimeoutError as exc:
             # Total timeout occurred for the entire operation
             if process_wait_task and not process_wait_task.done():  # Ensure process is killed if total timeout

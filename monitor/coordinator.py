@@ -31,13 +31,14 @@ import time
 from collections import deque
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
-from typing import Optional, List
+from typing import Optional, List, Union
 
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.responses import HTMLResponse
 
 from monitor.models import (
     AggregatedState,
+    EventResponse,
     InstanceStatus,
     ToolCall,
     ToolEvent,
@@ -65,6 +66,7 @@ class InstanceTracker:
         self.start_time = time.time()
         self.state = "idle"
         self.last_heartbeat = utc_now()
+        self.interrupted = False
         
         # Support for nested/parallel tool calls
         self.active_tools: dict[str, datetime] = {} # tool_name -> start_time
@@ -108,6 +110,7 @@ class InstanceTracker:
 
     def start_tool(self, tool_name: str, tool_input: Optional[str] = None):
         """Record tool execution start."""
+        self.interrupted = False # Reset interruption state
         now = utc_now()
         self.state = "busy"
         self.active_tools[tool_name] = now
@@ -639,69 +642,106 @@ class MonitorCoordinator:
                 pass
         logger.info("Monitor coordinator stopped")
 
-    async def process_event(self, event: ToolEvent):
+    async def process_event(self, event: Union[ToolEvent, dict]) -> EventResponse:
         """Process an incoming event from an MCP server instance."""
         broadcast_log_event = None
+        interrupted = False
+
+        # Robust extraction regardless of object type
+        def get_val(obj, key):
+            if isinstance(obj, dict):
+                return obj.get(key)
+            val = getattr(obj, key, None)
+            if val is None and hasattr(obj, "model_dump"):
+                return obj.model_dump().get(key)
+            return val
+
+        instance_id = get_val(event, "instance_id")
+        event_type = get_val(event, "event_type")
+
+        if not instance_id:
+            logger.error(f"Event missing instance_id. Type: {type(event)}")
+            return EventResponse(status="error", message="Missing instance_id")
 
         async with self._lock:
-            instance_id = event.instance_id
-
-            if event.event_type == ToolEventType.REGISTER:
-                uptime = event.uptime_seconds or 0.0
+            if event_type == ToolEventType.REGISTER:
+                uptime = get_val(event, 'uptime_seconds') or 0.0
                 self.instances[instance_id] = InstanceTracker(instance_id, uptime)
                 logger.info(f"Instance registered: {instance_id}")
 
-            elif event.event_type == ToolEventType.UNREGISTER:
+            elif event_type == ToolEventType.UNREGISTER:
                 if instance_id in self.instances:
                     self.instances[instance_id].state = "offline"
                     logger.info(f"Instance marked offline: {instance_id}")
 
             elif instance_id in self.instances:
                 tracker = self.instances[instance_id]
+                interrupted = tracker.interrupted
 
-                if event.event_type == ToolEventType.HEARTBEAT:
-                    tracker.update_heartbeat(event.uptime_seconds)
+                if event_type == ToolEventType.HEARTBEAT:
+                    uptime = get_val(event, 'uptime_seconds')
+                    tracker.update_heartbeat(uptime)
 
-                elif event.event_type == ToolEventType.TOOL_START:
-                    if event.tool_name:
-                        tracker.start_tool(event.tool_name, event.tool_input)
-                        logger.debug(f"Tool started: {event.tool_name} on {instance_id}")
+                elif event_type == ToolEventType.TOOL_START:
+                    tool_name = get_val(event, 'tool_name')
+                    tool_input = get_val(event, 'tool_input')
+                    if tool_name:
+                        tracker.start_tool(tool_name, tool_input)
+                        logger.debug(f"Tool started: {tool_name} on {instance_id}")
 
-                elif event.event_type == ToolEventType.TOOL_END:
-                    tracker.end_tool(event.tool_name, event.duration_ms or 0, is_error=False, tool_output=event.tool_output, model_name=event.model_name)
-                    logger.debug(f"Tool completed: {event.tool_name} on {instance_id} " f"({event.duration_ms}ms)")
+                elif event_type == ToolEventType.TOOL_END:
+                    tool_name = get_val(event, 'tool_name')
+                    duration_ms = get_val(event, 'duration_ms')
+                    tool_output = get_val(event, 'tool_output')
+                    model_name = get_val(event, 'model_name')
+                    tracker.end_tool(tool_name, duration_ms or 0, is_error=False, tool_output=tool_output, model_name=model_name)
+                    logger.debug(f"Tool completed: {tool_name} on {instance_id}")
 
-                elif event.event_type == ToolEventType.TOOL_ERROR:
-                    tracker.end_tool(event.tool_name, event.duration_ms or 0, is_error=True, model_name=event.model_name)
-                    logger.warning(f"Tool error: {event.tool_name} on {instance_id} - " f"{event.error_message}")
+                elif event_type == ToolEventType.TOOL_ERROR:
+                    tool_name = get_val(event, 'tool_name')
+                    duration_ms = get_val(event, 'duration_ms')
+                    model_name = get_val(event, 'model_name')
+                    error_message = get_val(event, 'error_message') or 'Unknown error'
+                    tracker.end_tool(tool_name, duration_ms or 0, is_error=True, model_name=model_name)
+                    logger.warning(f"Tool error: {tool_name} on {instance_id} - {error_message}")
 
-                elif event.event_type == ToolEventType.TOOL_LOG:
-                    if event.tool_name:
-                        tracker.log_activity(event.tool_name, event.log_data, original_event=event)
-                    if not event.session_id and tracker.session_id:
-                        event.session_id = tracker.session_id
-                    broadcast_log_event = event
+                elif event_type == ToolEventType.TOOL_LOG:
+                    tool_name = get_val(event, 'tool_name')
+                    log_data = get_val(event, 'log_data')
+                    if tool_name:
+                        tracker.log_activity(tool_name, log_data, original_event=None if isinstance(event, dict) else event)
+                    
+                    if not isinstance(event, dict):
+                        if not event.session_id and tracker.session_id:
+                            event.session_id = tracker.session_id
+                        broadcast_log_event = event
 
             else:
-                self.instances[instance_id] = InstanceTracker(instance_id, event.uptime_seconds or 0.0)
+                # Auto-register instance
+                uptime = get_val(event, 'uptime_seconds') or 0.0
+                tracker = InstanceTracker(instance_id, uptime)
+                self.instances[instance_id] = tracker
                 logger.info(f"Instance auto-registered: {instance_id}")
-                tracker = self.instances[instance_id]
-                if event.event_type == ToolEventType.TOOL_START:
-                    if event.tool_name:
-                        tracker.start_tool(event.tool_name, event.tool_input)
-                elif event.event_type == ToolEventType.TOOL_END:
-                    tracker.end_tool(event.tool_name, event.duration_ms or 0, is_error=False, tool_output=event.tool_output, model_name=event.model_name)
-                elif event.event_type == ToolEventType.TOOL_ERROR:
-                    tracker.end_tool(event.tool_name, event.duration_ms or 0, is_error=True, model_name=event.model_name)
-                elif event.event_type == ToolEventType.TOOL_LOG:
-                    if event.tool_name:
-                        tracker.log_activity(event.tool_name, event.log_data, original_event=event)
-                    broadcast_log_event = event
-                elif event.event_type == ToolEventType.HEARTBEAT:
-                    tracker.update_heartbeat(event.uptime_seconds)
+                
+                # Check for interruption after auto-register
+                interrupted = tracker.interrupted
+
 
         if broadcast_log_event:
             await self.broadcast_log(broadcast_log_event)
+            
+        return EventResponse(status="ok", interrupted=interrupted)
+
+    async def interrupt_instance(self, instance_id: str):
+        """Request interruption for a specific instance."""
+        async with self._lock:
+            if instance_id in self.instances:
+                logger.warning(f"Interruption requested for instance: {instance_id}")
+                tracker = self.instances[instance_id]
+                tracker.interrupted = True
+                tracker.last_status = "Interrupting..."
+                return True
+        return False
 
     async def broadcast_log(self, event: ToolEvent):
         """Broadcast log event to all connected clients."""
@@ -774,7 +814,6 @@ _coordinator: Optional[MonitorCoordinator] = None
 
 
 def get_coordinator() -> MonitorCoordinator:
-    """Get or create the global coordinator instance."""
     global _coordinator
     if _coordinator is None:
         _coordinator = MonitorCoordinator()
@@ -783,7 +822,6 @@ def get_coordinator() -> MonitorCoordinator:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Manage coordinator lifecycle with the FastAPI app."""
     coordinator = get_coordinator()
     await coordinator.start()
     yield
@@ -791,7 +829,6 @@ async def lifespan(app: FastAPI):
 
 
 def create_app() -> FastAPI:
-    """Create and configure the FastAPI application."""
     app = FastAPI(
         title="PAL MCP Monitor Coordinator",
         description="Real-time monitoring coordinator for PAL MCP Server instances",
@@ -801,7 +838,6 @@ def create_app() -> FastAPI:
 
     @app.middleware("http")
     async def log_transport_middleware(request: Request, call_next):
-        """Log the transport type (HTTP or Unix socket)."""
         client = request.scope.get("client")
         path = request.scope.get("path")
         if path != "/health":
@@ -814,36 +850,32 @@ def create_app() -> FastAPI:
         response = await call_next(request)
         return response
 
-    # Serve dashboard HTML
     @app.get("/", response_class=HTMLResponse)
     async def dashboard():
-        """Serve the monitoring dashboard."""
         dashboard_path = os.path.join(os.path.dirname(__file__), "dashboard.html")
         try:
             with open(dashboard_path, encoding="utf-8") as f:
                 return HTMLResponse(content=f.read())
         except FileNotFoundError:
             return HTMLResponse(
-                content="<h1>Dashboard not found</h1><p>dashboard.html is missing</p>",
+                content="<h1>Dashboard not found</h1>",
                 status_code=404,
             )
 
     @app.get("/history", response_class=HTMLResponse)
     async def history_page():
-        """Serve the conversation history viewer."""
         history_path = os.path.join(os.path.dirname(__file__), "history.html")
         try:
             with open(history_path, encoding="utf-8") as f:
                 return HTMLResponse(content=f.read())
         except FileNotFoundError:
             return HTMLResponse(
-                content="<h1>History view not found</h1><p>history.html is missing</p>",
+                content="<h1>History view not found</h1>",
                 status_code=404,
             )
 
     @app.get("/api/history")
     async def get_history():
-        """Get conversation history from storage."""
         storage = get_storage_backend()
         conversations = storage.list_all(include_expired=True)
         formatted = {}
@@ -860,7 +892,6 @@ def create_app() -> FastAPI:
 
     @app.post("/api/instances/{instance_id}/kill")
     async def kill_instance(instance_id: str):
-        """Terminate a specific MCP server instance."""
         coordinator = get_coordinator()
         if instance_id not in coordinator.instances:
             raise HTTPException(status_code=404, detail="Instance not found")
@@ -886,37 +917,43 @@ def create_app() -> FastAPI:
             logger.error(f"Failed to kill instance {instance_id}: {e}")
             raise HTTPException(status_code=500, detail=str(e))
 
+    @app.post("/api/instances/{instance_id}/interrupt")
+    async def interrupt_instance_api(instance_id: str):
+        """Signal a specific MCP server instance to interrupt its current task."""
+        coordinator = get_coordinator()
+        success = await coordinator.interrupt_instance(instance_id)
+        if not success:
+            raise HTTPException(status_code=404, detail="Instance not found")
+        return {"status": "ok", "message": "Interruption signal queued"}
+
     @app.get("/health")
     async def health_check():
-        """Health check endpoint."""
         coordinator = get_coordinator()
         return {"status": "healthy", "instances": len(coordinator.instances), "clients": len(coordinator.websocket_clients)}
 
     @app.get("/status")
     async def get_status():
-        """Get current aggregated status as JSON."""
         coordinator = get_coordinator()
         state = await coordinator.get_aggregated_state()
         return {"type": state.type, "timestamp": state.timestamp.isoformat(), "instances": [inst.to_dict() for inst in state.instances]}
 
     @app.post("/event")
     async def receive_event(event: ToolEvent):
-        """Receive an event from an MCP server instance."""
         coordinator = get_coordinator()
-        await coordinator.process_event(event)
-        return {"status": "ok"}
+        return await coordinator.process_event(event)
 
     @app.post("/events")
     async def receive_events(events: List[ToolEvent]):
-        """Receive multiple events from an MCP server instance."""
         coordinator = get_coordinator()
+        interrupted = False
         for event in events:
-            await coordinator.process_event(event)
-        return {"status": "ok", "processed": len(events)}
+            resp = await coordinator.process_event(event)
+            if resp.interrupted:
+                interrupted = True
+        return EventResponse(status="ok", interrupted=interrupted)
 
     @app.websocket("/ws")
     async def websocket_endpoint(websocket: WebSocket):
-        """WebSocket endpoint for real-time dashboard updates."""
         await websocket.accept()
         coordinator = get_coordinator()
         await coordinator.add_websocket_client(websocket)
@@ -941,7 +978,6 @@ def create_app() -> FastAPI:
     return app
 
 
-# Create the app instance for uvicorn
 app = create_app()
 
 
@@ -951,31 +987,11 @@ def run_with_unix_socket(
     ws_port: int = 9876,
     log_level: str = "info",
 ):
-    """
-    Run the coordinator with Unix socket for MCP communication
-    and WebSocket server for dashboard connections.
-
-    Args:
-        socket_path: Path to Unix socket for MCP server events
-        ws_host: Host for WebSocket server (dashboards)
-        ws_port: Port for WebSocket server
-        log_level: Logging level
-    """
     import uvicorn
-
-    # Remove existing socket file if present
     if os.path.exists(socket_path):
         os.unlink(socket_path)
-
     logger.info(f"Starting coordinator on Unix socket: {socket_path}")
-    logger.info(f"WebSocket server will be available at ws://{ws_host}:{ws_port}/ws")
-
-    # Run with Unix socket
-    uvicorn.run(
-        app,
-        uds=socket_path,
-        log_level=log_level,
-    )
+    uvicorn.run(app, uds=socket_path, log_level=log_level)
 
 
 def run_with_http(
@@ -983,76 +999,22 @@ def run_with_http(
     port: int = 9876,
     log_level: str = "info",
 ):
-    """
-    Run the coordinator with HTTP for both MCP and dashboard connections.
-
-    Args:
-        host: Host to bind to
-        port: Port to listen on
-        log_level: Logging level
-    """
     import uvicorn
-
     logger.info(f"Starting coordinator on http://{host}:{port}")
-    logger.info(f"WebSocket endpoint: ws://{host}:{port}/ws")
-
-    uvicorn.run(
-        app,
-        host=host,
-        port=port,
-        log_level=log_level,
-    )
+    uvicorn.run(app, host=host, port=port, log_level=log_level)
 
 
 if __name__ == "__main__":
     import argparse
-
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    )
-
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
     parser = argparse.ArgumentParser(description="PAL MCP Monitor Coordinator")
-    parser.add_argument(
-        "--transport",
-        choices=["http", "unix"],
-        default="http",
-        help="Transport type (default: http)",
-    )
-    parser.add_argument(
-        "--host",
-        default="0.0.0.0",
-        help="HTTP host (default: 0.0.0.0)",
-    )
-    parser.add_argument(
-        "--port",
-        type=int,
-        default=9876,
-        help="HTTP port (default: 9876)",
-    )
-    parser.add_argument(
-        "--socket",
-        default="/tmp/pal-monitor.sock",
-        help="Unix socket path (default: /tmp/pal-monitor.sock)",
-    )
-    parser.add_argument(
-        "--log-level",
-        default="info",
-        help="Log level (default: info)",
-    )
-
+    parser.add_argument("--transport", choices=["http", "unix"], default="http")
+    parser.add_argument("--host", default="0.0.0.0")
+    parser.add_argument("--port", type=int, default=9876)
+    parser.add_argument("--socket", default="/tmp/pal-monitor.sock")
+    parser.add_argument("--log-level", default="info")
     args = parser.parse_args()
-
     if args.transport == "unix":
-        run_with_unix_socket(
-            socket_path=args.socket,
-            ws_host=args.host,
-            ws_port=args.port,
-            log_level=args.log_level,
-        )
+        run_with_unix_socket(socket_path=args.socket, ws_host=args.host, ws_port=args.port, log_level=args.log_level)
     else:
-        run_with_http(
-            host=args.host,
-            port=args.port,
-            log_level=args.log_level,
-        )
+        run_with_http(host=args.host, port=args.port, log_level=args.log_level)

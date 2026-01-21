@@ -209,6 +209,11 @@ class CLinkTool(SimpleTool):
 
         # Prepare output callback for real-time notifications
         request_context = arguments.get("_request_context")
+        
+        # Reset any stale interruption state before starting
+        publisher = get_publisher()
+        if publisher:
+            publisher.reset_interruption()
 
         # --- ENSURE CONVERSATION PERSISTENCE START ---
         from utils.conversation_memory import create_thread, add_turn, get_thread
@@ -246,7 +251,8 @@ class CLinkTool(SimpleTool):
             try:
                 publisher = get_publisher()
                 if publisher:
-                    await publisher.tool_log(client_config.name, line, session_id=effective_session_id)
+                    # ALWAYS use 'clink' as the tool name to maintain consistency with TOOL_START/END
+                    await publisher.tool_log(self.get_name(), line, session_id=effective_session_id)
             except Exception:
                 pass
 
@@ -372,6 +378,20 @@ class CLinkTool(SimpleTool):
                 output_callback=_notification_callback if request_context else None,
             )
             logger.debug("Agent execution completed.")
+        except InterruptedError as exc:
+            logger.warning(f"CLink tool execution interrupted: {exc}")
+            # Construct a graceful cancellation response
+            tool_output = ToolOutput(
+                status="success", # Treat as success to avoid scary error boxes, but content indicates interruption
+                content=f"⚠️ **Task Interrupted**\n\nExecution was stopped by the user via the monitoring dashboard. Progress before interruption has been saved to the session history.",
+                content_type="text",
+                metadata={
+                    "cli_name": client_config.name,
+                    "status": "interrupted",
+                    "interrupted_by": "user"
+                },
+            )
+            return [TextContent(type="text", text=tool_output.model_dump_json())]
         except Exception as exc:
             # Record error turn before raising to ensure persistence
             error_msg = f"Error during CLI execution: {exc}"

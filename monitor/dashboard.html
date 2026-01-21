@@ -206,9 +206,19 @@
             margin-left: 10px;
             display: none; /* Hidden by default, shown via JS if active */
         }
-        .kill-btn:hover {
-            background: #ff6b81;
+        .kill-btn:hover { background: #ff4757; color: white; border-color: #ff4757; }
+        .interrupt-btn {
+            background: transparent;
+            border: 1px solid #ffa502;
+            color: #ffa502;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+            padding: 2px 6px;
+            transition: all 0.2s;
         }
+        .interrupt-btn:hover { background: #ffa502; color: #1a1a2e; }
+
         .instance-card:hover .kill-btn {
             display: inline-block;
         }
@@ -1179,6 +1189,7 @@
                                 ${inst.active_role ? `<span class="role-tag">${inst.active_role}</span>` : ''}
                                 ${inst.last_status && inst.state === 'busy' ? `<span class="instance-phase">${inst.last_status}</span>` : ''}
                                 <span class="instance-state ${inst.state}">${inst.state}</span>
+                                ${inst.state === 'busy' ? `<button class="interrupt-btn" onclick="interruptInstance('${inst.instance_id}')" title="Interrupt Current Task">✋</button>` : ''}
                                 ${inst.state !== 'offline' ? `<button class="kill-btn" onclick="killInstance('${inst.instance_id}')" title="Terminate Process">💀</button>` : ''}
                             </div>
                         </div>
@@ -1290,22 +1301,28 @@
             return Math.round(seconds / 86400) + 'd';
         }
 
-        async function killInstance(instanceId) {
-            if (!confirm(`Are you sure you want to terminate instance ${instanceId}?`)) {
+        async def killInstance(instanceId) {
+            if (!confirm(`Are you sure you want to hard-kill instance ${instanceId}?\nThis sends a SIGTERM signal to the process.`)) {
                 return;
             }
             try {
-                const res = await fetch(`/api/instances/${instanceId}/kill`, { method: 'POST' });
-                const data = await res.json();
-                if (res.ok) {
-                    console.log('Instance terminated:', data);
-                    // UI will update on next WebSocket message
-                } else {
-                    alert(`Failed to kill instance: ${data.detail}`);
-                }
+                const response = await fetch(`/api/instances/${instanceId}/kill`, { method: 'POST' });
+                const result = await response.json();
+                alert(result.message || result.detail);
             } catch (e) {
-                console.error('Error killing instance:', e);
-                alert('Error killing instance. See console.');
+                alert(`Error: ${e.message}`);
+            }
+        }
+
+        async def interruptInstance(instanceId) {
+            // No confirm for interrupt as it's intended to be a common action
+            try {
+                const response = await fetch(`/api/instances/${instanceId}/interrupt`, { method: 'POST' });
+                const result = await response.json();
+                // We don't alert on success, just let the UI update
+                if (!response.ok) alert(result.detail || 'Failed to interrupt');
+            } catch (e) {
+                alert(`Error: ${e.message}`);
             }
         }
 

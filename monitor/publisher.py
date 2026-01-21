@@ -96,11 +96,22 @@ class MonitorPublisher:
         self._connected = False
         self._connection_error_logged = False
         self._last_error = None
+        self._interrupted = False
 
     @property
     def uptime_seconds(self) -> float:
         """Get current uptime in seconds."""
         return time.time() - self.start_time
+
+    def is_interrupted(self) -> bool:
+        """Check if an interruption has been requested by the coordinator."""
+        return self._interrupted
+
+    def reset_interruption(self):
+        """Reset the interruption flag (e.g. before starting a new tool)."""
+        if self._interrupted:
+            logger.info("Resetting interruption state")
+        self._interrupted = False
 
     def _get_base_url(self) -> str:
         """Get the base URL for HTTP requests."""
@@ -329,6 +340,16 @@ class MonitorPublisher:
                 json=event.model_dump(mode="json"),
             )
             response.raise_for_status()
+            
+            # Check for interruption signal in response
+            try:
+                data = response.json()
+                if isinstance(data, dict) and data.get("interrupted"):
+                    if not self._interrupted:
+                        logger.warning("Interruption signal received from coordinator")
+                    self._interrupted = True
+            except Exception:
+                pass
 
             if not self._connected and self._connection_error_logged:
                 logger.info("Monitor coordinator connection restored")
@@ -378,6 +399,16 @@ class MonitorPublisher:
                                 json=[e.model_dump(mode="json") for e in batch],
                             )
                             response.raise_for_status()
+                            
+                            # Check for interruption signal in batch response
+                            try:
+                                data = response.json()
+                                if isinstance(data, dict) and data.get("interrupted"):
+                                    if not self._interrupted:
+                                        logger.warning("Interruption signal received from coordinator (batch)")
+                                    self._interrupted = True
+                            except Exception:
+                                pass
 
                         if not self._connected and self._connection_error_logged:
                             logger.info("Monitor coordinator connection restored")
