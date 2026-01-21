@@ -122,10 +122,11 @@ class InstanceTracker:
         mapping = {
             "input": ["input_tokens", "inputTokens", "prompt_tokens", "promptTokens"],
             "output": ["output_tokens", "outputTokens", "candidates_tokens", "candidatesTokens"],
-            "cache_read": ["cache_read_input_tokens", "cacheReadInputTokens", "cached_tokens", "cachedTokens"],
+            "cache_read": ["cache_read_input_tokens", "cacheReadInputTokens", "cached_tokens", "cachedTokens", "cached"],
             "cache_creation": ["cache_creation_input_tokens", "cacheCreationInputTokens"]
         }
         
+        updated = False
         for key, possible_keys in mapping.items():
             val = 0
             for pk in possible_keys:
@@ -145,6 +146,10 @@ class InstanceTracker:
                     elif key == "cache_creation": self.cache_creation_tokens += delta
                     
                     self._last_request_tokens[key] = val
+                    updated = True
+        
+        if updated:
+            logger.debug(f"Tokens updated for {self.instance_id}: input={self.input_tokens}, output={self.output_tokens}, cached={self.cache_read_tokens}")
 
     def start_tool(self, tool_name: str, tool_input: Optional[str] = None):
         """Record tool execution start."""
@@ -228,8 +233,14 @@ class InstanceTracker:
         if log_data:
             is_json_log = False
             try:
-                # Handle potential multiple JSON objects in one log chunk
-                lines = log_data.strip().split("\n")
+                # Handle potential multiple JSON objects in one log chunk, including concatenated ones like }{
+                raw_lines = log_data.strip().split("\n")
+                lines = []
+                for rl in raw_lines:
+                    # Handle }{ case
+                    parts = rl.replace("}{", "}\n{").split("\n")
+                    lines.extend(parts)
+
                 for line in lines:
                     line = line.strip()
                     if not (line.startswith("{") and line.endswith("}")):
@@ -265,11 +276,13 @@ class InstanceTracker:
 
                     # Extract Token Usage (Post-unwrap)
                     # Check multiple possible locations for usage/stats
+                    # Note: We now only do this once here, or in specialized blocks below
                     u = data.get("usage") or data.get("stats")
                     if not u and isinstance(data.get("message"), dict):
                         u = data["message"].get("usage")
                     
-                    if isinstance(u, dict):
+                    # specialized msg_types will handle their own updates to avoid confusion
+                    if isinstance(u, dict) and msg_type not in ["result", "modelUsage"]:
                         self._update_tokens_incremental(u)
 
                     # Update model name if found in log metadata
@@ -306,13 +319,13 @@ class InstanceTracker:
                         # Aggregate across all models if present
                         mu = data.get("modelUsage") or data
                         if isinstance(mu, dict):
-                            totals = {"input": 0, "output": 0, "cache_read": 0, "cache_creation": 0}
+                            totals = {"input_tokens": 0, "output_tokens": 0, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}
                             for m_stats in mu.values():
                                 if not isinstance(m_stats, dict): continue
-                                totals["input"] += m_stats.get("input_tokens") or m_stats.get("inputTokens") or m_stats.get("prompt_tokens") or m_stats.get("promptTokens") or 0
-                                totals["output"] += m_stats.get("output_tokens") or m_stats.get("outputTokens") or m_stats.get("candidates_tokens") or m_stats.get("candidatesTokens") or 0
-                                totals["cache_read"] += m_stats.get("cache_read_input_tokens") or m_stats.get("cacheReadInputTokens") or m_stats.get("cached_tokens") or m_stats.get("cachedTokens") or 0
-                                totals["cache_creation"] += m_stats.get("cache_creation_input_tokens") or m_stats.get("cacheCreationInputTokens") or 0
+                                totals["input_tokens"] += m_stats.get("input_tokens") or m_stats.get("inputTokens") or m_stats.get("prompt_tokens") or m_stats.get("promptTokens") or 0
+                                totals["output_tokens"] += m_stats.get("output_tokens") or m_stats.get("outputTokens") or m_stats.get("candidates_tokens") or m_stats.get("candidatesTokens") or 0
+                                totals["cache_read_input_tokens"] += m_stats.get("cache_read_input_tokens") or m_stats.get("cacheReadInputTokens") or m_stats.get("cached_tokens") or m_stats.get("cachedTokens") or m_stats.get("cached") or 0
+                                totals["cache_creation_input_tokens"] += m_stats.get("cache_creation_input_tokens") or m_stats.get("cacheCreationInputTokens") or 0
                             self._update_tokens_incremental(totals)
 
                     if msg_type == "content_block_start":
@@ -476,7 +489,7 @@ class InstanceTracker:
                                 if not isinstance(m_stats, dict): continue
                                 totals["input_tokens"] += m_stats.get("inputTokens") or m_stats.get("input_tokens") or 0
                                 totals["output_tokens"] += m_stats.get("outputTokens") or m_stats.get("output_tokens") or 0
-                                totals["cache_read_input_tokens"] += m_stats.get("cacheReadInputTokens") or m_stats.get("cache_read_input_tokens") or 0
+                                totals["cache_read_input_tokens"] += m_stats.get("cacheReadInputTokens") or m_stats.get("cache_read_input_tokens") or m_stats.get("cached") or 0
                                 totals["cache_creation_input_tokens"] += m_stats.get("cacheCreationInputTokens") or m_stats.get("cache_creation_input_tokens") or 0
                             self._update_tokens_incremental(totals)
 
@@ -604,7 +617,7 @@ class InstanceTracker:
                                 if not isinstance(m_stats, dict): continue
                                 totals["input_tokens"] += m_stats.get("inputTokens") or m_stats.get("input_tokens") or 0
                                 totals["output_tokens"] += m_stats.get("outputTokens") or m_stats.get("output_tokens") or 0
-                                totals["cache_read_input_tokens"] += m_stats.get("cacheReadInputTokens") or m_stats.get("cache_read_input_tokens") or 0
+                                totals["cache_read_input_tokens"] += m_stats.get("cacheReadInputTokens") or m_stats.get("cache_read_input_tokens") or m_stats.get("cached") or 0
                                 totals["cache_creation_input_tokens"] += m_stats.get("cacheCreationInputTokens") or m_stats.get("cache_creation_input_tokens") or 0
                             self._update_tokens_incremental(totals)
                         

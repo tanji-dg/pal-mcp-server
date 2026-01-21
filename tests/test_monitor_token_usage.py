@@ -68,8 +68,7 @@ class TestMonitorTokenUsage:
         
         assert tracker.input_tokens == 4500
         assert tracker.output_tokens == 500
-        # 'cached' in Gemini maps to cache_read_tokens based on current logic? 
-        # Actually our logic looks for 'cache_read_input_tokens'. Let's verify and fix if needed.
+        assert tracker.cache_read_tokens == 2000
 
     def test_extract_tokens_camel_case_support(self, tracker):
         """Verify support for camelCase keys used in some modelUsage reports."""
