@@ -114,11 +114,38 @@ class GeminiJSONParser(BaseParser):
             stats = payload.get("stats")
             if isinstance(stats, dict):
                 metadata["stats"] = stats
+                
+                # Extract token usage for PAL dashboard/metrics
+                # Gemini CLI uses input_tokens/output_tokens inside stats
+                usage = {}
+                if "input_tokens" in stats:
+                    usage["input_tokens"] = stats["input_tokens"]
+                if "output_tokens" in stats:
+                    usage["output_tokens"] = stats["output_tokens"]
+                if "total_tokens" in stats:
+                    usage["total_tokens"] = stats["total_tokens"]
+                
+                if usage:
+                    metadata["usage"] = usage
+
                 # Legacy stats format (SessionMetrics)
                 models = stats.get("models")
                 if isinstance(models, dict) and models:
                     model_name = next(iter(models.keys()))
                     metadata["model_used"] = model_name
+                    
+                    # Map legacy tokens to usage field
+                    model_data = models[model_name]
+                    if isinstance(model_data, dict):
+                        tokens = model_data.get("tokens")
+                        if isinstance(tokens, dict) and "usage" not in metadata:
+                            metadata.setdefault("usage", {})
+                            if "prompt" in tokens:
+                                metadata["usage"]["input_tokens"] = tokens["prompt"]
+                            if "candidates" in tokens:
+                                metadata["usage"]["output_tokens"] = tokens["candidates"]
+                            if "total" in tokens:
+                                metadata["usage"]["total_tokens"] = tokens["total"]
 
                 # New stream stats format (StreamStats)
                 # Ensure model_used is set from init even if stats don't have model info

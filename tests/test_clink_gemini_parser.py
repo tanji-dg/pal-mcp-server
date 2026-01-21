@@ -40,9 +40,36 @@ def test_gemini_parser_handles_rate_limit_empty_response():
     assert "Attempt 1 failed" in parsed.metadata.get("stderr", "")
 
 
-def test_gemini_parser_still_errors_when_no_fallback_available():
+def test_gemini_parser_extracts_legacy_usage():
+    """Verify that tokens are extracted from legacy models stats."""
     parser = GeminiJSONParser()
-    stdout = '{"response": "", "stats": {}}'
+    stdout = (
+        '{"response": "Old way", "stats": {'
+        '"models": {"gemini-pro": {"tokens": {"prompt": 10, "candidates": 5, "total": 15}}}}}'
+    )
+    
+    parsed = parser.parse(stdout, stderr="")
+    
+    assert parsed.content == "Old way"
+    assert parsed.metadata["usage"]["input_tokens"] == 10
+    assert parsed.metadata["usage"]["output_tokens"] == 5
+    assert parsed.metadata["usage"]["total_tokens"] == 15
 
-    with pytest.raises(ParserError):
-        parser.parse(stdout, stderr="")
+
+def test_gemini_parser_extracts_stream_usage():
+    """Verify that input/output tokens are extracted from modern stream stats."""
+    parser = GeminiJSONParser()
+    stdout = (
+        '{"type":"init","model":"gemini-2.0-flash"}\n'
+        '{"type":"message","role":"assistant","content":"Hello","delta":true}\n'
+        '{"type":"result","status":"success","response":"Hello","stats":{'
+        '"input_tokens":123,"output_tokens":45,"total_tokens":168}}'
+    )
+    
+    parsed = parser.parse(stdout, stderr="")
+    
+    assert parsed.content == "Hello"
+    assert parsed.metadata["model_used"] == "gemini-2.0-flash"
+    assert parsed.metadata["usage"]["input_tokens"] == 123
+    assert parsed.metadata["usage"]["output_tokens"] == 45
+    assert parsed.metadata["usage"]["total_tokens"] == 168

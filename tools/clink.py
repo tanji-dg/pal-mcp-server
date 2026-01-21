@@ -253,7 +253,7 @@ class CLinkTool(SimpleTool):
         if continuation_id:
             from utils.conversation_memory import update_current_turn
             # Add placeholder turn
-            model_info_placeholder = {"provider": client_config.name, "model_name": "loading..."}
+            model_info_placeholder = {"model_provider": client_config.name, "model_name": "loading..."}
             add_turn(continuation_id, "assistant", "⏳ *Processing...*", tool_name=self.get_name(), **model_info_placeholder)
 
         # Track state for UI notifications and DB updates
@@ -275,19 +275,13 @@ class CLinkTool(SimpleTool):
 
         async def _notification_callback(line: str):
             logger.debug(f"CLINK NOTIFICATION RAW LINE: {line.strip()}")
-            # Stream raw output to monitor if enabled
-            try:
-                publisher = get_publisher()
-                if publisher:
-                    # ALWAYS use 'clink' as the tool name to maintain consistency with TOOL_START/END
-                    await publisher.tool_log(self.get_name(), line, session_id=effective_session_id)
-            except Exception:
-                pass
-
+            
             if not request_context:
                 logger.debug(f"CLI RAW (no context): [{client_config.name}] [Session: {effective_session_id[:8]}] {line.strip()}")
                 return
 
+            publisher = get_publisher()
+            
             # Subprocesses might flush multiple lines at once in a single buffer chunk.
             # Split and process each non-empty line to ensure real-time responsiveness.
             lines = line.splitlines()
@@ -318,8 +312,13 @@ class CLinkTool(SimpleTool):
                                     # Only notify about thinking/progress messages, not final answers
                                     # For Gemini: check for 'delta' flag
                                     if data.get("delta") is True:
-                                        state["accumulated_thinking"].append(payload_content)
-                                        content = f"🧠 Thinking: {payload_content}"
+                                        # Handle <SUMMARY> blocks within thinking/messages
+                                        summary = self._extract_summary(payload_content)
+                                        if summary:
+                                            content = f"📋 Summary: {summary}"
+                                        else:
+                                            state["accumulated_thinking"].append(payload_content)
+                                            content = f"🧠 Thinking: {payload_content}"
                             
                             # Claude stream-json events
                             elif msg_type == "stream_event":
@@ -332,12 +331,19 @@ class CLinkTool(SimpleTool):
                                     if dtype == "thinking_delta":
                                         thought = delta.get("thinking")
                                         if thought:
-                                            state["accumulated_thinking"].append(thought)
-                                            content = f"🧠 Thinking: {thought}"
+                                            # Check for summary even in thinking deltas (Claude sometimes does this)
+                                            summary = self._extract_summary(thought)
+                                            if summary:
+                                                content = f"📋 Summary: {summary}"
+                                            else:
+                                                state["accumulated_thinking"].append(thought)
+                                                content = f"🧠 Thinking: {thought}"
                                     elif dtype == "text_delta":
-                                        # Optionally capture text deltas too? 
-                                        # For now focusing on thinking for history.
-                                        pass
+                                        text = delta.get("text")
+                                        if text:
+                                            summary = self._extract_summary(text)
+                                            if summary:
+                                                content = f"📋 Summary: {summary}"
                                 
                             elif msg_type == "tool_use":
                                 name = data.get("tool_name")
@@ -410,6 +416,8 @@ class CLinkTool(SimpleTool):
                             "Error executing tool",
                             "Error when talking to Gemini API",
                             "Executing tool",
+                            "Executed tool",
+                            "Tool result:",
                         ]
                         if any(k in msg for k in important_keywords):
                             content = msg
@@ -448,10 +456,15 @@ class CLinkTool(SimpleTool):
                             # Log the notification we are about to send for server-side monitoring
                             logger.debug(f"MCP NOTIFICATION: [{client_config.name}] {display_content}")
 
+                            # 1. Send to MCP UI (Claude Desktop logs)
                             await request_context.session.send_log_message(
                                 level="info",
                                 data=f"[{client_config.name}] {display_content}",
                             )
+                            
+                            # 2. Send to Monitor Dashboard Terminal View
+                            if publisher:
+                                await publisher.tool_log(self.get_name(), clean_content, session_id=effective_session_id)
                         else:
                             logger.debug(f"MCP NOTIFICATION SKIPPED (rate-limit): {display_content}")
                 except Exception as e:
