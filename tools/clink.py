@@ -224,13 +224,15 @@ class CLinkTool(SimpleTool):
             initial_request_dict = self.get_request_as_dict(request)
             continuation_id = create_thread(tool_name=self.get_name(), initial_request=initial_request_dict)
             is_new_thread = True
+            logger.debug(f"Created new thread {continuation_id}")
             
-            # Record user turn for the new thread
-            user_prompt = self.get_request_prompt(request)
-            user_files = self.get_request_files(request)
-            user_images = self.get_request_images(request)
-            add_turn(continuation_id, "user", user_prompt, files=user_files, images=user_images, tool_name=self.get_name())
-            logger.debug(f"Created new thread {continuation_id} and recorded user turn before execution")
+        # Record user turn immediately to ensure persistence before execution
+        # This protects against crashes during long-running agent execution
+        user_prompt = self.get_request_prompt(request)
+        user_files = self.get_request_files(request)
+        user_images = self.get_request_images(request)
+        add_turn(continuation_id, "user", user_prompt, files=user_files, images=user_images, tool_name=self.get_name())
+        logger.debug(f"Recorded user turn for thread {continuation_id} before execution")
         # --- ENSURE CONVERSATION PERSISTENCE END ---
 
         # Track last notification to avoid spamming the UI

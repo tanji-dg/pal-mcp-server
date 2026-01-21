@@ -54,6 +54,10 @@ class SQLiteStorage:
         """Initialize database schema"""
         try:
             with self._get_conn() as conn:
+                # Optimize for concurrency
+                conn.execute("PRAGMA journal_mode=WAL")
+                conn.execute("PRAGMA synchronous=NORMAL")
+                
                 conn.execute("""
                     CREATE TABLE IF NOT EXISTS conversations (
                         id TEXT PRIMARY KEY,
@@ -105,16 +109,20 @@ class SQLiteStorage:
             logger.error(f"Failed to get key {key}: {e}")
         return None
 
-    def list_all(self) -> dict[str, tuple[str, float]]:
-        """List all active conversations. Returns dict {id: (content, expires_at)}"""
+    def list_all(self, include_expired: bool = False) -> dict[str, tuple[str, float]]:
+        """List all conversations. Returns dict {id: (content, expires_at)}"""
         current_time = time.time()
         result = {}
         try:
             with self._get_conn() as conn:
-                cursor = conn.execute(
-                    "SELECT id, content, expires_at FROM conversations WHERE expires_at > ?", 
-                    (current_time,)
-                )
+                if include_expired:
+                    query = "SELECT id, content, expires_at FROM conversations"
+                    params = ()
+                else:
+                    query = "SELECT id, content, expires_at FROM conversations WHERE expires_at > ?"
+                    params = (current_time,)
+                
+                cursor = conn.execute(query, params)
                 for row in cursor.fetchall():
                     result[row[0]] = (row[1], row[2])
         except sqlite3.Error as e:
