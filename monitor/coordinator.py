@@ -212,18 +212,23 @@ class InstanceTracker:
                     if "session_id" in data:
                         self.session_id = data["session_id"]
 
-                    # Extract Token Usage
-                    usage = data.get("usage")
-                    if isinstance(usage, dict):
-                        self.input_tokens = usage.get("input_tokens") or self.input_tokens
-                        self.output_tokens = usage.get("output_tokens") or self.output_tokens
-                        self.cache_read_tokens = usage.get("cache_read_input_tokens") or self.cache_read_tokens
-                        self.cache_creation_tokens = usage.get("cache_creation_input_tokens") or self.cache_creation_tokens
-
                     # Unwrap Claude stream_event wrapper
                     if msg_type == "stream_event" and "event" in data and isinstance(data["event"], dict):
                         data = data["event"]
                         msg_type = data.get("type")
+
+                    # Extract Token Usage (Post-unwrap)
+                    # Check multiple possible locations for usage/stats
+                    u = data.get("usage") or data.get("stats")
+                    if not u and isinstance(data.get("message"), dict):
+                        u = data["message"].get("usage")
+                    
+                    if isinstance(u, dict):
+                        # Support both snake_case and camelCase
+                        self.input_tokens = u.get("input_tokens") or u.get("inputTokens") or self.input_tokens
+                        self.output_tokens = u.get("output_tokens") or u.get("outputTokens") or self.output_tokens
+                        self.cache_read_tokens = u.get("cache_read_input_tokens") or u.get("cacheReadInputTokens") or self.cache_read_tokens
+                        self.cache_creation_tokens = u.get("cache_creation_input_tokens") or u.get("cacheCreationInputTokens") or self.cache_creation_tokens
 
                     # Update model name if found in log metadata
                     new_model = None
@@ -374,11 +379,11 @@ class InstanceTracker:
                         is_claude = "subtype" in data
 
                         # Update tokens from final result
-                        if "usage" in data and isinstance(data["usage"], dict):
-                            u = data["usage"]
-                            self.input_tokens = u.get("input_tokens") or self.input_tokens
-                            self.output_tokens = u.get("output_tokens") or self.output_tokens
-                            self.cache_read_tokens = u.get("cache_read_input_tokens") or self.cache_read_tokens
+                        u = data.get("usage") or data.get("stats")
+                        if isinstance(u, dict):
+                            self.input_tokens = u.get("input_tokens") or u.get("inputTokens") or self.input_tokens
+                            self.output_tokens = u.get("output_tokens") or u.get("outputTokens") or self.output_tokens
+                            self.cache_read_tokens = u.get("cache_read_input_tokens") or u.get("cacheReadInputTokens") or self.cache_read_tokens
                         
                         if "modelUsage" in data and isinstance(data["modelUsage"], dict):
                             # Aggregate across all models if present
