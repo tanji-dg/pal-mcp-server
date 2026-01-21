@@ -141,6 +141,18 @@
             margin-left: 8px;
             border: 1px solid #ffa50244;
         }
+        .badge-session { background: #6b7280; }
+        .badge-tokens-in { background: #374151; border: 1px solid #4b5563; }
+        .badge-tokens-out { background: #065f46; color: #34d399; }
+        .badge-tokens-cache { background: #1e3a8a; color: #93c5fd; }
+        
+        .token-metrics {
+            display: flex;
+            gap: 4px;
+            justify-content: flex-end;
+            font-family: var(--font-mono);
+            font-size: 10px;
+        }
         .instance-phase {
             background: #ffa50222;
             color: #ffa502;
@@ -455,8 +467,16 @@
             <div class="stat-label">Total Calls</div>
         </div>
         <div class="stat-card">
-            <div class="stat-value" id="totalErrors">0</div>
-            <div class="stat-label">Total Errors</div>
+            <div class="stat-value text-error" id="totalErrors">0</div>
+            <div class="stat-label">Errors</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-value" id="totalInputTokens">0</div>
+            <div class="stat-label">Total In Tokens</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-value text-accent" id="totalOutputTokens">0</div>
+            <div class="stat-label">Total Out Tokens</div>
         </div>
         <div class="stat-card">
             <div class="stat-value" id="avgExecTime">0ms</div>
@@ -1110,6 +1130,12 @@
             const totalErrors = allInstances.reduce((sum, i) => sum + (i.total_errors || 0), 0);
             document.getElementById('totalErrors').textContent = totalErrors;
 
+            const totalIn = allInstances.reduce((sum, i) => sum + (i.input_tokens || 0), 0);
+            document.getElementById('totalInputTokens').textContent = totalIn.toLocaleString();
+
+            const totalOut = allInstances.reduce((sum, i) => sum + (i.output_tokens || 0), 0);
+            document.getElementById('totalOutputTokens').textContent = totalOut.toLocaleString();
+
             // Only count instances that have actually made calls in the window for averaging
             const instancesWithMetrics = allInstances.filter(i => (i.recent_calls && i.recent_calls.length > 0) || i.total_calls > 0);
             
@@ -1163,20 +1189,20 @@
                                 <div class="metric-label">Uptime</div>
                             </div>
                             <div class="metric">
-                                <div class="metric-value">${inst.total_calls}</div>
-                                <div class="metric-label">Total Calls</div>
+                                <div class="metric-value">${(inst.input_tokens || 0).toLocaleString()}</div>
+                                <div class="metric-label">In Tokens</div>
                             </div>
                             <div class="metric">
-                                <div class="metric-value">${inst.total_errors}</div>
-                                <div class="metric-label">Errors (Life)</div>
+                                <div class="metric-value text-accent">${(inst.output_tokens || 0).toLocaleString()}</div>
+                                <div class="metric-label">Out Tokens</div>
+                            </div>
+                            <div class="metric">
+                                <div class="metric-value">${inst.total_calls}</div>
+                                <div class="metric-label">Calls</div>
                             </div>
                             <div class="metric">
                                 <div class="metric-value">${formatDuration(Math.round(inst.avg_execution_time_1m || 0))}</div>
-                                <div class="metric-label">Avg Time (1h)</div>
-                            </div>
-                            <div class="metric">
-                                <div class="metric-value">${((inst.error_rate_1m || 0) * 100).toFixed(1)}%</div>
-                                <div class="metric-label">Err Rate (1h)</div>
+                                <div class="metric-label">Avg Time</div>
                             </div>
                         </div>
 

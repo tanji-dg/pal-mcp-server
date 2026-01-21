@@ -89,6 +89,10 @@ class InstanceTracker:
         # Lifetime stats
         self.total_calls: int = 0
         self.total_errors: int = 0
+        self.input_tokens: int = 0
+        self.output_tokens: int = 0
+        self.cache_read_tokens: int = 0
+        self.cache_creation_tokens: int = 0
 
         # Metrics for last window (1 hour)
         self._calls_1m: list[tuple[float, bool]] = []  # (timestamp, is_error)
@@ -205,6 +209,14 @@ class InstanceTracker:
                     # Capture session_id from log if available
                     if "session_id" in data:
                         self.session_id = data["session_id"]
+
+                    # Extract Token Usage
+                    usage = data.get("usage")
+                    if isinstance(usage, dict):
+                        self.input_tokens = usage.get("input_tokens") or self.input_tokens
+                        self.output_tokens = usage.get("output_tokens") or self.output_tokens
+                        self.cache_read_tokens = usage.get("cache_read_input_tokens") or self.cache_read_tokens
+                        self.cache_creation_tokens = usage.get("cache_creation_input_tokens") or self.cache_creation_tokens
 
                     # Unwrap Claude stream_event wrapper
                     if msg_type == "stream_event" and "event" in data and isinstance(data["event"], dict):
@@ -361,6 +373,23 @@ class InstanceTracker:
                     elif msg_type == "result": # Final result from Gemini CLI or Claude CLI
                         # Check if this is Claude CLI output (has 'subtype') or Gemini (has 'stats')
                         is_claude = "subtype" in data
+
+                        # Update tokens from final result
+                        if "usage" in data and isinstance(data["usage"], dict):
+                            u = data["usage"]
+                            self.input_tokens = u.get("input_tokens") or self.input_tokens
+                            self.output_tokens = u.get("output_tokens") or self.output_tokens
+                            self.cache_read_tokens = u.get("cache_read_input_tokens") or self.cache_read_tokens
+                        
+                        if "modelUsage" in data and isinstance(data["modelUsage"], dict):
+                            # Aggregate across all models if present
+                            total_in = 0
+                            total_out = 0
+                            for m_stats in data["modelUsage"].values():
+                                total_in += m_stats.get("inputTokens") or 0
+                                total_out += m_stats.get("outputTokens") or 0
+                            if total_in: self.input_tokens = total_in
+                            if total_out: self.output_tokens = total_out
 
                         status = data.get("status", "ok")
 
@@ -592,6 +621,10 @@ class InstanceTracker:
             last_status=self.last_status,
             total_calls=self.total_calls,
             total_errors=self.total_errors,
+            input_tokens=self.input_tokens,
+            output_tokens=self.output_tokens,
+            cache_read_tokens=self.cache_read_tokens,
+            cache_creation_tokens=self.cache_creation_tokens,
         )
 
 

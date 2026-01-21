@@ -80,23 +80,14 @@ class InstanceStatus(BaseModel):
         default=None,
         description="Most recent status message from logs or notifications",
     )
-    total_calls: int = Field(
-        default=0,
-        description="Total number of tool calls since startup",
-    )
-    total_errors: int = Field(
-        default=0,
-        description="Total number of errors since startup",
-    )
-
-    def _format_dt(self, dt: datetime) -> str:
-        """Format datetime to ISO string with Z suffix."""
-        if not dt:
-            return None
-        # Convert to UTC if it has tzinfo, or just append Z if it's naive (we assume it's UTC)
-        if dt.tzinfo:
-            return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
-        return dt.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    total_calls: int = 0
+    total_errors: int = 0
+    
+    # Token usage metrics
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_creation_tokens: int = 0
 
     def to_dict(self) -> dict:
         """Convert to dictionary with ISO format timestamps."""
@@ -149,6 +140,13 @@ class AggregatedState(BaseModel):
     type: str = Field(default="state_update", description="Message type identifier")
     timestamp: datetime = Field(default_factory=utc_now, description="State snapshot timestamp")
     instances: list[InstanceStatus] = Field(default_factory=list, description="Status of all known instances")
+    
+    # Aggregated metrics
+    total_calls: int = 0
+    total_errors: int = 0
+    total_input_tokens: int = 0
+    total_output_tokens: int = 0
+    total_cache_read_tokens: int = 0
 
     def _format_dt(self, dt: datetime) -> str:
         """Format datetime to ISO string with Z suffix."""
@@ -162,6 +160,11 @@ class AggregatedState(BaseModel):
             "type": self.type,
             "timestamp": self._format_dt(self.timestamp),
             "instances": [inst.to_dict() for inst in self.instances],
+            "total_calls": self.total_calls,
+            "total_errors": self.total_errors,
+            "total_input_tokens": self.total_input_tokens,
+            "total_output_tokens": self.total_output_tokens,
+            "total_cache_read_tokens": self.total_cache_read_tokens,
         }
         import json
 
@@ -170,7 +173,14 @@ class AggregatedState(BaseModel):
     @classmethod
     def from_instances(cls, instances: list[InstanceStatus]) -> "AggregatedState":
         """Create aggregated state from list of instance statuses."""
-        return cls(instances=instances)
+        return cls(
+            instances=instances,
+            total_calls=sum(i.total_calls for i in instances),
+            total_errors=sum(i.total_errors for i in instances),
+            total_input_tokens=sum(i.input_tokens for i in instances),
+            total_output_tokens=sum(i.output_tokens for i in instances),
+            total_cache_read_tokens=sum(i.cache_read_tokens for i in instances),
+        )
 
 
 class WebSocketMessage(BaseModel):
