@@ -263,8 +263,37 @@ class InstanceTracker:
                         if not (is_low_level and is_high_level):
                             self.model_name = new_model
 
-                    if msg_type == "message":
+                    elif msg_type == "content_block_start":
+                        # Handle streaming tool use start (Gemini/Claude)
+                        content_block = data.get("content_block", {})
+                        if content_block.get("type") == "tool_use":
+                            name = content_block.get("name") or "tool"
+                            tool_id = content_block.get("id")
+                            if tool_id:
+                                self._tool_name_cache[tool_id] = name
+                                self._tool_start_times[tool_id] = event_time_ts
+                            self.last_status = f"Calling {name}"
+
+                    if msg_type == "message" or msg_type == "assistant":
                         self.last_status = "Thinking"
+                        # Scan content for tool_use to capture start times if sent as a whole block
+                        content = data.get("content")
+                        # Handle nested message structure
+                        if not content and isinstance(data.get("message"), dict):
+                            content = data["message"].get("content")
+                            
+                        if isinstance(content, list):
+                            for item in content:
+                                if isinstance(item, dict) and item.get("type") == "tool_use":
+                                    name = item.get("name") or "tool"
+                                    tool_id = item.get("id")
+                                    if tool_id:
+                                        self._tool_name_cache[tool_id] = name
+                                        # Use event time as start time since we received the whole block
+                                        if tool_id not in self._tool_start_times:
+                                            self._tool_start_times[tool_id] = event_time_ts
+                                    self.last_status = f"Calling {name}"
+
                     elif msg_type == "tool_use":
                         # Support both 'name' and 'tool_name' keys
                         name = data.get("tool_name") or data.get("name") or "tool"
@@ -708,13 +737,25 @@ class MonitorCoordinator:
                 elif event_type == ToolEventType.TOOL_LOG:
                     tool_name = get_val(event, 'tool_name')
                     log_data = get_val(event, 'log_data')
-                    if tool_name:
-                        tracker.log_activity(tool_name, log_data, original_event=None if isinstance(event, dict) else event)
                     
-                    if not isinstance(event, dict):
-                        if not event.session_id and tracker.session_id:
-                            event.session_id = tracker.session_id
+                    # Prepare event object for broadcasting and storage
+                    if isinstance(event, dict):
+                        try:
+                            # Best effort conversion for broadcast
+                            broadcast_log_event = ToolEvent(**event)
+                        except Exception as e:
+                            logger.warning(f"Failed to convert log event dict to model: {e}")
+                            broadcast_log_event = None
+                    else:
                         broadcast_log_event = event
+
+                    if tool_name:
+                        # Log activity needs the event object for storage
+                        tracker.log_activity(tool_name, log_data, original_event=broadcast_log_event)
+                    
+                    if broadcast_log_event:
+                        if not broadcast_log_event.session_id and tracker.session_id:
+                            broadcast_log_event.session_id = tracker.session_id
 
             else:
                 # Auto-register instance
@@ -938,12 +979,12 @@ def create_app() -> FastAPI:
         return {"type": state.type, "timestamp": state.timestamp.isoformat(), "instances": [inst.to_dict() for inst in state.instances]}
 
     @app.post("/event")
-    async def receive_event(event: ToolEvent):
+    async def receive_event(event: dict):
         coordinator = get_coordinator()
         return await coordinator.process_event(event)
 
     @app.post("/events")
-    async def receive_events(events: List[ToolEvent]):
+    async def receive_events(events: List[dict]):
         coordinator = get_coordinator()
         interrupted = False
         for event in events:
@@ -954,26 +995,32 @@ def create_app() -> FastAPI:
 
     @app.websocket("/ws")
     async def websocket_endpoint(websocket: WebSocket):
-        await websocket.accept()
-        coordinator = get_coordinator()
-        await coordinator.add_websocket_client(websocket)
         try:
-            while True:
-                try:
-                    data = await asyncio.wait_for(websocket.receive_text(), timeout=30)
-                    if data == "ping":
-                        await websocket.send_text("pong")
-                except asyncio.TimeoutError:
+            logger.info(f"WebSocket connection attempt from {websocket.client}")
+            await websocket.accept()
+            logger.info(f"WebSocket connection accepted from {websocket.client}")
+            coordinator = get_coordinator()
+            await coordinator.add_websocket_client(websocket)
+            try:
+                while True:
                     try:
-                        await websocket.send_text('{"type": "ping"}')
-                    except Exception:
-                        break
-        except WebSocketDisconnect:
-            pass
+                        data = await asyncio.wait_for(websocket.receive_text(), timeout=30)
+                        if data == "ping":
+                            await websocket.send_text("pong")
+                    except asyncio.TimeoutError:
+                        try:
+                            await websocket.send_text('{"type": "ping"}')
+                        except Exception:
+                            break
+            except WebSocketDisconnect:
+                logger.info(f"WebSocket disconnected: {websocket.client}")
+                pass
+            except Exception as e:
+                logger.error(f"WebSocket error in loop: {e}")
+            finally:
+                await coordinator.remove_websocket_client(websocket)
         except Exception as e:
-            logger.debug(f"WebSocket error: {e}")
-        finally:
-            await coordinator.remove_websocket_client(websocket)
+            logger.error(f"WebSocket connection failed: {e}")
 
     return app
 

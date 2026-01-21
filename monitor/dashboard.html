@@ -1301,7 +1301,7 @@
             return Math.round(seconds / 86400) + 'd';
         }
 
-        async def killInstance(instanceId) {
+        async function killInstance(instanceId) {
             if (!confirm(`Are you sure you want to hard-kill instance ${instanceId}?\nThis sends a SIGTERM signal to the process.`)) {
                 return;
             }
@@ -1314,7 +1314,7 @@
             }
         }
 
-        async def interruptInstance(instanceId) {
+        async function interruptInstance(instanceId) {
             // No confirm for interrupt as it's intended to be a common action
             try {
                 const response = await fetch(`/api/instances/${instanceId}/interrupt`, { method: 'POST' });

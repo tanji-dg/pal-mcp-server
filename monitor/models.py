@@ -139,6 +139,18 @@ class ToolEvent(BaseModel):
         return cls.model_validate_json(json_str)
 
 
+class EventResponse(BaseModel):
+    """Response from coordinator to publisher."""
+
+    status: str = Field(default="ok")
+    interrupted: bool = Field(default=False)
+    message: Optional[str] = Field(default=None)
+
+    def to_json(self) -> str:
+        """Serialize to JSON string."""
+        return self.model_dump_json()
+
+
 class AggregatedState(BaseModel):
     """Complete aggregated state for dashboard consumption."""
 
