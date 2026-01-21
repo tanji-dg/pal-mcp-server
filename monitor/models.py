@@ -23,10 +23,11 @@ def utc_now():
 
 
 def format_dt_iso(dt: datetime) -> str:
-    """Format datetime to ISO string with Z suffix."""
+    """Format datetime to ISO string."""
     if dt.tzinfo:
-        return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
-    return dt.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        # Standard ISO format with Z for UTC
+        return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    return dt.isoformat()
 
 
 class ToolEventType(str, Enum):

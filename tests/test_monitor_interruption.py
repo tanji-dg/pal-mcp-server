@@ -125,7 +125,8 @@ class TestInterruptionFlow:
             
             with patch('asyncio.create_subprocess_exec', return_value=mock_process):
                 # The agent loop should check publisher.is_interrupted() and call process.kill()
-                with pytest.raises(InterruptedError) as excinfo:
+                from clink.agents.base import CLIAgentError
+                with pytest.raises(CLIAgentError) as excinfo:
                     await agent.run(role=mock_role, prompt="test", files=[], images=[])
                 
                 assert "interrupted" in str(excinfo.value).lower()

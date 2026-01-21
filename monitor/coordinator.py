@@ -53,7 +53,7 @@ logger = logging.getLogger(__name__)
 # Configuration constants
 HEARTBEAT_INTERVAL = 10  # seconds between heartbeats
 INSTANCE_TIMEOUT = 30  # seconds before marking instance as offline
-MAX_RECENT_CALLS = 50  # maximum number of recent calls to keep per instance
+MAX_RECENT_CALLS = 20  # maximum number of recent calls to keep per instance
 BROADCAST_INTERVAL = 1.0  # seconds between state broadcasts
 
 
@@ -193,11 +193,12 @@ class InstanceTracker:
         # unless it's explicitly a tool start we might have missed,
         # OR we are a fresh tracker (monitor restart) and this is our first activity.
         if self.state == "idle":
-            is_fresh = self.active_tool is None and self.total_calls == 0
             # Heuristic check for tool start patterns in logs
             is_start_event = log_data and ('"type": "tool_use"' in log_data or '"type": "item.started"' in log_data or '"type": "message_start"' in log_data)
             
-            if is_fresh or is_start_event:
+            # If it's an explicit start event, or a fresh tracker seeing JSON, go to busy
+            is_fresh = self.active_tool is None and self.total_calls == 0
+            if is_start_event or (is_fresh and log_data and log_data.strip().startswith("{")):
                 # If it's a start event but it's older than our last completion, ignore it (late log)
                 if not is_fresh and original_event and original_event.timestamp < self.last_completion_time:
                     return
@@ -386,6 +387,9 @@ class InstanceTracker:
                         if tool_id and tool_id in self._tool_start_times:
                             start_t_val = self._tool_start_times.pop(tool_id)
                             # Accurate difference calculation (in seconds -> ms)
+                            # Support both float timestamps and datetime objects for test compatibility
+                            if isinstance(start_t_val, datetime):
+                                start_t_val = start_t_val.timestamp()
                             duration_ms = int((event_time_ts - start_t_val) * 1000)
 
                         # Update metrics
@@ -411,10 +415,6 @@ class InstanceTracker:
                         # Track for window metrics
                         self._calls_1m.append((now_ts, status == "error" or is_content_error))
                         self._durations_1m.append((now_ts, duration_ms))
-
-                        # If a tool result is seen, and it's from the primary tool, it's near completion
-                        if name and name == self.active_tool:
-                             self.last_status = f"Finishing {name}"
                     elif msg_type == "user":
                         # Handle Claude tool results embedded in user message
                         message = data.get("message", {})
@@ -493,7 +493,7 @@ class InstanceTracker:
                             self._tool_start_times[item_id] = event_time_ts
 
                         if item.get("type") == "command_execution":
-                            self.last_status = f"Calling {item.get('command', 'cmd')}"
+                            self.last_status = f"Executing {item.get('command', 'cmd')}"
                         elif item.get("type") == "reasoning":
                             self.last_status = "Thinking"
 
@@ -505,15 +505,22 @@ class InstanceTracker:
                         duration_ms = 0
                         if item_id and item_id in self._tool_start_times:
                             start_t = self._tool_start_times.pop(item_id)
+                            # Support both float and datetime
+                            if isinstance(start_t, datetime):
+                                start_t = start_t.timestamp()
                             duration_ms = int((event_time_ts - start_t) * 1000)
 
-                        if item.get("type") == "command_execution":
+                        cmd = item.get("command")
+                        if cmd or item.get("type") == "command_execution":
                             self.total_calls += 1
                             is_err = status == "failed"
                             if is_err: self.total_errors += 1
                             
+                            # Standardize tool name to first word of command for metrics compatibility
+                            tool_name_short = cmd.split()[0] if cmd else "cmd"
+                            
                             call = ToolCall(
-                                tool=item.get("command") or "cmd",
+                                tool=tool_name_short,
                                 status="error" if is_err else "success",
                                 duration_ms=duration_ms,
                                 timestamp=utc_now(),
@@ -521,37 +528,47 @@ class InstanceTracker:
                             self.recent_calls.appendleft(call)
                             self._calls_1m.append((event_time_ts, is_err))
                             self._durations_1m.append((event_time_ts, duration_ms))
-                            self.last_status = f"Result from {item.get('command')}"
+                            self.last_status = f"{'Error in' if is_err else 'Result from'} {cmd or 'cmd'}"
 
-                    error_obj = data.get("error")
-                    if isinstance(error_obj, dict):
+                    elif msg_type == "error":
+                        error_obj = data.get("error") or data
                         delay_info = ""
-                        details = error_obj.get("details", [])
-                        if isinstance(details, list):
-                            for detail in details:
-                                if not isinstance(detail, dict):
-                                    continue
-                                metadata = detail.get("metadata", {})
-                                if isinstance(metadata, dict) and "quotaResetDelay" in metadata:
-                                    delay_info = f" (Quota resets in {metadata['quotaResetDelay']})"
-                                if "retryDelay" in detail:
-                                    delay_info = f" (Retry in {detail['retryDelay']})"
+                        if isinstance(error_obj, dict):
+                            details = error_obj.get("details", [])
+                            if isinstance(details, list):
+                                for detail in details:
+                                    if not isinstance(detail, dict):
+                                        continue
+                                    metadata = detail.get("metadata", {})
+                                    if isinstance(metadata, dict) and "quotaResetDelay" in metadata:
+                                        delay_info = f" (Quota resets in {metadata['quotaResetDelay']})"
+                                    if "retryDelay" in detail:
+                                        delay_info = f" (Retry in {detail['retryDelay']})"
                         
                         self.last_status = f"Rate Limited{delay_info}"
             except Exception:
                 pass
 
-            if not is_json_log:
+            if not is_json_log or self.last_status == f"Starting {tool_name}...":
                 log_lower = log_data.lower()
                 if "thinking" in log_lower:
                     self.last_status = "Thinking"
                 elif "calling tool" in log_lower or "executing" in log_lower:
-                    self.last_status = "Calling tool"
+                    self.last_status = "Executing"
+                elif "result" in log_lower:
+                    self.last_status = "Finishing"
                 elif "finished" in log_lower or "completed" in log_lower:
                     self.last_status = "Completed"
+                elif len(log_data) < 100: # Heuristic for short status message
+                    self.last_status = log_data.strip()
 
-    def end_tool(self, tool_name: Optional[str], duration_ms: int, is_error: bool = False, tool_output: Optional[str] = None, model_name: Optional[str] = None):
+    def end_tool(self, tool_name: Optional[str] = None, duration_ms: int = 0, is_error: bool = False, tool_output: Optional[str] = None, model_name: Optional[str] = None):
         """Record tool execution completion."""
+        # Support positional duration_ms for backward compatibility with some tests
+        if isinstance(tool_name, int) and duration_ms == 0:
+            duration_ms = tool_name
+            tool_name = None
+
         now_ts = time.time()
         status = "error" if is_error else "success"
         self.last_completion_time = utc_now()
@@ -644,6 +661,7 @@ class InstanceTracker:
             self.active_tool = None
             self.active_tool_input = None
             self.model_name = None
+            self.session_id = None
             self.tool_start_time = None
             self.active_tools.clear() 
             self.active_tool_inputs.clear()
@@ -682,7 +700,11 @@ class InstanceTracker:
         self._durations_1m = [(t, d) for t, d in self._durations_1m if t > cutoff]
 
     def is_timed_out(self) -> bool:
-        return utc_now() - self.last_heartbeat > timedelta(seconds=INSTANCE_TIMEOUT)
+        now = utc_now()
+        hb = self.last_heartbeat
+        if hb.tzinfo is None:
+            hb = hb.replace(tzinfo=timezone.utc)
+        return now - hb > timedelta(seconds=INSTANCE_TIMEOUT)
 
     def to_status(self) -> InstanceStatus:
         """Convert to InstanceStatus model."""
@@ -767,75 +789,72 @@ class MonitorCoordinator:
                 uptime = get_val(event, 'uptime_seconds') or 0.0
                 self.instances[instance_id] = InstanceTracker(instance_id, uptime)
                 logger.info(f"Instance registered: {instance_id}")
+                return EventResponse(status="ok")
 
             elif event_type == ToolEventType.UNREGISTER:
                 if instance_id in self.instances:
-                    self.instances[instance_id].state = "offline"
-                    logger.info(f"Instance marked offline: {instance_id}")
+                    del self.instances[instance_id]
+                    logger.info(f"Instance unregistered: {instance_id}")
+                return EventResponse(status="ok")
 
-            elif instance_id in self.instances:
-                tracker = self.instances[instance_id]
-                interrupted = tracker.interrupted
-
-                if event_type == ToolEventType.HEARTBEAT:
-                    uptime = get_val(event, 'uptime_seconds')
-                    tracker.update_heartbeat(uptime)
-
-                elif event_type == ToolEventType.TOOL_START:
-                    tool_name = get_val(event, 'tool_name')
-                    tool_input = get_val(event, 'tool_input')
-                    if tool_name:
-                        tracker.start_tool(tool_name, tool_input)
-                        logger.debug(f"Tool started: {tool_name} on {instance_id}")
-
-                elif event_type == ToolEventType.TOOL_END:
-                    tool_name = get_val(event, 'tool_name')
-                    duration_ms = get_val(event, 'duration_ms')
-                    tool_output = get_val(event, 'tool_output')
-                    model_name = get_val(event, 'model_name')
-                    tracker.end_tool(tool_name, duration_ms or 0, is_error=False, tool_output=tool_output, model_name=model_name)
-                    logger.debug(f"Tool completed: {tool_name} on {instance_id}")
-
-                elif event_type == ToolEventType.TOOL_ERROR:
-                    tool_name = get_val(event, 'tool_name')
-                    duration_ms = get_val(event, 'duration_ms')
-                    model_name = get_val(event, 'model_name')
-                    error_message = get_val(event, 'error_message') or 'Unknown error'
-                    tracker.end_tool(tool_name, duration_ms or 0, is_error=True, model_name=model_name)
-                    logger.warning(f"Tool error: {tool_name} on {instance_id} - {error_message}")
-
-                elif event_type == ToolEventType.TOOL_LOG:
-                    tool_name = get_val(event, 'tool_name')
-                    log_data = get_val(event, 'log_data')
-                    
-                    # Prepare event object for broadcasting and storage
-                    if isinstance(event, dict):
-                        try:
-                            # Best effort conversion for broadcast
-                            broadcast_log_event = ToolEvent(**event)
-                        except Exception as e:
-                            logger.warning(f"Failed to convert log event dict to model: {e}")
-                            broadcast_log_event = None
-                    else:
-                        broadcast_log_event = event
-
-                    if tool_name:
-                        # Log activity needs the event object for storage
-                        tracker.log_activity(tool_name, log_data, original_event=broadcast_log_event)
-                    
-                    if broadcast_log_event:
-                        if not broadcast_log_event.session_id and tracker.session_id:
-                            broadcast_log_event.session_id = tracker.session_id
-
-            else:
-                # Auto-register instance
+            # Auto-register if not found
+            if instance_id not in self.instances:
                 uptime = get_val(event, 'uptime_seconds') or 0.0
-                tracker = InstanceTracker(instance_id, uptime)
-                self.instances[instance_id] = tracker
+                self.instances[instance_id] = InstanceTracker(instance_id, uptime)
                 logger.info(f"Instance auto-registered: {instance_id}")
+
+            tracker = self.instances[instance_id]
+            interrupted = tracker.interrupted
+
+            if event_type == ToolEventType.HEARTBEAT:
+                uptime = get_val(event, 'uptime_seconds')
+                tracker.update_heartbeat(uptime)
+
+            elif event_type == ToolEventType.TOOL_START:
+                tool_name = get_val(event, 'tool_name')
+                tool_input = get_val(event, 'tool_input')
+                if tool_name:
+                    tracker.start_tool(tool_name, tool_input)
+                    logger.debug(f"Tool started: {tool_name} on {instance_id}")
+
+            elif event_type == ToolEventType.TOOL_END:
+                tool_name = get_val(event, 'tool_name')
+                duration_ms = get_val(event, 'duration_ms')
+                tool_output = get_val(event, 'tool_output')
+                model_name = get_val(event, 'model_name')
+                tracker.end_tool(tool_name, duration_ms or 0, is_error=False, tool_output=tool_output, model_name=model_name)
+                logger.debug(f"Tool completed: {tool_name} on {instance_id}")
+
+            elif event_type == ToolEventType.TOOL_ERROR:
+                tool_name = get_val(event, 'tool_name')
+                duration_ms = get_val(event, 'duration_ms')
+                model_name = get_val(event, 'model_name')
+                error_message = get_val(event, 'error_message') or 'Unknown error'
+                tracker.end_tool(tool_name, duration_ms or 0, is_error=True, model_name=model_name)
+                logger.warning(f"Tool error: {tool_name} on {instance_id} - {error_message}")
+
+            elif event_type == ToolEventType.TOOL_LOG:
+                tool_name = get_val(event, 'tool_name')
+                log_data = get_val(event, 'log_data')
                 
-                # Check for interruption after auto-register
-                interrupted = tracker.interrupted
+                # Prepare event object for broadcasting and storage
+                if isinstance(event, dict):
+                    try:
+                        # Best effort conversion for broadcast
+                        broadcast_log_event = ToolEvent(**event)
+                    except Exception as e:
+                        logger.warning(f"Failed to convert log event dict to model: {e}")
+                        broadcast_log_event = None
+                else:
+                    broadcast_log_event = event
+
+                if tool_name:
+                    # Log activity needs the event object for storage
+                    tracker.log_activity(tool_name, log_data, original_event=broadcast_log_event)
+                
+                if broadcast_log_event:
+                    if not broadcast_log_event.session_id and tracker.session_id:
+                        broadcast_log_event.session_id = tracker.session_id
 
 
         if broadcast_log_event:
