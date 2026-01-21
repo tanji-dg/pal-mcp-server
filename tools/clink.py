@@ -284,23 +284,46 @@ class CLinkTool(SimpleTool):
 
             publisher = get_publisher()
             
+            def handle_summary_extraction(text: str) -> Optional[str]:
+                """Stateful summary extraction across chunks."""
+                nonlocal state
+                result = None
+                text_lower = text.lower()
+                
+                if "<summary>" in text_lower:
+                    state["in_summary"] = True
+                    state["summary_buffer"] = []
+                    start_tag_idx = text_lower.find("<summary>")
+                    content_after_start = text[start_tag_idx + 9:]
+                    if content_after_start:
+                        if "</summary>" in content_after_start.lower():
+                            end_tag_idx = content_after_start.lower().find("</summary>")
+                            state["summary_buffer"].append(content_after_start[:end_tag_idx])
+                            result = "".join(state["summary_buffer"]).strip()
+                            state["in_summary"] = False
+                        else:
+                            state["summary_buffer"].append(content_after_start)
+                elif "</summary>" in text_lower and state["in_summary"]:
+                    end_tag_idx = text_lower.find("</summary>")
+                    state["summary_buffer"].append(text[:end_tag_idx])
+                    result = "".join(state["summary_buffer"]).strip()
+                    state["in_summary"] = False
+                elif state["in_summary"]:
+                    state["summary_buffer"].append(text)
+                
+                return f"📋 Summary: {result}" if result else None
+
             # Subprocesses might flush multiple lines at once in a single buffer chunk.
-            # Split and process each non-empty line to ensure real-time responsiveness.
             lines = line.splitlines()
             for raw_msg in lines:
                 msg = raw_msg.strip()
-                if not msg:
-                    continue
-
-                # Always log raw output to server debug log for diagnostic purposes
-                logger.debug(f"CLI RAW: [{client_config.name}] {msg}")
+                if not msg: continue
 
                 try:
                     content = None
                     db_updated_needed = False
                     
-                    # 1. JSON format handling (gemini and codex)
-                    # Use a more robust check for JSON as it might have leading/trailing whitespace or text
+                    # 1. JSON format handling
                     json_start = msg.find('{')
                     json_end = msg.rfind('}')
                     
@@ -310,171 +333,123 @@ class CLinkTool(SimpleTool):
                             data = json.loads(json_str)
                             msg_type = data.get("type")
 
+                            # Always forward raw JSON to monitor for token/state tracking
+                            if publisher:
+                                await publisher.tool_log(self.get_name(), json_str, session_id=effective_session_id)
+
                             # Gemini stream-json events
                             if msg_type == "message":
                                 role = data.get("role")
-                                # Support both standard content and thought parts
                                 payload_content = data.get("content") or data.get("thought")
                                 if role == "assistant" and payload_content:
-                                    # Only notify about thinking/progress messages, not final answers
-                                    # For Gemini: check for 'delta' flag
                                     if data.get("delta") is True:
-                                        state["accumulated_thinking"].append(payload_content)
-                                        content = f"🧠 Thinking: {payload_content}"
+                                        summary_msg = handle_summary_extraction(payload_content)
+                                        if summary_msg:
+                                            content = summary_msg
+                                        else:
+                                            state["accumulated_thinking"].append(payload_content)
+                                            if not state["in_summary"]:
+                                                content = f"🧠 Thinking: {payload_content}"
                             
                             # Claude stream-json events
                             elif msg_type == "stream_event":
                                 event_data = data.get("event", {})
                                 etype = event_data.get("type")
-                                
                                 if etype == "content_block_delta":
                                     delta = event_data.get("delta", {})
                                     dtype = delta.get("type")
                                     if dtype == "thinking_delta":
                                         thought = delta.get("thinking")
                                         if thought:
-                                            state["accumulated_thinking"].append(thought)
-                                            content = f"🧠 Thinking: {thought}"
+                                            summary_msg = handle_summary_extraction(thought)
+                                            if summary_msg:
+                                                content = summary_msg
+                                            else:
+                                                state["accumulated_thinking"].append(thought)
+                                                if not state["in_summary"]:
+                                                    content = f"🧠 Thinking: {thought}"
+                                    elif dtype == "text_delta":
+                                        text = delta.get("text")
+                                        if text:
+                                            summary_msg = handle_summary_extraction(text)
+                                            if summary_msg: content = summary_msg
                                 
                             elif msg_type == "tool_use":
                                 name = data.get("tool_name") or data.get("name")
                                 tool_id = data.get("tool_id")
-                                if tool_id and name:
-                                    tool_names[tool_id] = name
+                                if tool_id and name: tool_names[tool_id] = name
                                 log_entry = f"🛠️ Executing: {name or 'tool'}"
                                 content = log_entry
                                 state["accumulated_logs"].append(log_entry)
-                                db_updated_needed = True # Tool use is significant
+                                db_updated_needed = True 
                                 
                             elif msg_type == "tool_result":
                                 tool_id = data.get("tool_id")
                                 status = data.get("status")
                                 name = tool_names.get(tool_id) if tool_id else None
-                                if status == "success":
-                                    log_entry = f"✅ Executed: {name or 'tool'}"
-                                    content = log_entry
-                                elif status == "error":
-                                    log_entry = f"❌ Error in: {name or 'tool'}"
-                                    content = log_entry
-                                
-                                if content:
-                                    state["accumulated_logs"].append(content)
-                                    db_updated_needed = True
+                                log_entry = f"{'✅ Executed' if status == 'success' else '❌ Error in'}: {name or 'tool'}"
+                                content = log_entry
+                                state["accumulated_logs"].append(log_entry)
+                                db_updated_needed = True
 
-                            # Legacy gemini events
                             elif msg_type == "tool_call":
                                 status = data.get("status")
                                 name = data.get("name")
-                                if status == "Executing":
-                                    content = f"🛠️ Executing: {name}"
-                                elif status == "Success":
-                                    content = f"✅ Executed: {name}"
-                                elif status == "Error":
-                                    content = f"❌ Error in: {name}"
-                                
-                                if content:
-                                    state["accumulated_logs"].append(content)
-                                    db_updated_needed = True
+                                content = f"{'🛠️ Executing' if status == 'Executing' else '✅ Executed'}: {name}"
+                                state["accumulated_logs"].append(content)
+                                db_updated_needed = True
 
-                            # Codex (Legacy/Other) format handling
                             elif msg_type in ["item.started", "item.completed"]:
                                 item = data.get("item", {})
                                 label = item.get("type")
-
                                 if label == "command_execution":
-                                    status_prefix = "🛠️ Executing" if msg_type == "item.started" else "✅ Executed"
-                                    content = f"{status_prefix}: {item.get('command')}"
+                                    content = f"{'🛠️ Executing' if msg_type == 'item.started' else '✅ Executed'}: {item.get('command')}"
                                 elif label == "reasoning":
-                                    status_prefix = "🧠 Thinking" if msg_type == "item.started" else "🧠 Thought"
-                                    content = f"{status_prefix}: {item.get('text')}"
-                                
-                                if content:
-                                    state["accumulated_logs"].append(content)
+                                    content = f"{'🧠 Thinking' if msg_type == 'item.started' else '🧠 Thought'}: {item.get('text')}"
+                                if content: state["accumulated_logs"].append(content)
                             
-                            # Filter system notifications
                             elif msg_type == "system":
                                 logger.debug(f"CLI SYSTEM EVENT: {msg}")
                                 continue
+                        except json.JSONDecodeError: pass
 
-                        except json.JSONDecodeError:
-                            pass
-
-                    # 2. Text format handling & Summary extraction
+                    # 2. Text format handling
                     if not content:
-                        # Check for <SUMMARY> tags (might be partial)
-                        msg_lower = msg.lower()
-                        
-                        if "<summary>" in msg_lower:
-                            state["in_summary"] = True
-                            state["summary_buffer"] = []
-                            # Extract part after tag if any
-                            start_idx = msg_lower.find("<summary>") + 9
-                            state["summary_buffer"].append(msg[start_idx:])
-                        elif "</summary>" in msg_lower and state["in_summary"]:
-                            # Extract part before tag
-                            end_idx = msg_lower.find("</summary>")
-                            state["summary_buffer"].append(msg[:end_idx])
-                            full_summary = "".join(state["summary_buffer"]).strip()
-                            if full_summary:
-                                content = f"📋 Summary: {full_summary}"
-                            state["in_summary"] = False
-                            state["summary_buffer"] = []
-                        elif state["in_summary"]:
-                            state["summary_buffer"].append(msg)
-                            # Do not emit intermediate summary lines yet
-                        else:
-                            # Regular text milestones
-                            important_keywords = [
-                                "Loading extension:",
-                                "Error executing tool",
-                                "Error when talking to Gemini API",
-                                "Executing tool",
-                                "Executed tool",
-                                "Tool result:",
-                            ]
+                        summary_msg = handle_summary_extraction(msg)
+                        if summary_msg:
+                            content = summary_msg
+                        elif not state["in_summary"]:
+                            important_keywords = ["Loading extension:", "Error executing tool", "Executing tool", "Executed tool", "Tool result:"]
                             if any(k in msg for k in important_keywords):
                                 content = msg
                                 state["accumulated_logs"].append(msg)
+                        
+                        # Forward raw text logs to monitor if no JSON was sent
+                        if publisher and not json_str:
+                            await publisher.tool_log(self.get_name(), msg, session_id=effective_session_id)
 
-                    # Update DB periodically or on significant events
+                    # Update DB periodically
                     now = time.monotonic()
                     if continuation_id and (db_updated_needed or (now - state["last_db_update"] > DB_UPDATE_INTERVAL)):
-                        # Construct current state content
                         current_thinking = "".join(state["accumulated_thinking"])
                         current_logs = "\n".join(state["accumulated_logs"])
-                        
                         live_content = ""
-                        if current_thinking:
-                            live_content += f"<thinking>{current_thinking}</thinking>\n\n"
-                        if current_logs:
-                            live_content += f"### 🔄 Live Progress\n{current_logs}\n\n"
-                        
+                        if current_thinking: live_content += f"<thinking>{current_thinking}</thinking>\n\n"
+                        if current_logs: live_content += f"### 🔄 Live Progress\n{current_logs}\n\n"
                         live_content += "⏳ *Processing...*"
-                        
                         update_current_turn(continuation_id, live_content, tool_name=self.get_name())
                         state["last_db_update"] = now
 
-                    # Apply rate-limiting and deduplication for UI notifications
+                    # UI Notification
                     if content:
-                        # Strip ANSI codes
                         clean_content = ansi_escape.sub("", content)
-                        # Add session info
                         session_label = f"[{effective_session_id[:8]}] " if effective_session_id != "standalone" else ""
                         display_content = f"{session_label}{clean_content}"
 
                         if display_content != state["last_msg"] or (now - state["last_time"]) > MIN_INTERVAL:
                             state["last_msg"] = display_content
                             state["last_time"] = now
-
-                            # 1. Send to MCP UI (Claude Desktop logs)
-                            await request_context.session.send_log_message(
-                                level="info",
-                                data=f"[{client_config.name}] {display_content}",
-                            )
-                            
-                            # 2. Send to Monitor Dashboard Terminal View
-                            if publisher:
-                                await publisher.tool_log(self.get_name(), clean_content, session_id=effective_session_id)
+                            await request_context.session.send_log_message(level="info", data=f"[{client_config.name}] {display_content}")
                 except Exception as e:
                     logger.warning(f"Failed to send notification: {e}")
 

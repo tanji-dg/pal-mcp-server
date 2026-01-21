@@ -569,22 +569,45 @@ class InstanceTracker:
             if tool_output:
                 try:
                     data = json.loads(tool_output)
-                    # Check for usage in metadata (common PAL format)
-                    metadata = data.get("metadata", {})
-                    u = metadata.get("usage") or data.get("usage")
-                    if isinstance(u, dict):
-                        self._update_tokens_incremental(u)
-                    
-                    if "modelUsage" in data and isinstance(data["modelUsage"], dict):
-                        # Aggregate across all models
-                        totals = {"input": 0, "output": 0, "cache_read": 0, "cache_creation": 0}
-                        for m_stats in data["modelUsage"].values():
-                            if not isinstance(m_stats, dict): continue
-                            totals["input"] += m_stats.get("inputTokens") or m_stats.get("input_tokens") or 0
-                            totals["output"] += m_stats.get("outputTokens") or m_stats.get("output_tokens") or 0
-                            totals["cache_read"] += m_stats.get("cacheReadInputTokens") or m_stats.get("cache_read_input_tokens") or 0
-                            totals["cache_creation"] += m_stats.get("cacheCreationInputTokens") or m_stats.get("cache_creation_input_tokens") or 0
-                        self._update_tokens_incremental(totals)
+
+                    def process_obj(obj):
+                        if not isinstance(obj, dict):
+                            return
+                        
+                        # Check for multiple possible usage locations
+                        u = obj.get("usage") or obj.get("stats") or (obj.get("metadata") and obj.get("metadata").get("usage"))
+                        if isinstance(u, dict):
+                            self._update_tokens_incremental(u)
+                        
+                        # Aggregate modelUsage if present
+                        mu = obj.get("modelUsage")
+                        if isinstance(mu, dict):
+                            totals = {"input_tokens": 0, "output_tokens": 0, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}
+                            for m_stats in mu.values():
+                                if not isinstance(m_stats, dict): continue
+                                totals["input_tokens"] += m_stats.get("inputTokens") or m_stats.get("input_tokens") or 0
+                                totals["output_tokens"] += m_stats.get("outputTokens") or m_stats.get("output_tokens") or 0
+                                totals["cache_read_input_tokens"] += m_stats.get("cacheReadInputTokens") or m_stats.get("cache_read_input_tokens") or 0
+                                totals["cache_creation_input_tokens"] += m_stats.get("cacheCreationInputTokens") or m_stats.get("cache_creation_input_tokens") or 0
+                            self._update_tokens_incremental(totals)
+                        
+                        # Recursively process "text" field if it contains JSON
+                        if isinstance(obj.get("text"), str):
+                            try:
+                                inner = json.loads(obj["text"])
+                                process_obj(inner)
+                            except Exception:
+                                pass
+                        
+                        # Process nested metadata
+                        if isinstance(obj.get("metadata"), dict):
+                            process_obj(obj["metadata"])
+
+                    if isinstance(data, list):
+                        for item in data:
+                            process_obj(item)
+                    else:
+                        process_obj(data)
                 except Exception:
                     pass
 

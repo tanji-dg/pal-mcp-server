@@ -140,6 +140,33 @@ class TestMonitorCoordinatorRobustness:
         tracker.log_activity("clink", json.dumps(delta2))
         assert tracker.output_tokens == 120
 
+    def test_end_tool_with_text_content_list(self, tracker):
+        """
+        Regression test for extracting tokens from MCP-style list[TextContent].
+        TextContent is often serialized as a list of dicts with a 'text' field 
+        containing a JSON string of the actual ToolOutput.
+        """
+        tracker.start_tool("clink")
+        
+        # Simulated serialized TextContent list
+        output = [
+            {
+                "type": "text",
+                "text": json.dumps({
+                    "status": "success",
+                    "content": "Hello",
+                    "metadata": {
+                        "usage": {"input_tokens": 500, "output_tokens": 50}
+                    }
+                })
+            }
+        ]
+        
+        tracker.end_tool("clink", 1000, tool_output=json.dumps(output))
+        
+        assert tracker.input_tokens == 500
+        assert tracker.output_tokens == 50
+
     def test_mixed_log_formats_resilience(self, tracker):
         """Ensure coordinator handles mixed JSON and raw text without losing state or crashing."""
         tracker.start_tool("clink")
