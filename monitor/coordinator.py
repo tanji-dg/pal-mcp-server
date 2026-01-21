@@ -72,6 +72,7 @@ class InstanceTracker:
         self.active_tools: dict[str, datetime] = {} # tool_name -> start_time
         self.active_tool_inputs: dict[str, str] = {} # tool_name -> input
         self._tool_start_times: dict[str, float] = {} # tool_id -> start_timestamp (float)
+        self._tool_name_cache: dict[str, str] = {} # Map tool_id -> name
         
         self.active_tool: Optional[str] = None # Primary/most recent tool
         self.active_tool_input: Optional[str] = None
@@ -84,12 +85,11 @@ class InstanceTracker:
         
         # Current status for display
         self.last_status = None
-        self._tool_name_cache: dict[str, str] = {} # Map tool_id -> name
         
         # Reliability: track last completion to prevent late logs from reviving 'busy' state
         self.last_completion_time: datetime = utc_now()
         
-        # Lifetime stats
+        # Lifetime stats (Instance Totals)
         self.total_calls: int = 0
         self.total_errors: int = 0
         self.input_tokens: int = 0
@@ -262,15 +262,16 @@ class InstanceTracker:
                         data = data["event"]
                         msg_type = data.get("type")
 
-                                            # Extract Token Usage (Post-unwrap)
-                                            # Check multiple possible locations for usage/stats
-                                            u = data.get("usage") or data.get("stats")
-                                            if not u and isinstance(data.get("message"), dict):
-                                                u = data["message"].get("usage")
-                                            
-                                            if isinstance(u, dict):
-                                                self._update_tokens_incremental(u)
-                                        # Update model name if found in log metadata
+                    # Extract Token Usage (Post-unwrap)
+                    # Check multiple possible locations for usage/stats
+                    u = data.get("usage") or data.get("stats")
+                    if not u and isinstance(data.get("message"), dict):
+                        u = data["message"].get("usage")
+                    
+                    if isinstance(u, dict):
+                        self._update_tokens_incremental(u)
+
+                    # Update model name if found in log metadata
                     new_model = None
                     if "model" in data:
                         new_model = data["model"]
@@ -300,7 +301,20 @@ class InstanceTracker:
                         if not (is_low_level and is_high_level):
                             self.model_name = new_model
 
-                    elif msg_type == "content_block_start":
+                    elif msg_type == "modelUsage" or "modelUsage" in data:
+                        # Aggregate across all models if present
+                        mu = data.get("modelUsage") or data
+                        if isinstance(mu, dict):
+                            totals = {"input": 0, "output": 0, "cache_read": 0, "cache_creation": 0}
+                            for m_stats in mu.values():
+                                if not isinstance(m_stats, dict): continue
+                                totals["input"] += m_stats.get("input_tokens") or m_stats.get("inputTokens") or m_stats.get("prompt_tokens") or m_stats.get("promptTokens") or 0
+                                totals["output"] += m_stats.get("output_tokens") or m_stats.get("outputTokens") or m_stats.get("candidates_tokens") or m_stats.get("candidatesTokens") or 0
+                                totals["cache_read"] += m_stats.get("cache_read_input_tokens") or m_stats.get("cacheReadInputTokens") or m_stats.get("cached_tokens") or m_stats.get("cachedTokens") or 0
+                                totals["cache_creation"] += m_stats.get("cache_creation_input_tokens") or m_stats.get("cacheCreationInputTokens") or 0
+                            self._update_tokens_incremental(totals)
+
+                    if msg_type == "content_block_start":
                         # Handle streaming tool use start (Gemini/Claude)
                         content_block = data.get("content_block", {})
                         if content_block.get("type") == "tool_use":
@@ -310,8 +324,10 @@ class InstanceTracker:
                                 self._tool_name_cache[tool_id] = name
                                 self._tool_start_times[tool_id] = event_time_ts
                             self.last_status = f"Calling {name}"
+                            self.active_tool = name
+                            self.tool_start_time = utc_now()
 
-                    if msg_type == "message" or msg_type == "assistant":
+                    elif msg_type == "message" or msg_type == "assistant":
                         self.last_status = "Thinking"
                         # Scan content for tool_use to capture start times if sent as a whole block
                         content = data.get("content")
@@ -330,6 +346,8 @@ class InstanceTracker:
                                         if tool_id not in self._tool_start_times:
                                             self._tool_start_times[tool_id] = event_time_ts
                                     self.last_status = f"Calling {name}"
+                                    self.active_tool = name
+                                    self.tool_start_time = utc_now()
 
                     elif msg_type == "tool_use":
                         # Support both 'name' and 'tool_name' keys
@@ -340,6 +358,8 @@ class InstanceTracker:
                             # Store start time as high-precision float timestamp
                             self._tool_start_times[tool_id] = event_time_ts
                         self.last_status = f"Calling {name}"
+                        self.active_tool = name
+                        self.tool_start_time = utc_now()
                     elif msg_type == "tool_result":
                         # Sub-tool execution finished (detected via logs)
                         tool_id = data.get("tool_id")
@@ -443,30 +463,26 @@ class InstanceTracker:
                                     self._calls_1m.append((now_ts, is_error))
                                     self._durations_1m.append((now_ts, duration_ms))
 
-                                            elif msg_type == "result": # Final result from Gemini CLI or Claude CLI
-                                                # Check if this is Claude CLI output (has 'subtype') or Gemini (has 'stats')
-                                                is_claude = "subtype" in data
-                    
-                                                # Update tokens from final result
-                                                u = data.get("usage") or data.get("stats")
-                                                if isinstance(u, dict):
-                                                    self._update_tokens_incremental(u)
-                                                
-                                                if "modelUsage" in data and isinstance(data["modelUsage"], dict):
-                                                    # Aggregate across all models if present
-                                                    for m_stats in data["modelUsage"].values():
-                                                        self._update_tokens_incremental(m_stats)
-                                            status = data.get("status", "ok")
+                    elif msg_type == "result": # Final result from Gemini CLI or Claude CLI
+                        # Update tokens from final result
+                        u = data.get("usage") or data.get("stats")
+                        if isinstance(u, dict):
+                            self._update_tokens_incremental(u)
+                        
+                        if "modelUsage" in data and isinstance(data["modelUsage"], dict):
+                            # Aggregate across all models
+                            totals = {"input_tokens": 0, "output_tokens": 0, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}
+                            for m_stats in data["modelUsage"].values():
+                                if not isinstance(m_stats, dict): continue
+                                totals["input_tokens"] += m_stats.get("inputTokens") or m_stats.get("input_tokens") or 0
+                                totals["output_tokens"] += m_stats.get("outputTokens") or m_stats.get("output_tokens") or 0
+                                totals["cache_read_input_tokens"] += m_stats.get("cacheReadInputTokens") or m_stats.get("cache_read_input_tokens") or 0
+                                totals["cache_creation_input_tokens"] += m_stats.get("cacheCreationInputTokens") or m_stats.get("cache_creation_input_tokens") or 0
+                            self._update_tokens_incremental(totals)
 
+                        status = data.get("status", "ok")
                         if status == "error" or data.get("is_error"):
-                            if is_claude:
-                                denials = data.get("permission_denials")
-                                if denials:
-                                    self.last_status = "Permission Denied"
-                                else:
-                                    self.last_status = "Error (Claude API)"
-                            else:
-                                self.last_status = "Error (Gemini API)"
+                            self.last_status = "Error"
                         else:
                             self.last_status = "Responding"
 
@@ -477,54 +493,36 @@ class InstanceTracker:
                             self._tool_start_times[item_id] = event_time_ts
 
                         if item.get("type") == "command_execution":
-                            self.last_status = f"Executing {item.get('command', 'cmd')}"
+                            self.last_status = f"Calling {item.get('command', 'cmd')}"
                         elif item.get("type") == "reasoning":
-                            self.last_status = "Reasoning"
-                    elif msg_type == "item.completed": # Codex completion/error
-                        item = data.get("item", {})
-                        status = item.get("status")
-                        item_id = item.get("id")
-                        item_type = item.get("type")
+                            self.last_status = "Thinking"
 
-                        # Calculate duration
+                    elif msg_type == "item.completed": # Codex format
+                        item = data.get("item", {})
+                        item_id = item.get("id")
+                        status = item.get("status")
+                        
                         duration_ms = 0
                         if item_id and item_id in self._tool_start_times:
-                            start_t_ts = self._tool_start_times.pop(item_id)
-                            duration_ms = int((event_time_ts - start_t_ts) * 1000)
+                            start_t = self._tool_start_times.pop(item_id)
+                            duration_ms = int((event_time_ts - start_t) * 1000)
 
-                        if status in ["failed", "error"]:
-                            cmd = item.get("command") or "operation"
-                            self.last_status = f"Error in {cmd}"
-                            is_error = True
-                        else:
-                            is_error = False
-                            if item_type == "command_execution":
-                                 self.last_status = f"Completed {item.get('command', 'cmd')}"
-
-                        # Record metrics for command executions
-                        if item_type == "command_execution":
+                        if item.get("type") == "command_execution":
                             self.total_calls += 1
-                            if is_error:
-                                self.total_errors += 1
+                            is_err = status == "failed"
+                            if is_err: self.total_errors += 1
                             
-                            # Add to recent calls
-                            cmd_name = item.get("command", "command").split(" ")[0]
                             call = ToolCall(
-                                tool=cmd_name,
+                                tool=item.get("command") or "cmd",
+                                status="error" if is_err else "success",
                                 duration_ms=duration_ms,
-                                status="error" if is_error else "success",
-                                model_name=self.model_name,
                                 timestamp=utc_now(),
                             )
                             self.recent_calls.appendleft(call)
-                            
-                            # Track window metrics
-                            self._calls_1m.append((now_ts, is_error))
-                            self._durations_1m.append((now_ts, duration_ms))
-                    elif msg_type == "error":
-                         if not payload:
-                             payload = data
-                    
+                            self._calls_1m.append((event_time_ts, is_err))
+                            self._durations_1m.append((event_time_ts, duration_ms))
+                            self.last_status = f"Result from {item.get('command')}"
+
                     error_obj = data.get("error")
                     if isinstance(error_obj, dict):
                         delay_info = ""
@@ -548,12 +546,9 @@ class InstanceTracker:
                 if "thinking" in log_lower:
                     self.last_status = "Thinking"
                 elif "calling tool" in log_lower or "executing" in log_lower:
-                    self.last_status = "Executing"
-                elif "returning" in log_lower:
-                    self.last_status = "Finishing"
-                else:
-                    if len(log_data) < 30:
-                        self.last_status = log_data.strip()
+                    self.last_status = "Calling tool"
+                elif "finished" in log_lower or "completed" in log_lower:
+                    self.last_status = "Completed"
 
     def end_tool(self, tool_name: Optional[str], duration_ms: int, is_error: bool = False, tool_output: Optional[str] = None, model_name: Optional[str] = None):
         """Record tool execution completion."""
@@ -579,6 +574,17 @@ class InstanceTracker:
                     u = metadata.get("usage") or data.get("usage")
                     if isinstance(u, dict):
                         self._update_tokens_incremental(u)
+                    
+                    if "modelUsage" in data and isinstance(data["modelUsage"], dict):
+                        # Aggregate across all models
+                        totals = {"input": 0, "output": 0, "cache_read": 0, "cache_creation": 0}
+                        for m_stats in data["modelUsage"].values():
+                            if not isinstance(m_stats, dict): continue
+                            totals["input"] += m_stats.get("inputTokens") or m_stats.get("input_tokens") or 0
+                            totals["output"] += m_stats.get("outputTokens") or m_stats.get("output_tokens") or 0
+                            totals["cache_read"] += m_stats.get("cacheReadInputTokens") or m_stats.get("cache_read_input_tokens") or 0
+                            totals["cache_creation"] += m_stats.get("cacheCreationInputTokens") or m_stats.get("cache_creation_input_tokens") or 0
+                        self._update_tokens_incremental(totals)
                 except Exception:
                     pass
 
