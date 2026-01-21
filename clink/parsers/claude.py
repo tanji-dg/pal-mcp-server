@@ -66,6 +66,21 @@ class ClaudeJSONParser(BaseParser):
                         content = data.get("content")
                         if content and isinstance(content, str):
                             accumulated_content.append(content)
+                    elif msg_type == "stream_event":
+                        # Handle stream chunks (content_block_delta)
+                        event_data = data.get("event", {})
+                        if event_data.get("type") == "content_block_delta":
+                            delta = event_data.get("delta", {})
+                            if delta.get("type") == "text_delta":
+                                text = delta.get("text")
+                                if text:
+                                    accumulated_content.append(text)
+                            elif delta.get("type") == "thinking_delta":
+                                thinking = delta.get("thinking")
+                                if thinking:
+                                    # Optionally capture thinking, or just treat as content for now
+                                    # Depending on desired output format
+                                    pass 
                     elif msg_type == "assistant":
                         # Final message in stream
                         message_obj = data.get("message")
@@ -206,8 +221,21 @@ class ClaudeJSONParser(BaseParser):
 
         error_field = payload.get("error")
         if isinstance(error_field, dict):
-            error_message = error_field.get("message")
-            if isinstance(error_message, str) and error_message.strip():
-                return error_message.strip()
+            error_message = error_field.get("message") or "Unknown API error"
+            
+            # Look for retry delay info in details
+            details = error_field.get("details", [])
+            if isinstance(details, list):
+                for detail in details:
+                    if not isinstance(detail, dict):
+                        continue
+                    # Check for quota reset info
+                    metadata = detail.get("metadata", {})
+                    if isinstance(metadata, dict) and "quotaResetDelay" in metadata:
+                        error_message += f" (Quota resets in {metadata['quotaResetDelay']})"
+                    elif "retryDelay" in detail:
+                        error_message += f" (Retry delay: {detail['retryDelay']})"
+            
+            return error_message.strip()
 
         return None
