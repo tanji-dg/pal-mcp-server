@@ -31,7 +31,7 @@ import time
 from collections import deque
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Optional, List
 
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.responses import HTMLResponse
@@ -43,10 +43,11 @@ from monitor.models import (
     ToolEvent,
     ToolEventType,
     utc_now,
+    format_dt_iso,
 )
 from utils.storage_backend import get_storage_backend
 
-logger = logging.getLogger(__name__) 
+logger = logging.getLogger(__name__)
 
 # Configuration constants
 HEARTBEAT_INTERVAL = 10  # seconds between heartbeats
@@ -133,8 +134,8 @@ class InstanceTracker:
     def log_activity(self, tool_name: str, log_data: Optional[str] = None, original_event: Optional[ToolEvent] = None):
         """Update activity status based on log event."""
         now = utc_now()
-        # High-precision monotonic time for arrival tracking within the same process
-        precise_now = time.monotonic()
+        # Use wall-clock timestamp for all calculations to be compatible with log timestamps
+        now_ts = time.time()
         
         # Store log in buffer if event provided
         if original_event:
@@ -148,7 +149,8 @@ class InstanceTracker:
         # OR we are a fresh tracker (monitor restart) and this is our first activity.
         if self.state == "idle":
             is_fresh = self.active_tool is None and self.total_calls == 0
-            is_start_event = log_data and ('"type": "tool_use"' in log_data or '"type": "item.started"' in log_data)
+            # Heuristic check for tool start patterns in logs
+            is_start_event = log_data and ('"type": "tool_use"' in log_data or '"type": "item.started"' in log_data or '"type": "message_start"' in log_data)
             
             if is_fresh or is_start_event:
                 # If it's a start event but it's older than our last completion, ignore it (late log)
@@ -197,7 +199,7 @@ class InstanceTracker:
                     
                     # Determine high-precision event time
                     # Prioritize internal JSON timestamp if available
-                    event_time_ts = precise_now
+                    event_time_ts = now_ts
                     if "timestamp" in data:
                         try:
                             # Handle ISO format: 2026-01-20T11:26:13.055Z
@@ -313,8 +315,6 @@ class InstanceTracker:
                         self.recent_calls.appendleft(call)
                         
                         # Track for window metrics
-                        # Use arrival time for metrics window
-                        now_ts = now.timestamp()
                         self._calls_1m.append((now_ts, status == "error" or is_content_error))
                         self._durations_1m.append((now_ts, duration_ms))
 
@@ -344,8 +344,8 @@ class InstanceTracker:
                                     # Calculate duration
                                     duration_ms = 0
                                     if tool_id and tool_id in self._tool_start_times:
-                                        start_t_val = self._tool_start_times.pop(tool_id)
-                                        duration_ms = int((event_time_ts - start_t_val) * 1000)
+                                        start_t_ts = self._tool_start_times.pop(tool_id)
+                                        duration_ms = int((event_time_ts - start_t_ts) * 1000)
 
                                     if is_error:
                                         self.total_errors += 1
@@ -366,7 +366,6 @@ class InstanceTracker:
                                     self.recent_calls.appendleft(call)
                                     
                                     # Track metrics
-                                    now_ts = now.timestamp()
                                     self._calls_1m.append((now_ts, is_error))
                                     self._durations_1m.append((now_ts, duration_ms))
 
@@ -393,12 +392,8 @@ class InstanceTracker:
 
                         status = data.get("status", "ok")
 
-                        # Note: Final CLI result might be worth counting, but to be consistent with
-                        # "only MCP tools count", we'll exclude it from stats and only update status.
-
                         if status == "error" or data.get("is_error"):
                             if is_claude:
-                                # For Claude, check permission_denials
                                 denials = data.get("permission_denials")
                                 if denials:
                                     self.last_status = "Permission Denied"
@@ -409,14 +404,10 @@ class InstanceTracker:
                         else:
                             self.last_status = "Responding"
 
-                        # When a final result is seen in logs, it's often followed immediately by process exit
-                        # We keep it 'busy' until end_tool is called by MCP server
-
                     elif msg_type == "item.started": # Codex format
                         item = data.get("item", {})
                         item_id = item.get("id")
                         if item_id:
-                            # Use arriving monotonic time for high-precision delta
                             self._tool_start_times[item_id] = event_time_ts
 
                         if item.get("type") == "command_execution":
@@ -462,29 +453,23 @@ class InstanceTracker:
                             self.recent_calls.appendleft(call)
                             
                             # Track window metrics
-                            now_ts = now.timestamp()
                             self._calls_1m.append((now_ts, is_error))
                             self._durations_1m.append((now_ts, duration_ms))
                     elif msg_type == "error":
-                         # Capture error as payload if no result yet
                          if not payload:
                              payload = data
                     
-                    # Handle raw API errors or objects with error field
                     error_obj = data.get("error")
                     if isinstance(error_obj, dict):
-                        # Look for retry delay info
                         delay_info = ""
                         details = error_obj.get("details", [])
                         if isinstance(details, list):
                             for detail in details:
                                 if not isinstance(detail, dict):
                                     continue
-                                # Check metadata for quotaResetDelay
                                 metadata = detail.get("metadata", {})
                                 if isinstance(metadata, dict) and "quotaResetDelay" in metadata:
                                     delay_info = f" (Quota resets in {metadata['quotaResetDelay']})"
-                                # Check retryDelay field
                                 if "retryDelay" in detail:
                                     delay_info = f" (Retry in {detail['retryDelay']})"
                         
@@ -493,7 +478,6 @@ class InstanceTracker:
                 pass
 
             if not is_json_log:
-                # Not JSON or parse failed, check for common patterns in text logs
                 log_lower = log_data.lower()
                 if "thinking" in log_lower:
                     self.last_status = "Thinking"
@@ -520,7 +504,6 @@ class InstanceTracker:
             self.total_errors += 1
 
         if target_tool:
-            # Use provided model_name, or fall back to tracker's current model_name
             effective_model = model_name or (self.model_name if target_tool == self.active_tool else None)
 
             call = ToolCall(
@@ -545,8 +528,6 @@ class InstanceTracker:
                 del self.active_tool_inputs[target_tool]
 
         # Update state based on remaining tools
-        # If the primary tool finished, force idle state even if sub-tools (from logs) seem active
-        # Also specifically handle 'clink' which acts as a container
         is_primary_completion = (target_tool and target_tool == self.active_tool)
         is_clink_completion = (target_tool == "clink")
 
@@ -555,15 +536,12 @@ class InstanceTracker:
             self.last_status = f"Completed {target_tool} ({status})" if target_tool else "Idle"
             self.active_tool = None
             self.active_tool_input = None
-            # session_id is preserved until next tool_start or log_activity updates it
             self.model_name = None
             self.tool_start_time = None
-            self.active_tools.clear() # Ensure all are cleared
+            self.active_tools.clear() 
             self.active_tool_inputs.clear()
         else:
-            # Still busy with other tools (e.g. parent clink)
             self.state = "busy"
-            # Pick one of the remaining tools as primary for display
             self.active_tool = list(self.active_tools.keys())[-1]
             self.tool_start_time = self.active_tools[self.active_tool]
             self.last_status = f"Finished {target_tool}, back to {self.active_tool}"
@@ -573,7 +551,6 @@ class InstanceTracker:
     def get_uptime(self) -> float:
         """Calculate current uptime in seconds."""
         if self.is_timed_out() or self.state == "offline":
-            # If offline, freeze uptime at last heartbeat
             return self.uptime_at_register + (self.last_heartbeat.timestamp() - self.start_time)
         return self.uptime_at_register + (time.time() - self.start_time)
 
@@ -593,13 +570,11 @@ class InstanceTracker:
         return sum(d for _, d in self._durations_1m) / len(self._durations_1m)
 
     def _cleanup_old_metrics(self):
-        """Remove metrics older than 1 hour (3600s)."""
         cutoff = time.time() - 3600
         self._calls_1m = [(t, e) for t, e in self._calls_1m if t > cutoff]
         self._durations_1m = [(t, d) for t, d in self._durations_1m if t > cutoff]
 
     def is_timed_out(self) -> bool:
-        """Check if instance has exceeded heartbeat timeout."""
         return utc_now() - self.last_heartbeat > timedelta(seconds=INSTANCE_TIMEOUT)
 
     def to_status(self) -> InstanceStatus:
@@ -611,7 +586,7 @@ class InstanceTracker:
             state=state,
             last_heartbeat=self.last_heartbeat,
             active_tool=self.active_tool if state == "busy" else None,
-            session_id=self.session_id, # Always include session_id for correlation
+            session_id=self.session_id,
             model_name=self.model_name if state == "busy" else None,
             active_role=self.active_role if state == "busy" else None,
             tool_start_time=self.tool_start_time if state == "busy" else None,
@@ -629,15 +604,7 @@ class InstanceTracker:
 
 
 class MonitorCoordinator:
-    """
-    Central coordinator for MCP server monitoring.
-
-    Manages:
-    - Instance registration and tracking
-    - Event processing from MCP servers
-    - WebSocket connections from dashboards
-    - Periodic state broadcasts
-    """
+    """Central coordinator for MCP server monitoring."""
 
     def __init__(self):
         self.instances: dict[str, InstanceTracker] = {}
@@ -681,7 +648,6 @@ class MonitorCoordinator:
 
             elif event.event_type == ToolEventType.UNREGISTER:
                 if instance_id in self.instances:
-                    # Don't delete, just mark as offline to keep history in dashboard
                     self.instances[instance_id].state = "offline"
                     logger.info(f"Instance marked offline: {instance_id}")
 
@@ -705,22 +671,15 @@ class MonitorCoordinator:
                     logger.warning(f"Tool error: {event.tool_name} on {instance_id} - " f"{event.error_message}")
 
                 elif event.event_type == ToolEventType.TOOL_LOG:
-                    # Mark as busy since we are receiving logs
                     if event.tool_name:
                         tracker.log_activity(event.tool_name, event.log_data, original_event=event)
-                    
-                    # Enrich event with session_id from tracker if missing
                     if not event.session_id and tracker.session_id:
                         event.session_id = tracker.session_id
-                        
-                    # Mark for broadcast after releasing lock
                     broadcast_log_event = event
 
             else:
-                # Auto-register instance on first event
                 self.instances[instance_id] = InstanceTracker(instance_id, event.uptime_seconds or 0.0)
                 logger.info(f"Instance auto-registered: {instance_id}")
-                # Process the event now that instance exists
                 tracker = self.instances[instance_id]
                 if event.event_type == ToolEventType.TOOL_START:
                     if event.tool_name:
@@ -736,7 +695,6 @@ class MonitorCoordinator:
                 elif event.event_type == ToolEventType.HEARTBEAT:
                     tracker.update_heartbeat(event.uptime_seconds)
 
-        # Broadcast log if needed (outside lock to prevent deadlock)
         if broadcast_log_event:
             await self.broadcast_log(broadcast_log_event)
 
@@ -744,12 +702,7 @@ class MonitorCoordinator:
         """Broadcast log event to all connected clients."""
         if not self.websocket_clients:
             return
-
-        # Prepare message for dashboard
-        # Add type field explicitly if not present in serialized output or different from event_type
         message = event.to_json()
-        
-        # Broadcast to all clients
         async with self._lock:
             disconnected = set()
             for client in self.websocket_clients:
@@ -757,8 +710,6 @@ class MonitorCoordinator:
                     await client.send_text(message)
                 except Exception:
                     disconnected.add(client)
-
-            # Remove disconnected clients
             for client in disconnected:
                 self.websocket_clients.discard(client)
 
@@ -767,19 +718,13 @@ class MonitorCoordinator:
         async with self._lock:
             self.websocket_clients.add(websocket)
             logger.info(f"Dashboard connected. Total clients: {len(self.websocket_clients)}")
-
-        # Send initial state immediately
         state = await self.get_aggregated_state()
         try:
             await websocket.send_text(state.to_json())
-            
-            # Send buffered logs from all instances
             async with self._lock:
                 for instance in self.instances.values():
-                    # Send oldest first
                     for log_event in instance.recent_logs:
                         await websocket.send_text(log_event.to_json())
-                        
         except Exception as e:
             logger.warning(f"Failed to send initial data: {e}")
 
@@ -800,14 +745,10 @@ class MonitorCoordinator:
         while self._running:
             try:
                 await asyncio.sleep(BROADCAST_INTERVAL)
-
                 if not self.websocket_clients:
                     continue
-
                 state = await self.get_aggregated_state()
                 message = state.to_json()
-
-                # Broadcast to all clients
                 async with self._lock:
                     disconnected = set()
                     for client in self.websocket_clients:
@@ -815,19 +756,15 @@ class MonitorCoordinator:
                             await client.send_text(message)
                         except Exception:
                             disconnected.add(client)
-
-                    # Remove disconnected clients
                     for client in disconnected:
                         self.websocket_clients.discard(client)
                         logger.debug("Removed stale WebSocket client")
-
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 logger.error(f"Error in broadcast loop: {e}")
 
 
-# Global coordinator instance
 _coordinator: Optional[MonitorCoordinator] = None
 
 
@@ -860,24 +797,15 @@ def create_app() -> FastAPI:
     @app.middleware("http")
     async def log_transport_middleware(request: Request, call_next):
         """Log the transport type (HTTP or Unix socket)."""
-        # Determine transport based on client address or scope
-        # Uvicorn sets scope['client'] to None or ['unix'] for Unix sockets depending on version/config
-        # For TCP/HTTP, it's usually (host, port)
-
         client = request.scope.get("client")
         path = request.scope.get("path")
-
-        # Skip health checks to reduce noise
         if path != "/health":
             transport = "HTTP"
             if not client:
-                # Often None for Unix sockets in some ASGI implementations
                 transport = "Unix Socket"
             elif isinstance(client, (list, tuple)) and (len(client) == 0 or client[0] == "unix"):
                 transport = "Unix Socket"
-
             logger.info(f"Request to {path} via {transport}")
-
         response = await call_next(request)
         return response
 
@@ -913,60 +841,42 @@ def create_app() -> FastAPI:
         """Get conversation history from storage."""
         storage = get_storage_backend()
         conversations = storage.list_all(include_expired=True)
-        
-        # Format for frontend
         formatted = {}
         for cid, (content, expires_at) in conversations.items():
             try:
-                # Content is stored as JSON string
                 parsed_content = json.loads(content)
                 formatted[cid] = {
                     "content": parsed_content,
                     "expires_at": datetime.fromtimestamp(expires_at, tz=timezone.utc).isoformat()
                 }
             except json.JSONDecodeError:
-                formatted[cid] = {
-                    "error": "Failed to parse content",
-                    "raw": content
-                }
+                formatted[cid] = {"error": "Failed to parse content", "raw": content}
         return {"conversations": formatted}
 
     @app.post("/api/instances/{instance_id}/kill")
     async def kill_instance(instance_id: str):
         """Terminate a specific MCP server instance."""
         coordinator = get_coordinator()
-        
-        # 1. Check if instance is tracked
         if instance_id not in coordinator.instances:
             raise HTTPException(status_code=404, detail="Instance not found")
-            
-        # 2. Extract PID
         try:
             pid_str, host = instance_id.split("@", 1)
             pid = int(pid_str)
         except ValueError:
-            raise HTTPException(status_code=400, detail="Invalid instance ID format (expected PID@HOSTNAME)")
-
-        # 3. Terminate process
+            raise HTTPException(status_code=400, detail="Invalid instance ID format")
         try:
-            logger.warning(f"Killing instance {instance_id} (PID {pid}) requested via API")
+            logger.warning(f"Killing instance {instance_id} requested via API")
             os.kill(pid, signal.SIGTERM)
-            
-            # Mark as offline immediately
             async with coordinator._lock:
                 if instance_id in coordinator.instances:
                     coordinator.instances[instance_id].state = "offline"
                     coordinator.instances[instance_id].last_status = "Terminated by user"
-            
             return {"status": "ok", "message": f"Signal SIGTERM sent to PID {pid}"}
         except ProcessLookupError:
-            # Process already gone
             async with coordinator._lock:
                 if instance_id in coordinator.instances:
                     coordinator.instances[instance_id].state = "offline"
             return {"status": "ok", "message": "Process was already terminated"}
-        except PermissionError:
-            raise HTTPException(status_code=403, detail="Permission denied to kill process")
         except Exception as e:
             logger.error(f"Failed to kill instance {instance_id}: {e}")
             raise HTTPException(status_code=500, detail=str(e))
@@ -975,22 +885,14 @@ def create_app() -> FastAPI:
     async def health_check():
         """Health check endpoint."""
         coordinator = get_coordinator()
-        return {
-            "status": "healthy",
-            "instances": len(coordinator.instances),
-            "clients": len(coordinator.websocket_clients),
-        }
+        return {"status": "healthy", "instances": len(coordinator.instances), "clients": len(coordinator.websocket_clients)}
 
     @app.get("/status")
     async def get_status():
         """Get current aggregated status as JSON."""
         coordinator = get_coordinator()
         state = await coordinator.get_aggregated_state()
-        return {
-            "type": state.type,
-            "timestamp": state.timestamp.isoformat(),
-            "instances": [inst.to_dict() for inst in state.instances],
-        }
+        return {"type": state.type, "timestamp": state.timestamp.isoformat(), "instances": [inst.to_dict() for inst in state.instances]}
 
     @app.post("/event")
     async def receive_event(event: ToolEvent):
@@ -1000,7 +902,7 @@ def create_app() -> FastAPI:
         return {"status": "ok"}
 
     @app.post("/events")
-    async def receive_events(events: list[ToolEvent]):
+    async def receive_events(events: List[ToolEvent]):
         """Receive multiple events from an MCP server instance."""
         coordinator = get_coordinator()
         for event in events:
@@ -1013,17 +915,13 @@ def create_app() -> FastAPI:
         await websocket.accept()
         coordinator = get_coordinator()
         await coordinator.add_websocket_client(websocket)
-
         try:
             while True:
-                # Keep connection alive, handle any incoming messages
                 try:
                     data = await asyncio.wait_for(websocket.receive_text(), timeout=30)
-                    # Handle ping/pong or other client messages if needed
                     if data == "ping":
                         await websocket.send_text("pong")
                 except asyncio.TimeoutError:
-                    # Send keepalive ping
                     try:
                         await websocket.send_text('{"type": "ping"}')
                     except Exception:

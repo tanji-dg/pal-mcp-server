@@ -12,7 +12,7 @@ All models support JSON serialization for WebSocket transport.
 
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Optional
+from typing import Optional, List
 
 from pydantic import BaseModel, Field
 
@@ -20,6 +20,13 @@ from pydantic import BaseModel, Field
 def utc_now():
     """Return current UTC time with timezone info."""
     return datetime.now(timezone.utc)
+
+
+def format_dt_iso(dt: datetime) -> str:
+    """Format datetime to ISO string with Z suffix."""
+    if dt.tzinfo:
+        return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    return dt.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
 
 class ToolEventType(str, Enum):
@@ -40,7 +47,7 @@ class ToolCall(BaseModel):
     tool: str = Field(..., description="Name of the tool that was called")
     tool_input: Optional[str] = Field(None, description="Input arguments (JSON string)")
     tool_output: Optional[str] = Field(None, description="Output result (JSON string)")
-    duration_ms: int = Field(..., description="Execution duration in milliseconds")
+    duration_ms: int = Field(0, description="Execution duration in milliseconds")
     status: str = Field(..., description="Execution status: 'success' or 'error'")
     model_name: Optional[str] = Field(default=None, description="AI model used for this call")
     timestamp: datetime = Field(default_factory=utc_now, description="When the call completed")
@@ -50,7 +57,7 @@ class InstanceStatus(BaseModel):
     """Status report from a single MCP server instance."""
 
     instance_id: str = Field(..., description="Unique identifier: PID@hostname")
-    uptime_seconds: float = Field(..., description="Seconds since server startup")
+    uptime_seconds: float = Field(default=0.0, description="Seconds since server startup")
     state: str = Field(
         default="idle",
         description="Current state: 'idle', 'busy', or 'offline'",
@@ -80,26 +87,26 @@ class InstanceStatus(BaseModel):
         default=None,
         description="Most recent status message from logs or notifications",
     )
-    total_calls: int = 0
-    total_errors: int = 0
+    total_calls: int = Field(default=0)
+    total_errors: int = Field(default=0)
     
     # Token usage metrics
-    input_tokens: int = 0
-    output_tokens: int = 0
-    cache_read_tokens: int = 0
-    cache_creation_tokens: int = 0
+    input_tokens: int = Field(default=0)
+    output_tokens: int = Field(default=0)
+    cache_read_tokens: int = Field(default=0)
+    cache_creation_tokens: int = Field(default=0)
 
     def to_dict(self) -> dict:
         """Convert to dictionary with ISO format timestamps."""
         data = self.model_dump()
-        data["last_heartbeat"] = self._format_dt(self.last_heartbeat)
+        data["last_heartbeat"] = format_dt_iso(self.last_heartbeat)
         if self.tool_start_time:
-            data["tool_start_time"] = self._format_dt(self.tool_start_time)
+            data["tool_start_time"] = format_dt_iso(self.tool_start_time)
         
         data["recent_calls"] = [
             {
                 **call,
-                "timestamp": self._format_dt(call["timestamp"]) if isinstance(call["timestamp"], datetime) else call["timestamp"]
+                "timestamp": format_dt_iso(call["timestamp"]) if isinstance(call["timestamp"], datetime) else call["timestamp"]
             }
             for call in data["recent_calls"]
         ]
@@ -124,8 +131,6 @@ class ToolEvent(BaseModel):
 
     def to_json(self) -> str:
         """Serialize to JSON string."""
-        # Use Pydantic's built-in serialization which handles datetime well, 
-        # but we want to ensure Z suffix if possible.
         return self.model_dump_json()
 
     @classmethod
@@ -139,7 +144,7 @@ class AggregatedState(BaseModel):
 
     type: str = Field(default="state_update", description="Message type identifier")
     timestamp: datetime = Field(default_factory=utc_now, description="State snapshot timestamp")
-    instances: list[InstanceStatus] = Field(default_factory=list, description="Status of all known instances")
+    instances: List[InstanceStatus] = Field(default_factory=list, description="Status of all known instances")
     
     # Aggregated metrics
     total_calls: int = 0
@@ -148,17 +153,11 @@ class AggregatedState(BaseModel):
     total_output_tokens: int = 0
     total_cache_read_tokens: int = 0
 
-    def _format_dt(self, dt: datetime) -> str:
-        """Format datetime to ISO string with Z suffix."""
-        if dt.tzinfo:
-            return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
-        return dt.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
-
     def to_json(self) -> str:
         """Serialize to JSON for WebSocket transmission."""
         data = {
             "type": self.type,
-            "timestamp": self._format_dt(self.timestamp),
+            "timestamp": format_dt_iso(self.timestamp),
             "instances": [inst.to_dict() for inst in self.instances],
             "total_calls": self.total_calls,
             "total_errors": self.total_errors,
@@ -171,7 +170,7 @@ class AggregatedState(BaseModel):
         return json.dumps(data)
 
     @classmethod
-    def from_instances(cls, instances: list[InstanceStatus]) -> "AggregatedState":
+    def from_instances(cls, instances: List[InstanceStatus]) -> "AggregatedState":
         """Create aggregated state from list of instance statuses."""
         return cls(
             instances=instances,
@@ -195,12 +194,8 @@ class WebSocketMessage(BaseModel):
         data = self.model_dump()
         # Ensure UTC format
         if isinstance(data["timestamp"], datetime):
-            if data["timestamp"].tzinfo:
-                data["timestamp"] = data["timestamp"].astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
-            else:
-                data["timestamp"] = data["timestamp"].strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+            data["timestamp"] = format_dt_iso(data["timestamp"])
         
         import json
 
         return json.dumps(data)
-
