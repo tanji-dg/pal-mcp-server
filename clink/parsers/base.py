@@ -12,6 +12,7 @@ class ParsedCLIResponse:
 
     content: str
     metadata: dict[str, Any]
+    thinking: str | None = None
 
 
 class ParserError(RuntimeError):

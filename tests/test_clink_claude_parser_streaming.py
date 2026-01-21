@@ -82,8 +82,10 @@ def test_claude_parser_handles_mixed_thinking_and_text_deltas():
     
     parsed = parser.parse(stdout=stdout, stderr="")
     
-    # Only text_delta should be in content for now based on implementation
+    # Text deltas should be in content
     assert parsed.content == "Hello!"
+    # Thinking deltas should be in thinking field
+    assert parsed.thinking == "I should say hello."
 
 def test_claude_parser_raises_error_if_no_content():
     """Verify that the parser raises ParserError if no text content can be extracted."""

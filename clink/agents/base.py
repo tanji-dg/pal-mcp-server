@@ -289,7 +289,19 @@ class BaseCLIAgent:
                     await asyncio.wait_for(process.wait(), timeout=0.1)
                 except Exception:
                     pass
-            raise
+            
+            # Extract partial output for restoration
+            stdout_text = "".join(stdout_buffer)
+            stderr_text = "".join(stderr_buffer)
+            duration = time.monotonic() - start_time
+            
+            # Re-raise with partial results attached so the tool can use them
+            raise CLIAgentError(
+                "Task interrupted by user",
+                returncode=process.returncode,
+                stdout=stdout_text,
+                stderr=stderr_text
+            )
         except asyncio.TimeoutError as exc:
             # Total timeout occurred for the entire operation
             if process_wait_task and not process_wait_task.done():  # Ensure process is killed if total timeout

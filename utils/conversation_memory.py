@@ -388,6 +388,60 @@ def add_turn(
         return False
 
 
+def update_current_turn(
+    thread_id: str,
+    content: str,
+    tool_name: Optional[str] = None,
+    model_provider: Optional[str] = None,
+    model_name: Optional[str] = None,
+) -> bool:
+    """
+    Update the content of the most recent turn in the thread.
+
+    Used for streaming updates (thinking, tool logs) to keep the history
+    current without adding new turns.
+
+    Args:
+        thread_id: UUID of the conversation thread
+        content: New content for the latest turn (overwrites existing)
+        tool_name: Optional update to tool attribution
+        model_provider: Optional update to model provider
+        model_name: Optional update to model name
+
+    Returns:
+        bool: True if update successful
+    """
+    context = get_thread(thread_id)
+    if not context or not context.turns:
+        return False
+
+    # Get the last turn
+    turn = context.turns[-1]
+    
+    # Update fields
+    turn.content = content
+    turn.timestamp = datetime.now(timezone.utc).isoformat()
+    
+    if tool_name:
+        turn.tool_name = tool_name
+    if model_provider:
+        turn.model_provider = model_provider
+    if model_name:
+        turn.model_name = model_name
+        
+    context.last_updated_at = datetime.now(timezone.utc).isoformat()
+
+    # Save immediately
+    try:
+        storage = get_storage()
+        key = f"thread:{thread_id}"
+        storage.setex(key, CONVERSATION_TIMEOUT_SECONDS, context.model_dump_json())
+        return True
+    except Exception as e:
+        logger.debug(f"[FLOW] Failed to update turn in storage: {type(e).__name__}")
+        return False
+
+
 def get_thread_chain(thread_id: str, max_depth: int = 20) -> list[ThreadContext]:
     """
     Traverse the parent chain to get all threads in conversation sequence.

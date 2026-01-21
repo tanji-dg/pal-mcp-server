@@ -2,8 +2,7 @@
   "name": "claude",
   "command": "claude",
   "additional_args": [
-    "--permission-mode",
-    "acceptEdits",
+    "--dangerously-skip-permissions",
     "-p",
     "--output-format",
     "stream-json",
@@ -25,7 +24,7 @@
     },
     "codereviewer": {
       "prompt_path": "systemprompts/clink/default_codereviewer.txt",
-      "role_args": ["--settings", "/home/htanji/.claude/settings.json.thinking"]
+      "role_args": ["--settings", "/home/htanji/.claude/settings.json.gemini3-high"]
     },
     "pro": {
       "prompt_path": "systemprompts/clink/default_codereviewer.txt",

@@ -1141,10 +1141,10 @@
             document.getElementById('totalErrors').textContent = totalErrors;
 
             const totalIn = allInstances.reduce((sum, i) => sum + (i.input_tokens || 0), 0);
-            document.getElementById('totalInputTokens').textContent = totalIn.toLocaleString();
+            document.getElementById('totalInputTokens').textContent = formatNumber(totalIn);
 
             const totalOut = allInstances.reduce((sum, i) => sum + (i.output_tokens || 0), 0);
-            document.getElementById('totalOutputTokens').textContent = totalOut.toLocaleString();
+            document.getElementById('totalOutputTokens').textContent = formatNumber(totalOut);
 
             // Only count instances that have actually made calls in the window for averaging
             const instancesWithMetrics = allInstances.filter(i => (i.recent_calls && i.recent_calls.length > 0) || i.total_calls > 0);
@@ -1200,11 +1200,11 @@
                                 <div class="metric-label">Uptime</div>
                             </div>
                             <div class="metric">
-                                <div class="metric-value">${(inst.input_tokens || 0).toLocaleString()}</div>
+                                <div class="metric-value">${formatNumber(inst.input_tokens || 0)}</div>
                                 <div class="metric-label">In Tokens</div>
                             </div>
                             <div class="metric">
-                                <div class="metric-value text-accent">${(inst.output_tokens || 0).toLocaleString()}</div>
+                                <div class="metric-value text-accent">${formatNumber(inst.output_tokens || 0)}</div>
                                 <div class="metric-label">Out Tokens</div>
                             </div>
                             <div class="metric">
@@ -1299,6 +1299,19 @@
             if (seconds < 3600) return Math.round(seconds / 60) + 'm';
             if (seconds < 86400) return Math.round(seconds / 3600) + 'h';
             return Math.round(seconds / 86400) + 'd';
+        }
+
+        function formatNumber(num) {
+            if (num >= 1000000000) {
+                return (num / 1000000000).toFixed(1) + 'B';
+            }
+            if (num >= 1000000) {
+                return (num / 1000000).toFixed(1) + 'M';
+            }
+            if (num >= 1000) {
+                return (num / 1000).toFixed(1) + 'K';
+            }
+            return num.toLocaleString();
         }
 
         async function killInstance(instanceId) {

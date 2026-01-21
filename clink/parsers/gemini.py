@@ -27,6 +27,7 @@ class GeminiJSONParser(BaseParser):
         # Handle multiple JSON objects (stream-json format)
         payload = None
         accumulated_response = []
+        accumulated_thinking = []
         model_from_init = None
 
         for raw_line in stdout.splitlines():
@@ -58,6 +59,11 @@ class GeminiJSONParser(BaseParser):
                             content = data.get("content") or data.get("text")
                             if content:
                                 accumulated_response.append(content)
+                            
+                            # Check for thought content
+                            thought = data.get("thought")
+                            if thought:
+                                accumulated_thinking.append(thought)
 
                     # Update payload based on priority
                     if msg_type == "result":
@@ -122,7 +128,9 @@ class GeminiJSONParser(BaseParser):
         if response_text:
             if stderr and stderr.strip():
                 metadata["stderr"] = stderr.strip()
-            return ParsedCLIResponse(content=response_text, metadata=metadata)
+            
+            thinking_content = "".join(accumulated_thinking).strip() if accumulated_thinking else None
+            return ParsedCLIResponse(content=response_text, metadata=metadata, thinking=thinking_content)
 
         fallback_message, extra_metadata = self._build_fallback_message(payload or {}, stderr)
         if fallback_message:
