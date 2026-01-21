@@ -97,6 +97,14 @@ class InstanceTracker:
         self.cache_read_tokens: int = 0
         self.cache_creation_tokens: int = 0
 
+        # Internal tracking for deltas (per tool execution)
+        self._last_request_tokens = {
+            "input": 0,
+            "output": 0,
+            "cache_read": 0,
+            "cache_creation": 0
+        }
+
         # Metrics for last window (1 hour)
         self._calls_1m: list[tuple[float, bool]] = []  # (timestamp, is_error)
         self._durations_1m: list[tuple[float, int]] = []  # (timestamp, duration_ms)
@@ -107,6 +115,36 @@ class InstanceTracker:
         if uptime_seconds is not None:
             self.uptime_at_register = uptime_seconds
             self.start_time = time.time()
+
+    def _update_tokens_incremental(self, usage: dict):
+        """Update instance totals using deltas from reported cumulative request tokens."""
+        # Mapping between usage keys and internal keys
+        mapping = {
+            "input": ["input_tokens", "inputTokens", "prompt_tokens", "promptTokens"],
+            "output": ["output_tokens", "outputTokens", "candidates_tokens", "candidatesTokens"],
+            "cache_read": ["cache_read_input_tokens", "cacheReadInputTokens", "cached_tokens", "cachedTokens"],
+            "cache_creation": ["cache_creation_input_tokens", "cacheCreationInputTokens"]
+        }
+        
+        for key, possible_keys in mapping.items():
+            val = 0
+            for pk in possible_keys:
+                if pk in usage:
+                    val = usage[pk]
+                    break
+            
+            if val > 0:
+                # If the new value is greater than what we last saw for THIS request,
+                # add the difference to the LIFETIME total.
+                last_val = self._last_request_tokens[key]
+                if val > last_val:
+                    delta = val - last_val
+                    if key == "input": self.input_tokens += delta
+                    elif key == "output": self.output_tokens += delta
+                    elif key == "cache_read": self.cache_read_tokens += delta
+                    elif key == "cache_creation": self.cache_creation_tokens += delta
+                    
+                    self._last_request_tokens[key] = val
 
     def start_tool(self, tool_name: str, tool_input: Optional[str] = None):
         """Record tool execution start."""
@@ -122,6 +160,10 @@ class InstanceTracker:
         self.tool_start_time = now
         self.last_heartbeat = now
         self.last_status = f"Starting {tool_name}..."
+
+        # Reset request-local token counters
+        for k in self._last_request_tokens:
+            self._last_request_tokens[k] = 0
 
         # Try to extract model/role/session name from input arguments
         if tool_input:
@@ -220,20 +262,15 @@ class InstanceTracker:
                         data = data["event"]
                         msg_type = data.get("type")
 
-                    # Extract Token Usage (Post-unwrap)
-                    # Check multiple possible locations for usage/stats
-                    u = data.get("usage") or data.get("stats")
-                    if not u and isinstance(data.get("message"), dict):
-                        u = data["message"].get("usage")
-                    
-                    if isinstance(u, dict):
-                        # Support both snake_case and camelCase
-                        self.input_tokens = u.get("input_tokens") or u.get("inputTokens") or self.input_tokens
-                        self.output_tokens = u.get("output_tokens") or u.get("outputTokens") or self.output_tokens
-                        self.cache_read_tokens = u.get("cache_read_input_tokens") or u.get("cacheReadInputTokens") or self.cache_read_tokens
-                        self.cache_creation_tokens = u.get("cache_creation_input_tokens") or u.get("cacheCreationInputTokens") or self.cache_creation_tokens
-
-                    # Update model name if found in log metadata
+                                            # Extract Token Usage (Post-unwrap)
+                                            # Check multiple possible locations for usage/stats
+                                            u = data.get("usage") or data.get("stats")
+                                            if not u and isinstance(data.get("message"), dict):
+                                                u = data["message"].get("usage")
+                                            
+                                            if isinstance(u, dict):
+                                                self._update_tokens_incremental(u)
+                                        # Update model name if found in log metadata
                     new_model = None
                     if "model" in data:
                         new_model = data["model"]
@@ -406,28 +443,20 @@ class InstanceTracker:
                                     self._calls_1m.append((now_ts, is_error))
                                     self._durations_1m.append((now_ts, duration_ms))
 
-                    elif msg_type == "result": # Final result from Gemini CLI or Claude CLI
-                        # Check if this is Claude CLI output (has 'subtype') or Gemini (has 'stats')
-                        is_claude = "subtype" in data
-
-                        # Update tokens from final result
-                        u = data.get("usage") or data.get("stats")
-                        if isinstance(u, dict):
-                            self.input_tokens = u.get("input_tokens") or u.get("inputTokens") or self.input_tokens
-                            self.output_tokens = u.get("output_tokens") or u.get("outputTokens") or self.output_tokens
-                            self.cache_read_tokens = u.get("cache_read_input_tokens") or u.get("cacheReadInputTokens") or self.cache_read_tokens
-                        
-                        if "modelUsage" in data and isinstance(data["modelUsage"], dict):
-                            # Aggregate across all models if present
-                            total_in = 0
-                            total_out = 0
-                            for m_stats in data["modelUsage"].values():
-                                total_in += m_stats.get("inputTokens") or 0
-                                total_out += m_stats.get("outputTokens") or 0
-                            if total_in: self.input_tokens = total_in
-                            if total_out: self.output_tokens = total_out
-
-                        status = data.get("status", "ok")
+                                            elif msg_type == "result": # Final result from Gemini CLI or Claude CLI
+                                                # Check if this is Claude CLI output (has 'subtype') or Gemini (has 'stats')
+                                                is_claude = "subtype" in data
+                    
+                                                # Update tokens from final result
+                                                u = data.get("usage") or data.get("stats")
+                                                if isinstance(u, dict):
+                                                    self._update_tokens_incremental(u)
+                                                
+                                                if "modelUsage" in data and isinstance(data["modelUsage"], dict):
+                                                    # Aggregate across all models if present
+                                                    for m_stats in data["modelUsage"].values():
+                                                        self._update_tokens_incremental(m_stats)
+                                            status = data.get("status", "ok")
 
                         if status == "error" or data.get("is_error"):
                             if is_claude:
@@ -541,6 +570,18 @@ class InstanceTracker:
             self.total_errors += 1
 
         if target_tool:
+            # Extract tokens from final tool output if available
+            if tool_output:
+                try:
+                    data = json.loads(tool_output)
+                    # Check for usage in metadata (common PAL format)
+                    metadata = data.get("metadata", {})
+                    u = metadata.get("usage") or data.get("usage")
+                    if isinstance(u, dict):
+                        self._update_tokens_incremental(u)
+                except Exception:
+                    pass
+
             effective_model = model_name or (self.model_name if target_tool == self.active_tool else None)
 
             call = ToolCall(

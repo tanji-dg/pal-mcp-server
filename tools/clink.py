@@ -262,7 +262,9 @@ class CLinkTool(SimpleTool):
             "last_time": 0.0,
             "last_db_update": 0.0,
             "accumulated_thinking": [],
-            "accumulated_logs": []
+            "accumulated_logs": [],
+            "summary_buffer": [],
+            "in_summary": False
         }
         
         # Mapping from tool_id to tool_name for Gemini stream-json events
@@ -298,9 +300,14 @@ class CLinkTool(SimpleTool):
                     db_updated_needed = False
                     
                     # 1. JSON format handling (gemini and codex)
-                    if msg.startswith("{") and msg.endswith("}"):
+                    # Use a more robust check for JSON as it might have leading/trailing whitespace or text
+                    json_start = msg.find('{')
+                    json_end = msg.rfind('}')
+                    
+                    if json_start != -1 and json_end != -1 and json_end > json_start:
+                        json_str = msg[json_start:json_end+1]
                         try:
-                            data = json.loads(msg)
+                            data = json.loads(json_str)
                             msg_type = data.get("type")
 
                             # Gemini stream-json events
@@ -312,13 +319,8 @@ class CLinkTool(SimpleTool):
                                     # Only notify about thinking/progress messages, not final answers
                                     # For Gemini: check for 'delta' flag
                                     if data.get("delta") is True:
-                                        # Handle <SUMMARY> blocks within thinking/messages
-                                        summary = self._extract_summary(payload_content)
-                                        if summary:
-                                            content = f"📋 Summary: {summary}"
-                                        else:
-                                            state["accumulated_thinking"].append(payload_content)
-                                            content = f"🧠 Thinking: {payload_content}"
+                                        state["accumulated_thinking"].append(payload_content)
+                                        content = f"🧠 Thinking: {payload_content}"
                             
                             # Claude stream-json events
                             elif msg_type == "stream_event":
@@ -331,22 +333,11 @@ class CLinkTool(SimpleTool):
                                     if dtype == "thinking_delta":
                                         thought = delta.get("thinking")
                                         if thought:
-                                            # Check for summary even in thinking deltas (Claude sometimes does this)
-                                            summary = self._extract_summary(thought)
-                                            if summary:
-                                                content = f"📋 Summary: {summary}"
-                                            else:
-                                                state["accumulated_thinking"].append(thought)
-                                                content = f"🧠 Thinking: {thought}"
-                                    elif dtype == "text_delta":
-                                        text = delta.get("text")
-                                        if text:
-                                            summary = self._extract_summary(text)
-                                            if summary:
-                                                content = f"📋 Summary: {summary}"
+                                            state["accumulated_thinking"].append(thought)
+                                            content = f"🧠 Thinking: {thought}"
                                 
                             elif msg_type == "tool_use":
-                                name = data.get("tool_name")
+                                name = data.get("tool_name") or data.get("name")
                                 tool_id = data.get("tool_id")
                                 if tool_id and name:
                                     tool_names[tool_id] = name
@@ -370,7 +361,7 @@ class CLinkTool(SimpleTool):
                                     state["accumulated_logs"].append(content)
                                     db_updated_needed = True
 
-                            # Legacy gemini events (backward compatibility during transition)
+                            # Legacy gemini events
                             elif msg_type == "tool_call":
                                 status = data.get("status")
                                 name = data.get("name")
@@ -400,28 +391,50 @@ class CLinkTool(SimpleTool):
                                 if content:
                                     state["accumulated_logs"].append(content)
                             
-                            # Filter system notifications (e.g. task_notification) to prevent raw JSON leakage in UI
+                            # Filter system notifications
                             elif msg_type == "system":
-                                # Log as debug but do not emit as a user notification unless critical
                                 logger.debug(f"CLI SYSTEM EVENT: {msg}")
                                 continue
 
                         except json.JSONDecodeError:
                             pass
 
-                    # 2. gemini (Text) format handling - filter for important milestones
-                    else:
-                        important_keywords = [
-                            "Loading extension:",
-                            "Error executing tool",
-                            "Error when talking to Gemini API",
-                            "Executing tool",
-                            "Executed tool",
-                            "Tool result:",
-                        ]
-                        if any(k in msg for k in important_keywords):
-                            content = msg
-                            state["accumulated_logs"].append(msg)
+                    # 2. Text format handling & Summary extraction
+                    if not content:
+                        # Check for <SUMMARY> tags (might be partial)
+                        msg_lower = msg.lower()
+                        
+                        if "<summary>" in msg_lower:
+                            state["in_summary"] = True
+                            state["summary_buffer"] = []
+                            # Extract part after tag if any
+                            start_idx = msg_lower.find("<summary>") + 9
+                            state["summary_buffer"].append(msg[start_idx:])
+                        elif "</summary>" in msg_lower and state["in_summary"]:
+                            # Extract part before tag
+                            end_idx = msg_lower.find("</summary>")
+                            state["summary_buffer"].append(msg[:end_idx])
+                            full_summary = "".join(state["summary_buffer"]).strip()
+                            if full_summary:
+                                content = f"📋 Summary: {full_summary}"
+                            state["in_summary"] = False
+                            state["summary_buffer"] = []
+                        elif state["in_summary"]:
+                            state["summary_buffer"].append(msg)
+                            # Do not emit intermediate summary lines yet
+                        else:
+                            # Regular text milestones
+                            important_keywords = [
+                                "Loading extension:",
+                                "Error executing tool",
+                                "Error when talking to Gemini API",
+                                "Executing tool",
+                                "Executed tool",
+                                "Tool result:",
+                            ]
+                            if any(k in msg for k in important_keywords):
+                                content = msg
+                                state["accumulated_logs"].append(msg)
 
                     # Update DB periodically or on significant events
                     now = time.monotonic()
@@ -443,7 +456,7 @@ class CLinkTool(SimpleTool):
 
                     # Apply rate-limiting and deduplication for UI notifications
                     if content:
-                        # Strip ANSI codes to prevent TUI corruption in the host
+                        # Strip ANSI codes
                         clean_content = ansi_escape.sub("", content)
                         # Add session info
                         session_label = f"[{effective_session_id[:8]}] " if effective_session_id != "standalone" else ""
@@ -452,9 +465,6 @@ class CLinkTool(SimpleTool):
                         if display_content != state["last_msg"] or (now - state["last_time"]) > MIN_INTERVAL:
                             state["last_msg"] = display_content
                             state["last_time"] = now
-
-                            # Log the notification we are about to send for server-side monitoring
-                            logger.debug(f"MCP NOTIFICATION: [{client_config.name}] {display_content}")
 
                             # 1. Send to MCP UI (Claude Desktop logs)
                             await request_context.session.send_log_message(
@@ -465,8 +475,6 @@ class CLinkTool(SimpleTool):
                             # 2. Send to Monitor Dashboard Terminal View
                             if publisher:
                                 await publisher.tool_log(self.get_name(), clean_content, session_id=effective_session_id)
-                        else:
-                            logger.debug(f"MCP NOTIFICATION SKIPPED (rate-limit): {display_content}")
                 except Exception as e:
                     logger.warning(f"Failed to send notification: {e}")
 

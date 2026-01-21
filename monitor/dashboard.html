@@ -421,6 +421,13 @@
         .term-content.thinking {
             color: #b2bec3;
         }
+        .term-content.summary {
+            color: #ce9178;
+            font-weight: bold;
+            background: rgba(206, 145, 120, 0.1);
+            padding: 2px 4px;
+            border-radius: 2px;
+        }
         .term-content.tool-use {
             color: #ffa502;
             font-weight: bold;
@@ -1113,6 +1120,9 @@
             }
             
             // Fallback for raw text
+            if (raw.includes('📋 Summary:')) {
+                return { type: 'summary', text: raw, isDelta: false };
+            }
             return { type: 'raw', text: raw, isDelta: false };
         }
 
