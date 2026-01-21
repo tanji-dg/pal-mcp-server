@@ -225,14 +225,18 @@ class CLinkTool(SimpleTool):
             continuation_id = create_thread(tool_name=self.get_name(), initial_request=initial_request_dict)
             is_new_thread = True
             logger.debug(f"Created new thread {continuation_id}")
+            # Ensure the caller and request object know about the new thread ID
+            self._current_arguments["continuation_id"] = continuation_id
+            request.continuation_id = continuation_id
             
-        # Record user turn immediately to ensure persistence before execution
-        # This protects against crashes during long-running agent execution
-        user_prompt = self.get_request_prompt(request)
-        user_files = self.get_request_files(request)
-        user_images = self.get_request_images(request)
-        add_turn(continuation_id, "user", user_prompt, files=user_files, images=user_images, tool_name=self.get_name())
-        logger.debug(f"Recorded user turn for thread {continuation_id} before execution")
+        # Record user turn immediately for NEW threads to ensure persistence before execution
+        # (Existing threads already have the turn added by server.py during reconstruction)
+        if is_new_thread:
+            user_prompt = self.get_request_prompt(request)
+            user_files = self.get_request_files(request)
+            user_images = self.get_request_images(request)
+            add_turn(continuation_id, "user", user_prompt, files=user_files, images=user_images, tool_name=self.get_name())
+            logger.debug(f"Recorded new user turn for thread {continuation_id}")
         # --- ENSURE CONVERSATION PERSISTENCE END ---
 
         # Track last notification to avoid spamming the UI
@@ -595,9 +599,10 @@ class CLinkTool(SimpleTool):
             "model_name": result.parsed.metadata.get("model_used"),
         }
 
-        # assistant turn should not be recorded again if it was a new thread (already handled by continuation offer)
-        # but for clink we've already ensured continuation_id is set now.
-        if continuation_id and not is_new_thread:
+        # Always record assistant turn if continuation is active.
+        # Since request.continuation_id is now updated, _create_continuation_offer_response
+        # will skip its own recording logic, so we handle it here.
+        if continuation_id:
             try:
                 self._record_assistant_turn(continuation_id, content, request, model_info)
             except Exception:
@@ -825,6 +830,48 @@ class CLinkTool(SimpleTool):
             "CLI capabilities—including launching web searches, reading files, and using any other "
             "available tools. Gather current information yourself and deliver the final answer without "
             "asking the PAL MCP host to perform searches or file reads."
+        )
+
+    def _record_assistant_turn(
+        self, continuation_id: str, response_text: str, request, model_info: Optional[dict]
+    ) -> None:
+        """
+        Persist an assistant response in conversation memory by updating the pre-created turn.
+
+        CLinkTool always pre-creates an assistant turn for live updates in execute(),
+        so we use update_current_turn instead of add_turn to avoid duplicate entries.
+        """
+        if not continuation_id:
+            return
+
+        from utils.conversation_memory import update_current_turn
+
+        model_provider = None
+        model_name = None
+        model_metadata = None
+
+        if model_info:
+            provider = model_info.get("provider")
+            if provider:
+                if isinstance(provider, str):
+                    model_provider = provider
+                else:
+                    try:
+                        model_provider = provider.get_provider_type().value
+                    except AttributeError:
+                        model_provider = str(provider)
+            model_name = model_info.get("model_name")
+            model_response = model_info.get("model_response")
+            if model_response:
+                model_metadata = {"usage": model_response.usage, "metadata": model_response.metadata}
+
+        update_current_turn(
+            continuation_id,
+            response_text,
+            tool_name=self.get_name(),
+            model_provider=model_provider,
+            model_name=model_name,
+            model_metadata=model_metadata,
         )
 
     def _format_file_references(self, files: list[str]) -> str:

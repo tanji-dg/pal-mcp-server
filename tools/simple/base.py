@@ -330,10 +330,20 @@ class SimpleTool(BaseTool):
                     thread_context = get_thread(continuation_id)
 
                     if thread_context:
-                        # Add user's new input to conversation
+                        # Add user's new input to conversation only if not already present
+                        # (server.py may have already added it during reconstruction)
                         user_prompt = self.get_request_prompt(request)
                         user_files = self.get_request_files(request)
-                        if user_prompt:
+                        
+                        # Heuristic: if last turn is user and matches prompt, don't add again
+                        should_add = True
+                        if thread_context.turns:
+                            last_turn = thread_context.turns[-1]
+                            if last_turn.role == "user" and last_turn.content == user_prompt:
+                                should_add = False
+                                logger.debug(f"{self.get_name()}: User turn already present, skipping duplicate add")
+
+                        if user_prompt and should_add:
                             add_turn(continuation_id, "user", user_prompt, files=user_files)
 
                             # Get updated thread context after adding the turn
@@ -372,6 +382,7 @@ class SimpleTool(BaseTool):
                 
                 # Update current arguments so the tool knows the new continuation_id
                 self._current_arguments["continuation_id"] = continuation_id
+                request.continuation_id = continuation_id
                 
                 prompt = await self.prepare_prompt(request)
 

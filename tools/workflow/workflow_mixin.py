@@ -700,6 +700,21 @@ class BaseWorkflowMixin(ABC):
                 self.initial_request = request.step
                 # Allow tools to store initial description for expert analysis
                 self.store_initial_issue(request.step)
+                
+                # Update current arguments and request so the tool knows the new continuation_id
+                self._current_arguments["continuation_id"] = continuation_id
+                request.continuation_id = continuation_id
+                
+                # Record initial user turn
+                add_turn(
+                    thread_id=continuation_id,
+                    role="user",
+                    content=request.step,
+                    files=self.get_request_relevant_files(request),
+                    images=self.get_request_images(request),
+                    tool_name=self.get_name()
+                )
+                logger.debug(f"[{self.get_name()}] Created new thread {continuation_id} and recorded initial turn")
 
             # Process work step - allow tools to customize field mapping
             step_data = self.prepare_step_data(request)

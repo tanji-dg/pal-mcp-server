@@ -155,6 +155,16 @@ class SQLiteStorage:
         except sqlite3.Error as e:
             logger.error(f"Cleanup failed: {e}")
 
+    def flushall(self) -> None:
+        """Clear all conversation data from the database"""
+        try:
+            with self._get_conn() as conn:
+                conn.execute("DELETE FROM conversations")
+                conn.commit()
+            logger.info("Cleared all conversation data (flushall)")
+        except sqlite3.Error as e:
+            logger.error(f"Failed to clear conversation data: {e}")
+
     def shutdown(self):
         """Graceful shutdown of background thread"""
         self._shutdown = True

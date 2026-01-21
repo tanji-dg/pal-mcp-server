@@ -394,6 +394,7 @@ def update_current_turn(
     tool_name: Optional[str] = None,
     model_provider: Optional[str] = None,
     model_name: Optional[str] = None,
+    model_metadata: Optional[dict[str, Any]] = None,
 ) -> bool:
     """
     Update the content of the most recent turn in the thread.
@@ -407,6 +408,7 @@ def update_current_turn(
         tool_name: Optional update to tool attribution
         model_provider: Optional update to model provider
         model_name: Optional update to model name
+        model_metadata: Optional update to model metadata
 
     Returns:
         bool: True if update successful
@@ -428,6 +430,8 @@ def update_current_turn(
         turn.model_provider = model_provider
     if model_name:
         turn.model_name = model_name
+    if model_metadata:
+        turn.model_metadata = model_metadata
         
     context.last_updated_at = datetime.now(timezone.utc).isoformat()
 
