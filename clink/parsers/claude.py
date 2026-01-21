@@ -29,6 +29,7 @@ class ClaudeJSONParser(BaseParser):
         payload = None
         events: list[dict[str, Any]] = []
         accumulated_content = []
+        accumulated_thinking = []
         model_from_system = None
 
         if not is_stream and loaded is not None:
@@ -78,9 +79,7 @@ class ClaudeJSONParser(BaseParser):
                             elif delta.get("type") == "thinking_delta":
                                 thinking = delta.get("thinking")
                                 if thinking:
-                                    # Optionally capture thinking, or just treat as content for now
-                                    # Depending on desired output format
-                                    pass 
+                                    accumulated_thinking.append(thinking)
                     elif msg_type == "assistant":
                         # Final message in stream
                         message_obj = data.get("message")
@@ -101,6 +100,11 @@ class ClaudeJSONParser(BaseParser):
                          if data.get("subtype") == "init":
                              model_from_system = data.get("model")
                              if not payload:
+                                 payload = data
+                         # Handle task notifications as potential results or errors
+                         elif data.get("subtype") == "task_notification":
+                             # If we have a failed task, treat it as a significant event
+                             if data.get("status") == "failed" and not payload:
                                  payload = data
                     elif msg_type == "error":
                          # Capture error as payload if no result yet
@@ -136,7 +140,8 @@ class ClaudeJSONParser(BaseParser):
             content = "".join(accumulated_content).strip()
 
         if content:
-            return ParsedCLIResponse(content=content, metadata=metadata)
+            thinking_content = "".join(accumulated_thinking).strip() if accumulated_thinking else None
+            return ParsedCLIResponse(content=content, metadata=metadata, thinking=thinking_content)
 
         # 3. Fallback to message extraction
         message = self._extract_message(payload or {})
@@ -218,6 +223,14 @@ class ClaudeJSONParser(BaseParser):
         message = payload.get("message")
         if isinstance(message, str) and message.strip():
             return message.strip()
+
+        # Handle system task notifications
+        if payload.get("type") == "system" and payload.get("subtype") == "task_notification":
+            summary = payload.get("summary")
+            status = payload.get("status")
+            if summary:
+                return f"Task {status}: {summary}"
+            return f"Task {status}"
 
         error_field = payload.get("error")
         if isinstance(error_field, dict):

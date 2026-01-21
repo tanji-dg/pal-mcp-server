@@ -327,6 +327,13 @@ class CLinkTool(SimpleTool):
                                 elif label == "reasoning":
                                     status_prefix = "🧠 Thinking" if msg_type == "item.started" else "🧠 Thought"
                                     content = f"{status_prefix}: {item.get('text')}"
+                            
+                            # Filter system notifications (e.g. task_notification) to prevent raw JSON leakage in UI
+                            elif msg_type == "system":
+                                # Log as debug but do not emit as a user notification unless critical
+                                logger.debug(f"CLI SYSTEM EVENT: {msg}")
+                                continue
+
                         except json.JSONDecodeError:
                             pass
 
@@ -378,23 +385,49 @@ class CLinkTool(SimpleTool):
                 output_callback=_notification_callback if request_context else None,
             )
             logger.debug("Agent execution completed.")
-        except InterruptedError as exc:
-            logger.warning(f"CLink tool execution interrupted: {exc}")
-            # Construct a graceful cancellation response
-            tool_output = ToolOutput(
-                status="success", # Treat as success to avoid scary error boxes, but content indicates interruption
-                content=f"⚠️ **Task Interrupted**\n\nExecution was stopped by the user via the monitoring dashboard. Progress before interruption has been saved to the session history.",
-                content_type="text",
-                metadata={
-                    "cli_name": client_config.name,
-                    "status": "interrupted",
-                    "interrupted_by": "user"
-                },
-            )
-            return [TextContent(type="text", text=tool_output.model_dump_json())]
         except Exception as exc:
             # Record error turn before raising to ensure persistence
             error_msg = f"Error during CLI execution: {exc}"
+            
+            # Special handling for Interrupted/Partial results OR general errors with output
+            is_cli_error = isinstance(exc, CLIAgentError)
+            is_interrupted = is_cli_error and ("interrupted" in str(exc).lower() or "interrupted" in (exc.stderr or "").lower())
+            
+            if is_cli_error and (is_interrupted or exc.stdout):
+                try:
+                    # Attempt to parse partial stdout to salvage progress
+                    partial_parsed = agent._parser.parse(exc.stdout, exc.stderr)
+                    partial_content = partial_parsed.content
+                    if partial_parsed.thinking:
+                        partial_content = f"<thinking>{partial_parsed.thinking}</thinking>\n\n{partial_content}"
+                    
+                    header = "⚠️ **Task Interrupted**" if is_interrupted else "❌ **Task Failed**"
+                    salvaged_content = f"{header}\n\nProgress before stopping:\n{partial_content}"
+                    
+                    if not is_interrupted:
+                        salvaged_content += f"\n\nError Details:\n{exc}"
+
+                    # Record this salvaged turn so it's in the history for next time
+                    model_info = {"provider": client_config.name, "model_name": partial_parsed.metadata.get("model_used") or "error"}
+                    self._record_assistant_turn(continuation_id, salvaged_content, request, model_info)
+                    
+                    # If interrupted, return graceful success. If error, re-raise but with context saved.
+                    if is_interrupted:
+                        tool_output = ToolOutput(
+                            status="success", 
+                            content=salvaged_content,
+                            content_type="text",
+                            metadata={
+                                "cli_name": client_config.name,
+                                "status": "interrupted",
+                                "interrupted_by": "user",
+                                "partial": True
+                            },
+                        )
+                        return [TextContent(type="text", text=tool_output.model_dump_json())]
+                except Exception as parse_exc:
+                    logger.debug(f"Failed to parse partial results: {parse_exc}")
+
             try:
                 model_info = {"provider": client_config.name, "model_name": "error"}
                 self._record_assistant_turn(continuation_id, error_msg, request, model_info)
@@ -471,6 +504,11 @@ class CLinkTool(SimpleTool):
                 content = "Claude CLI execution completed, but no textual result was returned and metadata was unparseable."
         else:
             content = result.parsed.content
+
+        # Prepend thinking content if available to preserve reasoning history
+        if result.parsed.thinking:
+            # Use standard thinking tags for better compatibility with models
+            content = f"<thinking>{result.parsed.thinking}</thinking>\n\n{content}"
 
         model_info = {
             "provider": client_config.name,
