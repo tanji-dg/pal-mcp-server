@@ -809,6 +809,10 @@ class BaseTool(ABC):
             return requested_files
 
         try:
+            # Expand directories before filtering to ensure we check individual files
+            from utils.file_utils import expand_file_paths
+            expanded_requested = expand_file_paths(requested_files)
+            
             embedded_files = set(self.get_conversation_embedded_files(continuation_id))
             logger.debug(f"[FILES] {self.name}: Found {len(embedded_files)} embedded files in conversation")
 
@@ -817,14 +821,14 @@ class BaseTool(ABC):
             if not embedded_files:
                 logger.debug(f"{self.name} tool: No files found in conversation history for thread {continuation_id}")
                 logger.debug(
-                    f"[FILES] {self.name}: No embedded files found, returning all {len(requested_files)} requested files"
+                    f"[FILES] {self.name}: No embedded files found, returning all {len(expanded_requested)} expanded files"
                 )
-                return requested_files
+                return expanded_requested
 
             # Return only files that haven't been embedded yet
-            new_files = [f for f in requested_files if f not in embedded_files]
+            new_files = [f for f in expanded_requested if f not in embedded_files]
             logger.debug(
-                f"[FILES] {self.name}: After filtering: {len(new_files)} new files, {len(requested_files) - len(new_files)} already embedded"
+                f"[FILES] {self.name}: After filtering: {len(new_files)} new files, {len(expanded_requested) - len(new_files)} already embedded"
             )
             logger.debug(f"[FILES] {self.name}: New files to embed: {new_files}")
 

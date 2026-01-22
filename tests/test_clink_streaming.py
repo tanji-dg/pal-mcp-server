@@ -246,4 +246,6 @@ async def test_clink_tool_notifications(tmp_path):
             call_kwargs = mock_session.send_log_message.call_args.kwargs
             # Expect "info" string literal instead of LoggingLevel.INFO
             assert call_kwargs["level"] == "info"
-            assert "[test-cli] Executing tool: test" in call_kwargs["data"]
+            # Note: The output now includes the session ID like "[test-cli] [session_id] content"
+            assert "[test-cli]" in call_kwargs["data"]
+            assert "Executing tool: test" in call_kwargs["data"]

@@ -774,9 +774,20 @@ class SimpleTool(BaseTool):
                     model_provider = provider
                 else:
                     try:
-                        model_provider = provider.get_provider_type().value
-                    except AttributeError:
+                        # Attempt to get provider type value (usually an enum string)
+                        ptype = provider.get_provider_type()
+                        # Be defensive against mocks in tests: mocks often have .value as another mock
+                        if hasattr(ptype, "value") and isinstance(ptype.value, str):
+                            model_provider = ptype.value
+                        else:
+                            model_provider = str(ptype)
+                    except (AttributeError, TypeError):
                         model_provider = str(provider)
+            
+            # Ensure model_provider is a string for Pydantic validation
+            if model_provider is not None:
+                model_provider = str(model_provider)
+                
             model_name = model_info.get("model_name")
             model_response = model_info.get("model_response")
             if model_response:
@@ -788,6 +799,7 @@ class SimpleTool(BaseTool):
             response_text,
             files=self.get_request_files(request),
             images=self.get_request_images(request),
+            processed_files=self.get_actually_processed_files(),
             tool_name=self.get_name(),
             model_provider=model_provider,
             model_name=model_name,

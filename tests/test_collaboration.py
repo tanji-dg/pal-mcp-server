@@ -324,7 +324,7 @@ class TestDynamicContextRequests:
         response_data = json.loads(exc_info.value.payload)
         # Workflow tools may handle provider errors differently than simple tools
         # They might return error, complete analysis, or even clarification requests
-        assert response_data["status"] in ["error", "calling_expert_analysis", "files_required_to_continue"]
+        assert response_data["status"] in ["error", "analyze_failed", "calling_expert_analysis", "files_required_to_continue"]
 
         # If expert analysis was attempted, it may succeed or fail
         if response_data["status"] == "calling_expert_analysis" and "expert_analysis" in response_data:

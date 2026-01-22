@@ -315,6 +315,7 @@ def add_turn(
     model_provider: Optional[str] = None,
     model_name: Optional[str] = None,
     model_metadata: Optional[dict[str, Any]] = None,
+    processed_files: Optional[list[str]] = None,
 ) -> bool:
     """
     Add turn to existing thread with atomic file ordering.
@@ -368,6 +369,7 @@ def add_turn(
         timestamp=datetime.now(timezone.utc).isoformat(),
         files=files,  # Preserved for cross-tool file context
         images=images,  # Preserved for cross-tool visual context
+        processed_files=processed_files,  # Track expanded file list
         tool_name=tool_name,  # Track which tool generated this turn
         model_provider=model_provider,  # Track model provider
         model_name=model_name,  # Track specific model

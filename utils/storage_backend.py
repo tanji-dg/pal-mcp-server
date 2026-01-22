@@ -165,6 +165,20 @@ class SQLiteStorage:
         except sqlite3.Error as e:
             logger.error(f"Failed to clear conversation data: {e}")
 
+    def clear(self) -> None:
+        """Alias for flushall to maintain compatibility with dict-like interfaces"""
+        self.flushall()
+
+    def delete(self, key: str) -> None:
+        """Delete a specific key"""
+        try:
+            with self._get_conn() as conn:
+                conn.execute("DELETE FROM conversations WHERE id = ?", (key,))
+                conn.commit()
+            logger.debug(f"Deleted key {key}")
+        except sqlite3.Error as e:
+            logger.error(f"Failed to delete key {key}: {e}")
+
     def shutdown(self):
         """Graceful shutdown of background thread"""
         self._shutdown = True

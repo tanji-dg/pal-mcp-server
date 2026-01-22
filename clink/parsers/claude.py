@@ -198,7 +198,11 @@ class ClaudeJSONParser(BaseParser):
 
         # Also check direct model field often found in 'assistant' or 'message' events
         if "model_used" not in metadata:
-            direct_model = payload.get("model") or (payload.get("message") or {}).get("model")
+            msg_field = payload.get("message")
+            direct_model = payload.get("model")
+            if not direct_model and isinstance(msg_field, dict):
+                direct_model = msg_field.get("model")
+            
             if isinstance(direct_model, str):
                 metadata["model_used"] = direct_model
 

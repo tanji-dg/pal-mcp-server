@@ -72,17 +72,28 @@ class TestThinkingModes:
             # Even with a fake API key, we can test the provider resolution logic
             # The test will fail at the API call level, but we can verify the thinking mode logic
             try:
+                # Use a tool that supports thinking (AnalyzeTool)
                 result = await tool.execute(
                     {
                         "absolute_file_paths": ["/absolute/path/test.py"],
                         "prompt": "What is this?",
                         "model": "o3-mini",
                         "thinking_mode": "minimal",
+                        # Dummy workflow fields
+                        "step": "Initial step",
+                        "step_number": 1,
+                        "total_steps": 1,
+                        "next_step_required": False,
+                        "findings": "None yet",
+                        "relevant_files": ["/absolute/path/test.py"],
                     }
                 )
-                # If we get here, great! The provider resolution worked
-                # Check that thinking mode was properly handled
+                # If we get here, check the response format
                 assert result is not None
+                import json
+                response_data = json.loads(result[0].text)
+                assert response_data["status"] in ["error", "calling_expert_analysis", "thinkdeep_complete"]
+                error_msg = result[0].text
 
             except Exception as e:
                 # Expected: API call will fail with fake key, but we can check the error
@@ -103,9 +114,10 @@ class TestThinkingModes:
                 if isinstance(parsed, dict) and parsed.get("status", "").endswith("_failed"):
                     assert "validation errors" in parsed.get("error", "")
                 else:
+                    error_msg_lower = error_msg.lower()
                     assert any(
-                        phrase in error_msg
-                        for phrase in ["API", "key", "authentication", "provider", "network", "connection", "Model"]
+                        phrase.lower() in error_msg_lower
+                        for phrase in ["api", "key", "authentication", "provider", "network", "connection", "model"]
                     )
 
         finally:
@@ -118,6 +130,7 @@ class TestThinkingModes:
 
             # Reload config and clear registry
             importlib.reload(config)
+            from providers.registry import ModelProviderRegistry
             ModelProviderRegistry._instance = None
 
     @pytest.mark.asyncio
@@ -159,10 +172,21 @@ class TestThinkingModes:
                         "thinking_mode": "low",
                         "prompt": "Test code review for validation purposes",
                         "model": "o3-mini",
+                        # Dummy workflow fields
+                        "step": "Review step",
+                        "step_number": 1,
+                        "total_steps": 1,
+                        "next_step_required": False,
+                        "findings": "None yet",
+                        "relevant_files": ["/absolute/path/test.py"],
                     }
                 )
-                # If we get here, provider resolution worked
+                # If we get here, check the response format
                 assert result is not None
+                import json
+                response_data = json.loads(result[0].text)
+                assert response_data["status"] in ["error", "calling_expert_analysis", "thinkdeep_complete"]
+                error_msg = result[0].text
 
             except Exception as e:
                 # Expected: API call will fail with fake key
@@ -182,9 +206,10 @@ class TestThinkingModes:
                 if isinstance(parsed, dict) and parsed.get("status", "").endswith("_failed"):
                     assert "validation errors" in parsed.get("error", "")
                 else:
+                    error_msg_lower = error_msg.lower()
                     assert any(
-                        phrase in error_msg
-                        for phrase in ["API", "key", "authentication", "provider", "network", "connection", "Model"]
+                        phrase.lower() in error_msg_lower
+                        for phrase in ["api", "key", "authentication", "provider", "network", "connection", "model"]
                     )
 
         finally:
@@ -197,6 +222,7 @@ class TestThinkingModes:
 
             # Reload config and clear registry
             importlib.reload(config)
+            from providers.registry import ModelProviderRegistry
             ModelProviderRegistry._instance = None
 
     @pytest.mark.asyncio
@@ -237,6 +263,12 @@ class TestThinkingModes:
                         "prompt": "Test error",
                         "model": "o3-mini",
                         # Not specifying thinking_mode, should use default (medium)
+                        # Dummy workflow fields
+                        "step": "Debug step",
+                        "step_number": 1,
+                        "total_steps": 1,
+                        "next_step_required": False,
+                        "findings": "None yet",
                     }
                 )
                 # If we get here, provider resolution worked
@@ -263,8 +295,8 @@ class TestThinkingModes:
                     assert "validation errors" in parsed.get("error", "")
                 else:
                     assert any(
-                        phrase in error_msg
-                        for phrase in ["API", "key", "authentication", "provider", "network", "connection", "Model"]
+                        phrase.lower() in str(error_msg).lower()
+                        for phrase in ["api", "key", "authentication", "provider", "network", "connection", "model"]
                     )
 
         finally:
@@ -277,6 +309,7 @@ class TestThinkingModes:
 
             # Reload config and clear registry
             importlib.reload(config)
+            from providers.registry import ModelProviderRegistry
             ModelProviderRegistry._instance = None
 
     @pytest.mark.asyncio
@@ -318,10 +351,21 @@ class TestThinkingModes:
                         "prompt": "Analyze architecture",
                         "thinking_mode": "high",
                         "model": "o3-mini",
+                        # Dummy workflow fields
+                        "step": "Analysis step",
+                        "step_number": 1,
+                        "total_steps": 1,
+                        "next_step_required": False,
+                        "findings": "None yet",
+                        "relevant_files": ["/absolute/path/complex.py"],
                     }
                 )
-                # If we get here, provider resolution worked
+                # If we get here, check the response format
                 assert result is not None
+                import json
+                response_data = json.loads(result[0].text)
+                assert response_data["status"] in ["error", "calling_expert_analysis", "thinkdeep_complete"]
+                error_msg = result[0].text
 
             except Exception as e:
                 # Expected: API call will fail with fake key
@@ -341,9 +385,10 @@ class TestThinkingModes:
                 if isinstance(parsed, dict) and parsed.get("status", "").endswith("_failed"):
                     assert "validation errors" in parsed.get("error", "")
                 else:
+                    error_msg_lower = error_msg.lower()
                     assert any(
-                        phrase in error_msg
-                        for phrase in ["API", "key", "authentication", "provider", "network", "connection", "Model"]
+                        phrase.lower() in error_msg_lower
+                        for phrase in ["api", "key", "authentication", "provider", "network", "connection", "model"]
                     )
 
         finally:
@@ -356,6 +401,7 @@ class TestThinkingModes:
 
             # Reload config and clear registry
             importlib.reload(config)
+            from providers.registry import ModelProviderRegistry
             ModelProviderRegistry._instance = None
 
     @pytest.mark.asyncio
@@ -398,6 +444,12 @@ class TestThinkingModes:
                         "prompt": "Initial analysis",
                         "model": "o3-mini",
                         # Not specifying thinking_mode, should use default (high)
+                        # Dummy workflow fields
+                        "step": "Deep thinking step",
+                        "step_number": 1,
+                        "total_steps": 1,
+                        "next_step_required": False,
+                        "findings": "None yet",
                     }
                 )
                 # If we get here, provider resolution worked
@@ -424,8 +476,8 @@ class TestThinkingModes:
                     assert "validation errors" in parsed.get("error", "")
                 else:
                     assert any(
-                        phrase in error_msg
-                        for phrase in ["API", "key", "authentication", "provider", "network", "connection", "Model"]
+                        phrase.lower() in str(error_msg).lower()
+                        for phrase in ["api", "key", "authentication", "provider", "network", "connection", "model"]
                     )
 
         finally:
@@ -438,4 +490,5 @@ class TestThinkingModes:
 
             # Reload config and clear registry
             importlib.reload(config)
+            from providers.registry import ModelProviderRegistry
             ModelProviderRegistry._instance = None

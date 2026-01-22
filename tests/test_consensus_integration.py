@@ -238,9 +238,9 @@ async def test_consensus_auto_mode_with_openrouter_and_gemini(monkeypatch):
 
         from utils.storage_backend import get_storage_backend
 
-        # Clear conversation storage to avoid cross-test leakage
+        # Clear storage to avoid cross-test contamination
         storage = get_storage_backend()
-        storage._store.clear()
+        storage.clear()
 
         models_to_consult = [
             {"model": "claude-3-5-flash-20241022", "stance": "neutral"},

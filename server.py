@@ -20,6 +20,7 @@ as defined by the MCP protocol.
 
 import asyncio
 import atexit
+import json
 import logging
 import os
 import sys
@@ -922,7 +923,6 @@ async def handle_call_tool(name: str, arguments: dict[str, Any]) -> list[TextCon
                     # Attempt to extract effective model name from result if possible (e.g. for clink)
                     effective_model_name = arguments.get("_resolved_model_name") or model_name
                     if result and isinstance(result, list) and len(result) > 0:
-                        from mcp.types import TextContent
                         if isinstance(result[0], TextContent) and result[0].text:
                             try:
                                 res_data = json.loads(result[0].text)
@@ -978,10 +978,23 @@ async def handle_call_tool(name: str, arguments: dict[str, Any]) -> list[TextCon
 
             logger.error(f"Tool '{name}' failed: {tool_error}")
 
+            # If it's already a ToolExecutionError, re-raise it to let the MCP server handle it
+            # (it will set isError=True and include the payload)
+            if isinstance(tool_error, ToolExecutionError):
+                raise
+
             # Instead of re-raising and crashing the server/task, return the error as text content
             # This allows the MCP client to receive the error gracefully
             error_text = str(tool_error)
-            return [TextContent(type="text", text=error_text)]
+            
+            # Wrap generic error in JSON
+            error_output = ToolOutput(
+                status="error",
+                content=error_text,
+                content_type="text",
+                metadata={"tool_name": name}
+            )
+            return [TextContent(type="text", text=error_output.model_dump_json())]
 
         if log_level == "DEBUG":
             logger.debug(f"Tool '{name}' result content: {result}")

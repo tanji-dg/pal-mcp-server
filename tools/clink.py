@@ -331,15 +331,16 @@ class CLinkTool(SimpleTool):
                     json_start = msg.find('{')
                     json_end = msg.rfind('}')
                     
+                    current_json_str = None
                     if json_start != -1 and json_end != -1 and json_end > json_start:
-                        json_str = msg[json_start:json_end+1]
+                        current_json_str = msg[json_start:json_end+1]
                         try:
-                            data = json.loads(json_str)
+                            data = json.loads(current_json_str)
                             msg_type = data.get("type")
 
                             # Always forward raw JSON to monitor for token/state tracking
                             if publisher:
-                                await publisher.tool_log(self.get_name(), json_str, session_id=effective_session_id)
+                                await publisher.tool_log(self.get_name(), current_json_str, session_id=effective_session_id)
 
                             # Gemini stream-json events
                             if msg_type == "message":
@@ -429,7 +430,7 @@ class CLinkTool(SimpleTool):
                                 state["accumulated_logs"].append(msg)
                         
                         # Forward raw text logs to monitor if no JSON was sent
-                        if publisher and not json_str:
+                        if publisher and not current_json_str:
                             await publisher.tool_log(self.get_name(), msg, session_id=effective_session_id)
 
                     # Update DB periodically
@@ -479,6 +480,11 @@ class CLinkTool(SimpleTool):
             
             if is_cli_error and (is_interrupted or exc.stdout):
                 try:
+                    # Notify monitor about interruption/salvage
+                    if publisher:
+                        status_msg = "⚠️ Task interrupted by user. Salvaging progress..." if is_interrupted else "❌ Task failed. Capturing partial output..."
+                        await publisher.tool_log(self.get_name(), status_msg, session_id=effective_session_id)
+
                     # Attempt to parse partial stdout to salvage progress
                     partial_parsed = agent._parser.parse(exc.stdout, exc.stderr)
                     partial_content = partial_parsed.content
@@ -511,6 +517,8 @@ class CLinkTool(SimpleTool):
                         return [TextContent(type="text", text=tool_output.model_dump_json())]
                 except Exception as parse_exc:
                     logger.debug(f"Failed to parse partial results: {parse_exc}")
+                    if publisher:
+                        await publisher.tool_log(self.get_name(), f"Failed to salvage output: {parse_exc}", session_id=effective_session_id)
 
             try:
                 model_info = {"provider": client_config.name, "model_name": "error"}
@@ -588,6 +596,9 @@ class CLinkTool(SimpleTool):
                 content = "Claude CLI execution completed, but no textual result was returned and metadata was unparseable."
         else:
             content = result.parsed.content
+
+        # Apply output size limits (truncation/summarization)
+        content, metadata = self._apply_output_limit(client_config, content, metadata)
 
         # Prepend thinking content if available to preserve reasoning history
         if result.parsed.thinking:

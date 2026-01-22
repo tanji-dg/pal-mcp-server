@@ -595,14 +595,24 @@ class InstanceTracker:
             self.total_errors += 1
 
         if target_tool:
-            # Extract tokens from final tool output if available
+            # Extract tokens and status from final tool output if available
+            extracted_content = None
             if tool_output:
                 try:
                     data = json.loads(tool_output)
 
                     def process_obj(obj):
+                        nonlocal status, extracted_content
                         if not isinstance(obj, dict):
                             return
+                        
+                        # Check for interruption status
+                        if obj.get("status") == "interrupted" or (obj.get("metadata") and obj.get("metadata").get("status") == "interrupted"):
+                            status = "interrupted"
+
+                        # Extract human-readable content for the history dump
+                        if "content" in obj and isinstance(obj["content"], str):
+                            extracted_content = obj["content"]
                         
                         # Check for multiple possible usage locations
                         u = obj.get("usage") or obj.get("stats") or (obj.get("metadata") and obj.get("metadata").get("usage"))
@@ -646,7 +656,7 @@ class InstanceTracker:
             call = ToolCall(
                 tool=target_tool,
                 tool_input=self.active_tool_inputs.get(target_tool),
-                tool_output=tool_output,
+                tool_output=extracted_content or tool_output,
                 duration_ms=duration_ms,
                 status=status,
                 model_name=effective_model,
@@ -670,7 +680,12 @@ class InstanceTracker:
 
         if not self.active_tools or is_primary_completion or is_clink_completion:
             self.state = "idle"
-            self.last_status = f"Completed {target_tool} ({status})" if target_tool else "Idle"
+            if status == "interrupted":
+                self.last_status = "Interrupted by user"
+                self.interrupted = False # Reset flag after handling
+            else:
+                self.last_status = f"Completed {target_tool} ({status})" if target_tool else "Idle"
+            
             self.active_tool = None
             self.active_tool_input = None
             self.model_name = None

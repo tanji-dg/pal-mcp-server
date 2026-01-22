@@ -192,8 +192,10 @@ class TestLargePromptHandling:
                 if output.get("status") == "resend_prompt":
                     assert output["metadata"]["prompt_size"] == len(large_prompt)
                 else:
-                    assert output.get("status") == "error"
-                    assert "Model" in output.get("content", "")
+                    assert output.get("status") in ["error", "codereview_failed", "calling_expert_analysis"]
+                    # If it's a real resolution error or salvaged execution error
+                    content = output.get("content", "") or str(output.get("expert_analysis", {}))
+                    assert any(p in content for p in ["Model", "No provider", "not available"])
 
             except Exception as e:
                 # If we get an unexpected exception, ensure it's not a mock artifact

@@ -79,6 +79,9 @@ async def test_clink_claude_single_digit_sum():
     assert status in {"success", "continuation_available"}
 
     content = payload.get("content", "").strip()
+    # Strip thinking tags if present
+    import re
+    content = re.sub(r"<thinking>.*?</thinking>", "", content, flags=re.DOTALL).strip()
     assert content == "4"
 
     if status == "continuation_available":
