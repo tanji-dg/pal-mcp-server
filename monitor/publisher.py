@@ -43,14 +43,17 @@ DEFAULT_COORDINATOR_URL = "http://localhost:9876"
 DEFAULT_SOCKET_PATH = "/tmp/pal-monitor.sock"
 EVENT_QUEUE_SIZE = 1000
 RECONNECT_INTERVAL = 5.0  # seconds
-HEARTBEAT_INTERVAL = 10.0  # seconds
+HEARTBEAT_INTERVAL = 5.0  # seconds
 SEND_TIMEOUT = 5.0  # seconds
 
 
 def get_instance_id() -> str:
     """Generate a unique instance identifier from PID and hostname."""
     pid = os.getpid()
-    hostname = socket.gethostname()
+    try:
+        hostname = socket.gethostname()
+    except Exception:
+        hostname = "unknown"
     return f"{pid}@{hostname}"
 
 
@@ -97,6 +100,7 @@ class MonitorPublisher:
         self._connection_error_logged = False
         self._last_error = None
         self._interrupted = False
+        self._last_contact_time = 0.0
 
     @property
     def uptime_seconds(self) -> float:
@@ -107,11 +111,27 @@ class MonitorPublisher:
         """Check if an interruption has been requested by the coordinator."""
         return self._interrupted
 
+    async def check_interruption(self) -> bool:
+        """Force a status check with the coordinator if we've been silent."""
+        if not self.enabled:
+            return False
+            
+        now = time.time()
+        # If we haven't talked to the coordinator in the last 2 seconds, send a heartbeat to poll status
+        if now - self._last_contact_time > 2.0:
+            logger.debug("Polling coordinator for interruption status...")
+            try:
+                await self._send_heartbeat()
+            except Exception:
+                pass # Heartbeat loop will handle reconnection
+                
+        return self._interrupted
+
     def reset_interruption(self):
         """Reset the interruption flag (e.g. before starting a new tool)."""
         if self._interrupted:
-            logger.info("Resetting interruption state")
-        self._interrupted = False
+            logger.info(f"Resetting interruption state for {self.instance_id}")
+            self._interrupted = False
 
     def _get_base_url(self) -> str:
         """Get the base URL for HTTP requests."""
@@ -207,7 +227,7 @@ class MonitorPublisher:
 
         logger.info("Monitor publisher stopped")
 
-    async def tool_start(self, tool_name: str, arguments: Optional[dict] = None, model_name: Optional[str] = None):
+    async def tool_start(self, tool_name: str, arguments: Optional[Any] = None, model_name: Optional[str] = None, session_id: Optional[str] = None):
         """Record that a tool has started execution."""
         if not self.enabled:
             return
@@ -217,20 +237,26 @@ class MonitorPublisher:
         if arguments:
             import json
 
-            # Create a clean version of arguments for monitoring (remove internal/non-serializable)
-            clean_args = {
-                k: v for k, v in arguments.items()
-                if not k.startswith("_") and isinstance(v, (str, int, float, bool, list, dict, type(None)))
-            }
+            # If already a string (e.g. pre-serialized JSON), use as is or attempt to load/strip
+            if isinstance(arguments, str):
+                tool_input = arguments
+            elif isinstance(arguments, dict):
+                # Create a clean version of arguments for monitoring (remove internal/non-serializable)
+                clean_args = {
+                    k: v for k, v in arguments.items()
+                    if not k.startswith("_") and isinstance(v, (str, int, float, bool, list, dict, type(None)))
+                }
 
-            try:
-                tool_input = json.dumps(clean_args)
-            except Exception:
-                # If even clean_args fails, try to stringify individual values
                 try:
-                    tool_input = json.dumps({k: str(v) for k, v in clean_args.items()})
+                    tool_input = json.dumps(clean_args)
                 except Exception:
-                    tool_input = str(clean_args)
+                    # If even clean_args fails, try to stringify individual values
+                    try:
+                        tool_input = json.dumps({k: str(v) for k, v in clean_args.items()})
+                    except Exception:
+                        tool_input = str(clean_args)
+            else:
+                tool_input = str(arguments)
 
         event = ToolEvent(
             event_type=ToolEventType.TOOL_START,
@@ -238,11 +264,12 @@ class MonitorPublisher:
             tool_name=tool_name,
             tool_input=tool_input,
             model_name=model_name,
+            session_id=session_id,
             uptime_seconds=self.uptime_seconds,
         )
         await self._publish_event(event)
 
-    async def tool_end(self, tool_name: str, duration_ms: int, result: Optional[Any] = None, model_name: Optional[str] = None):
+    async def tool_end(self, tool_name: str, duration_ms: int, tool_output: Optional[Any] = None, model_name: Optional[str] = None, session_id: Optional[str] = None):
         """Record that a tool has completed successfully."""
         if not self.enabled:
             return
@@ -250,43 +277,44 @@ class MonitorPublisher:
         logger.debug(f"Publisher: tool_end called for {tool_name}")
 
         # Serialize result to string if present
-        tool_output = None
-        if result:
+        serialized_output = None
+        if tool_output:
             import json
 
             try:
                 # Handle Pydantic models or dicts
-                if hasattr(result, "model_dump"):
-                    tool_output = result.model_dump_json()
-                elif hasattr(result, "to_dict"):
-                    tool_output = json.dumps(result.to_dict())
-                elif isinstance(result, list):
+                if hasattr(tool_output, "model_dump"):
+                    serialized_output = tool_output.model_dump_json()
+                elif hasattr(tool_output, "to_dict"):
+                    serialized_output = json.dumps(tool_output.to_dict())
+                elif isinstance(tool_output, list):
                     # Handle list of objects (like TextContent)
                     try:
-                        tool_output = json.dumps([
+                        serialized_output = json.dumps([
                             item.model_dump() if hasattr(item, "model_dump") else item 
-                            for item in result
+                            for item in tool_output
                         ])
                     except Exception:
-                        tool_output = json.dumps(result) # Try default
+                        serialized_output = json.dumps(tool_output) # Try default
                 else:
-                    tool_output = json.dumps(result)
+                    serialized_output = json.dumps(tool_output)
             except Exception as e:
                 logger.debug(f"Publisher: Serialization failed: {e}")
-                tool_output = str(result)
+                serialized_output = str(tool_output)
 
         event = ToolEvent(
             event_type=ToolEventType.TOOL_END,
             instance_id=self.instance_id,
             tool_name=tool_name,
-            tool_output=tool_output,
+            tool_output=serialized_output,
             duration_ms=duration_ms,
             model_name=model_name,
+            session_id=session_id,
             uptime_seconds=self.uptime_seconds,
         )
         await self._publish_event(event)
 
-    async def tool_error(self, tool_name: str, duration_ms: int, error_message: str, model_name: Optional[str] = None):
+    async def tool_error(self, tool_name: str, duration_ms: int, error_message: str, model_name: Optional[str] = None, session_id: Optional[str] = None):
         """Record that a tool execution resulted in an error."""
         if not self.enabled:
             return
@@ -297,6 +325,7 @@ class MonitorPublisher:
             tool_name=tool_name,
             duration_ms=duration_ms,
             model_name=model_name,
+            session_id=session_id,
             error_message=error_message[:500],  # Truncate long error messages
             uptime_seconds=self.uptime_seconds,
         )
@@ -341,12 +370,14 @@ class MonitorPublisher:
             )
             response.raise_for_status()
             
+            self._last_contact_time = time.time()
+            
             # Check for interruption signal in response
             try:
                 data = response.json()
                 if isinstance(data, dict) and data.get("interrupted"):
                     if not self._interrupted:
-                        logger.warning("Interruption signal received from coordinator")
+                        logger.warning(f"Interruption signal detected for {self.instance_id}")
                     self._interrupted = True
             except Exception:
                 pass
@@ -468,10 +499,11 @@ def get_publisher() -> MonitorPublisher:
         # Import config here to avoid circular imports
         from utils.env import get_env
 
-        transport = (get_env("MONITOR_TRANSPORT", "unix") or "unix").lower()
+        # Use HTTP as default for stability, and enable by default
+        transport = (get_env("MONITOR_TRANSPORT", "http") or "http").lower()
         coordinator_url = get_env("MONITOR_COORDINATOR_URL", DEFAULT_COORDINATOR_URL)
         socket_path = get_env("MONITOR_SOCKET_PATH", DEFAULT_SOCKET_PATH)
-        enabled = (get_env("MONITOR_ENABLED", "false") or "false").lower() in (
+        enabled = (get_env("MONITOR_ENABLED", "true") or "true").lower() in (
             "true",
             "1",
             "yes",

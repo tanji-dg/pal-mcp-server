@@ -496,7 +496,7 @@
         </div>
         <div class="stat-card">
             <div class="stat-value" id="totalInputTokens">0</div>
-            <div class="stat-label">Total In Tokens</div>
+            <div class="stat-label">Tokens Usage</div>
         </div>
         <div class="stat-card">
             <div class="stat-value text-accent" id="totalOutputTokens">0</div>
@@ -1203,8 +1203,13 @@
                                 <span class="session-tag" title="Correlating ID: ${inst.session_id || inst.instance_id}">[${shortId}]</span>
                                 ${inst.active_tool ? `<span class="active-tool-tag">${inst.active_tool}</span>` : ''}
                                 ${inst.model_name ? `<span class="model-tag">${inst.model_name}</span>` : ''}
-                                ${inst.active_role ? `<span class="role-tag">${inst.active_role}</span>` : ''}
-                                ${inst.last_status && inst.state === 'busy' ? `<span class="instance-phase">${inst.last_status}</span>` : ''}
+                                    ${inst.active_role ? `<span class="role-tag" style="margin-right: 15px;">${inst.active_role}</span>` : ''}
+                                    
+                                    ${inst.last_status && inst.state === 'busy' ? `<span class="instance-phase">${inst.last_status}</span>` : ''}
+                                    ${inst.state === 'busy' ? `
+                                        <span style="color: #b2bec3; font-size: 11px; margin-left: 12px; font-weight: bold;">🧠 ${formatDuration(inst.thinking_ms)}</span>
+                                        <span style="color: #2ed573; font-size: 11px; margin-left: 12px; font-weight: bold;">🛠️ ${formatDuration(inst.execution_ms)}</span>
+                                    ` : ''}
                                 <span class="instance-state ${inst.state}">${inst.state}</span>
                                 ${inst.state === 'busy' ? `<button class="interrupt-btn" onclick="interruptInstance('${inst.instance_id}')" title="Interrupt Current Task">✋</button>` : ''}
                                 ${inst.state !== 'offline' ? `<button class="kill-btn" onclick="killInstance('${inst.instance_id}')" title="Terminate Process">💀</button>` : ''}

@@ -221,8 +221,12 @@ class BaseCLIAgent:
                         f"CLI '{self.client.name}' idle timed out after {idle_timeout} seconds. Terminating process."
                     )
                     if process.returncode is None:  # Guard against already terminated process
-                        process.kill()
-                    break  # Exit monitor loop
+                        try:
+                            process.kill()
+                        except ProcessLookupError:
+                            pass
+                    # Raise an exception to break the gather early
+                    raise CLIAgentError(f"CLI '{self.client.name}' idle timed out after {idle_timeout} seconds")
                 except asyncio.CancelledError:
                     # Monitor task was cancelled, meaning main process completed or total timeout hit
                     break
@@ -233,6 +237,29 @@ class BaseCLIAgent:
                     )  # Small delay to prevent busy-waiting if event is set/cleared very rapidly
                 except asyncio.CancelledError:
                     break  # Break if cancelled during sleep
+
+        async def _interruption_monitor(process: asyncio.subprocess.Process):
+            """Dedicated task to monitor interruption requests from the dashboard."""
+            publisher = get_publisher()
+            while process.returncode is None: # Exit loop if process finished
+                try:
+                    if await publisher.check_interruption():
+                        self._logger.warning(f"Interruption signal received via monitor. Killing process {process.pid}")
+                        try:
+                            if process.returncode is None:
+                                process.kill()
+                        except Exception as e:
+                            self._logger.debug(f"Failed to kill process: {e}")
+                        raise InterruptedError("Task interrupted by user via monitor dashboard")
+                    
+                    await asyncio.sleep(0.5)
+                except asyncio.CancelledError:
+                    break
+                except InterruptedError:
+                    raise # Propagate to gather
+                except Exception as e:
+                    self._logger.debug(f"Interruption monitor encountered error: {e}")
+                    await asyncio.sleep(1.0)
 
         # Setup tasks for stream monitoring
         stream_tasks = [
@@ -261,6 +288,10 @@ class BaseCLIAgent:
         # Start process.wait() as a separate task
         process_wait_task = asyncio.create_task(process.wait())
         tasks_to_gather = stream_tasks + [process_wait_task]
+
+        # Add interruption monitor to active tasks
+        interrupt_monitor_task = asyncio.create_task(_interruption_monitor(process))
+        tasks_to_gather.append(interrupt_monitor_task)
 
         idle_monitor_task = None
         if idle_timeout is not None and idle_timeout > 0:
@@ -304,55 +335,64 @@ class BaseCLIAgent:
             )
         except asyncio.TimeoutError as exc:
             # Total timeout occurred for the entire operation
-            if process_wait_task and not process_wait_task.done():  # Ensure process is killed if total timeout
-                process.kill()
+            if process.returncode is None:
                 try:
-                    await process.communicate()
+                    process.kill()
                 except ProcessLookupError:
-                    self._logger.debug("Process already terminated, skipping kill and communicate.")
-            if idle_monitor_task and not idle_monitor_task.done():
-                idle_monitor_task.cancel()
+                    pass
+            
+            # Cancel all subtasks
+            for t in tasks_to_gather:
+                if not t.done():
+                    t.cancel()
+            
+            # Wait for tasks to handle cancellation
+            try:
+                await asyncio.gather(*tasks_to_gather, return_exceptions=True)
+            except Exception:
+                pass
+
             raise CLIAgentError(
                 f"CLI '{self.client.name}' total timed out after {total_timeout} seconds",
                 returncode=None,
             ) from exc
         except asyncio.CancelledError:
-            # This can happen if idle_monitor_task cancelled the process, and then
-            # gather was cancelled. Ensure the process is killed.
-            if process.returncode is None:  # Corrected to use returncode
-                try:
-                    process.kill()
-                    await process.communicate()
-                except ProcessLookupError:
-                    self._logger.debug("Process already terminated, skipping kill and communicate.")
-            # Ensure all tasks are cancelled during a general cancellation
-            if process_wait_task and not process_wait_task.done():
-                process_wait_task.cancel()
-            if idle_monitor_task and not idle_monitor_task.done():
-                idle_monitor_task.cancel()
-            raise  # Re-raise the cancellation to propagate
-
-        finally:
-            # Ensure all tasks are cleaned up
-            if process_wait_task and not process_wait_task.done():
-                process_wait_task.cancel()
-                try:
-                    await process_wait_task
-                except asyncio.CancelledError:
-                    pass
-            if idle_monitor_task and not idle_monitor_task.done():
-                idle_monitor_task.cancel()
-                try:
-                    await idle_monitor_task
-                except asyncio.CancelledError:
-                    pass
-            # Ensure process is truly dead if it wasn't already handled by timeout or normal exit
+            # External cancellation
             if process.returncode is None:
                 try:
                     process.kill()
-                    await process.communicate()
                 except ProcessLookupError:
-                    self._logger.debug("Process already terminated, skipping kill and communicate.")
+                    pass
+            raise
+        except Exception:
+            # Any other error (including our new idle timeout CLIAgentError)
+            if process.returncode is None:
+                try:
+                    process.kill()
+                except ProcessLookupError:
+                    pass
+            raise
+
+        finally:
+            # Ensure all tasks are cancelled and cleaned up properly
+            for t in tasks_to_gather:
+                if not t.done():
+                    t.cancel()
+            
+            # Wait for tasks to settle without crashing
+            try:
+                await asyncio.wait(tasks_to_gather, timeout=0.2)
+            except Exception:
+                pass
+
+            # Final check to ensure process is truly dead
+            if process.returncode is None:
+                try:
+                    process.kill()
+                    # Final non-blocking wait
+                    await asyncio.wait_for(process.wait(), timeout=0.1)
+                except Exception:
+                    pass
 
         stdout_text = "".join(stdout_buffer)
         stderr_text = "".join(stderr_buffer)

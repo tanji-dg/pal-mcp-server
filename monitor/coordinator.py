@@ -96,6 +96,12 @@ class InstanceTracker:
         self.output_tokens: int = 0
         self.cache_read_tokens: int = 0
         self.cache_creation_tokens: int = 0
+        
+        # Session breakdown metrics
+        self.thinking_ms: int = 0
+        self.execution_ms: int = 0
+        self._last_thinking_start: Optional[float] = None
+        self._last_activity_time: Optional[float] = None
 
         # Internal tracking for deltas (per tool execution)
         self._last_request_tokens = {
@@ -155,10 +161,18 @@ class InstanceTracker:
         """Record tool execution start."""
         self.interrupted = False # Reset interruption state
         now = utc_now()
+        now_ts = time.time()
         self.state = "busy"
         self.active_tools[tool_name] = now
         self.active_tool_inputs[tool_name] = tool_input
         
+        # Reset session metrics for new primary tool execution
+        if tool_name == "clink":
+            self.thinking_ms = 0
+            self.execution_ms = 0
+            self._last_thinking_start = now_ts
+            self._last_activity_time = now_ts
+
         # Update primary display info
         self.active_tool = tool_name
         self.active_tool_input = tool_input
@@ -265,9 +279,23 @@ class InstanceTracker:
                         except Exception:
                             pass
 
-                    # Capture session_id from log if available
-                    if "session_id" in data:
-                        self.session_id = data["session_id"]
+                    # Accumulate thinking time if this event is model reasoning
+                    is_reasoning = (
+                        msg_type in ["message", "assistant"] or
+                        "thought" in data or "thinking" in data or
+                        (msg_type == "content_block_delta" and data.get("delta", {}).get("type") == "thinking_delta")
+                    )
+                    
+                    if is_reasoning and self._last_activity_time:
+                        delta_ms = int((event_time_ts - self._last_activity_time) * 1000)
+                        if 0 < delta_ms < 30000: # Ignore gaps > 30s as potential idling
+                            self.thinking_ms += delta_ms
+                    
+                    self._last_activity_time = event_time_ts
+
+                    # Capture session_id from log if available - REMOVED: frequently overwrites with wrong internal IDs
+                    # if "session_id" in data:
+                    #     self.session_id = data["session_id"]
 
                     # Unwrap Claude stream_event wrapper
                     if msg_type == "stream_event" and "event" in data and isinstance(data["event"], dict):
@@ -404,6 +432,9 @@ class InstanceTracker:
                             if isinstance(start_t_val, datetime):
                                 start_t_val = start_t_val.timestamp()
                             duration_ms = int((event_time_ts - start_t_val) * 1000)
+                            # Accumulate into session execution time
+                            if duration_ms > 0:
+                                self.execution_ms += duration_ms
 
                         # Update metrics
                         self.total_calls += 1
@@ -753,6 +784,8 @@ class InstanceTracker:
             last_status=self.last_status,
             total_calls=self.total_calls,
             total_errors=self.total_errors,
+            thinking_ms=self.thinking_ms,
+            execution_ms=self.execution_ms,
             input_tokens=self.input_tokens,
             output_tokens=self.output_tokens,
             cache_read_tokens=self.cache_read_tokens,
@@ -921,15 +954,22 @@ class MonitorCoordinator:
         async with self._lock:
             self.websocket_clients.add(websocket)
             logger.info(f"Dashboard connected. Total clients: {len(self.websocket_clients)}")
-        state = await self.get_aggregated_state()
+        
         try:
+            state = await self.get_aggregated_state()
             await websocket.send_text(state.to_json())
+            
             async with self._lock:
                 for instance in self.instances.values():
-                    for log_event in instance.recent_logs:
-                        await websocket.send_text(log_event.to_json())
+                    # Limit the amount of backlog sent to new clients
+                    backlog = list(instance.recent_logs)[-50:]
+                    for log_event in backlog:
+                        try:
+                            await websocket.send_text(log_event.to_json())
+                        except Exception:
+                            break
         except Exception as e:
-            logger.warning(f"Failed to send initial data: {e}")
+            logger.error(f"Failed to send initial data to dashboard: {e}", exc_info=True)
 
     async def remove_websocket_client(self, websocket: WebSocket):
         """Remove a WebSocket client connection."""
@@ -950,8 +990,14 @@ class MonitorCoordinator:
                 await asyncio.sleep(BROADCAST_INTERVAL)
                 if not self.websocket_clients:
                     continue
-                state = await self.get_aggregated_state()
-                message = state.to_json()
+                
+                try:
+                    state = await self.get_aggregated_state()
+                    message = state.to_json()
+                except Exception as e:
+                    logger.error(f"Failed to generate aggregated state for broadcast: {e}", exc_info=True)
+                    continue
+
                 async with self._lock:
                     disconnected = set()
                     for client in self.websocket_clients:
@@ -965,6 +1011,8 @@ class MonitorCoordinator:
             except asyncio.CancelledError:
                 break
             except Exception as e:
+                logger.error(f"Unexpected error in broadcast loop: {e}", exc_info=True)
+                await asyncio.sleep(1.0) # Safety backoff
                 logger.error(f"Error in broadcast loop: {e}")
 
 

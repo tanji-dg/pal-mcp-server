@@ -7,16 +7,20 @@ from pathlib import Path
 
 from config import PROJECT_ROOT  # Added this line
 
-DEFAULT_TIMEOUT_SECONDS = 3600  # 1 hour
-DEFAULT_IDLE_TIMEOUT_SECONDS = 600  # 10 minutes
+DEFAULT_TIMEOUT_SECONDS = 7200  # 2 hours
+DEFAULT_IDLE_TIMEOUT_SECONDS = 300  # 5 minutes
 DEFAULT_STREAM_LIMIT = 10 * 1024 * 1024  # 10MB per stream
 
 FATAL_ERROR_KEYWORDS = [
     "Resource has been exhausted",
     "Your quota will reset after",
     "quotaResetDelay",
+    "exhausted your daily quota",
+    "Quota exceeded",
     "API key not valid",
     "Permission denied",
+    "usage limit",
+    "Upgrade to Pro",
 ]
 
 BUILTIN_PROMPTS_DIR = PROJECT_ROOT / "systemprompts" / "clink"
@@ -43,8 +47,6 @@ INTERNAL_DEFAULTS: dict[str, CLIInternalDefaults] = {
         additional_args=["-o", "stream-json"],
         default_role_prompt="systemprompts/clink/default.txt",
         runner="gemini",
-        timeout_seconds=3600,
-        idle_timeout_seconds=600,
     ),
     "codex": CLIInternalDefaults(
         parser="codex_jsonl",
@@ -54,7 +56,7 @@ INTERNAL_DEFAULTS: dict[str, CLIInternalDefaults] = {
     ),
     "claude": CLIInternalDefaults(
         parser="claude_json",
-        additional_args=["--print", "--output-format", "json"],
+        additional_args=["--print", "--output-format", "stream-json"],
         default_role_prompt="systemprompts/clink/default.txt",
         runner="claude",
     ),

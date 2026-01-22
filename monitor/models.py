@@ -91,6 +91,10 @@ class InstanceStatus(BaseModel):
     total_calls: int = Field(default=0)
     total_errors: int = Field(default=0)
     
+    # Session breakdown metrics
+    thinking_ms: int = Field(default=0, description="Time spent by the model reasoning in the current session")
+    execution_ms: int = Field(default=0, description="Time spent executing sub-tools in the current session")
+
     # Token usage metrics
     input_tokens: int = Field(default=0)
     output_tokens: int = Field(default=0)
@@ -165,6 +169,10 @@ class AggregatedState(BaseModel):
     total_input_tokens: int = 0
     total_output_tokens: int = 0
     total_cache_read_tokens: int = 0
+    
+    # Global time breakdown
+    total_thinking_ms: int = 0
+    total_execution_ms: int = 0
 
     def to_json(self) -> str:
         """Serialize to JSON for WebSocket transmission."""
@@ -177,6 +185,8 @@ class AggregatedState(BaseModel):
             "total_input_tokens": self.total_input_tokens,
             "total_output_tokens": self.total_output_tokens,
             "total_cache_read_tokens": self.total_cache_read_tokens,
+            "total_thinking_ms": self.total_thinking_ms,
+            "total_execution_ms": self.total_execution_ms,
         }
         import json
 
@@ -187,11 +197,13 @@ class AggregatedState(BaseModel):
         """Create aggregated state from list of instance statuses."""
         return cls(
             instances=instances,
-            total_calls=sum(i.total_calls for i in instances),
-            total_errors=sum(i.total_errors for i in instances),
-            total_input_tokens=sum(i.input_tokens for i in instances),
-            total_output_tokens=sum(i.output_tokens for i in instances),
-            total_cache_read_tokens=sum(i.cache_read_tokens for i in instances),
+            total_calls=sum((i.total_calls or 0) for i in instances),
+            total_errors=sum((i.total_errors or 0) for i in instances),
+            total_input_tokens=sum((i.input_tokens or 0) for i in instances),
+            total_output_tokens=sum((i.output_tokens or 0) for i in instances),
+            total_cache_read_tokens=sum((i.cache_read_tokens or 0) for i in instances),
+            total_thinking_ms=sum((i.thinking_ms or 0) for i in instances),
+            total_execution_ms=sum((i.execution_ms or 0) for i in instances),
         )
 
 

@@ -16,12 +16,13 @@ from pydantic import BaseModel, Field
 from clink import get_registry
 from clink.agents import AgentOutput, CLIAgentError, create_agent
 from clink.models import ResolvedCLIClient, ResolvedCLIRole
-from config import TEMPERATURE_BALANCED
+from config import TEMPERATURE_BALANCED, PROJECT_ROOT
 from monitor.publisher import get_publisher
 from tools.models import ToolModelCategory, ToolOutput
 from tools.shared.base_models import COMMON_FIELD_DESCRIPTIONS
 from tools.shared.exceptions import ToolExecutionError
 from tools.simple.base import SchemaBuilder, SimpleTool
+from utils.conversation_memory import create_thread, add_turn, get_thread, update_current_turn
 
 logger = logging.getLogger(__name__)
 
@@ -165,6 +166,27 @@ class CLinkTool(SimpleTool):
         return {}
 
     async def execute(self, arguments: dict[str, Any]) -> list[TextContent]:
+        # Determine early session ID for error handling
+        continuation_id = arguments.get("continuation_id") if isinstance(arguments, dict) else None
+        if continuation_id:
+            effective_session_id = continuation_id if continuation_id.startswith("thread:") else f"thread:{continuation_id}"
+        else:
+            effective_session_id = (arguments.get("_instance_id") if isinstance(arguments, dict) else None) or "standalone"
+
+        # decicively ensure arguments is a dict
+        if not isinstance(arguments, dict):
+            try:
+                if isinstance(arguments, str):
+                    arguments = json.loads(arguments)
+                else:
+                    arguments = dict(arguments)
+            except Exception as e:
+                logger.error(f"CLink critical error: arguments is type {type(arguments)}, failed conversion: {e}")
+                self._raise_tool_error(f"Invalid tool arguments: expected dict, got {type(arguments).__name__}")
+
+        if not isinstance(arguments, dict):
+            self._raise_tool_error("Failed to normalize clink arguments to a dictionary.")
+
         logger.debug(f"CLinkTool.execute started with keys: {list(arguments.keys())}")
         self._current_arguments = arguments
         request = self.get_request_model()(**arguments)
@@ -193,6 +215,24 @@ class CLinkTool(SimpleTool):
 
         self._model_context = arguments.get("_model_context")
 
+        # --- REASONING HISTORY RETRIEVAL START ---
+        reasoning_history = []
+        if continuation_id:
+            try:
+                thread = get_thread(continuation_id)
+                if thread and thread.turns:
+                    for turn in thread.turns:
+                        if turn.role == "assistant" and turn.content:
+                            # Extract thinking blocks from history
+                            thoughts = re.findall(r"<thinking>(.*?)</thinking>", turn.content, re.DOTALL)
+                            for t in thoughts:
+                                thought_text = t.strip()
+                                if thought_text and thought_text != "⏳ *Processing...*":
+                                    reasoning_history.append(thought_text)
+            except Exception as e:
+                logger.warning(f"Failed to retrieve reasoning history for {continuation_id}: {e}")
+        # --- REASONING HISTORY RETRIEVAL END ---
+
         system_prompt_text = role_config.prompt_path.read_text(encoding="utf-8")
         include_system_prompt = not self._use_external_system_prompt(client_config)
 
@@ -202,6 +242,7 @@ class CLinkTool(SimpleTool):
                 role_config,
                 system_prompt=system_prompt_text,
                 include_system_prompt=include_system_prompt,
+                reasoning_history=reasoning_history
             )
         except Exception as exc:
             logger.exception("Failed to prepare clink prompt")
@@ -216,7 +257,6 @@ class CLinkTool(SimpleTool):
             publisher.reset_interruption()
 
         # --- ENSURE CONVERSATION PERSISTENCE START ---
-        from utils.conversation_memory import create_thread, add_turn, get_thread
         
         # If no continuation_id, create a new thread immediately to record the user's intent
         is_new_thread = False
@@ -239,6 +279,24 @@ class CLinkTool(SimpleTool):
             logger.debug(f"Recorded new user turn for thread {continuation_id}")
         # --- ENSURE CONVERSATION PERSISTENCE END ---
 
+        # Update effective_session_id now that continuation_id is guaranteed to exist
+        if continuation_id:
+            effective_session_id = continuation_id if continuation_id.startswith("thread:") else f"thread:{continuation_id}"
+        else:
+            effective_session_id = arguments.get("_instance_id") or "standalone"
+
+        # Register tool start with monitor so it appears as 'busy' with correct session info
+        if publisher:
+            # Ensure the arguments passed to monitor are serializable (remove Mocks/Contexts)
+            # Add type check to avoid 'str' object has no attribute 'items'
+            if isinstance(arguments, dict):
+                monitor_args = {k: v for k, v in arguments.items() if not k.startswith("_")}
+            else:
+                monitor_args = {"raw_args": str(arguments)}
+                
+            monitor_args["continuation_id"] = effective_session_id # Use normalized ID
+            await publisher.tool_start(self.get_name(), monitor_args, session_id=effective_session_id)
+
         # Track last notification to avoid spamming the UI
         state = {"last_msg": "", "last_time": 0.0}
         # Mapping from tool_id to tool_name for Gemini stream-json events
@@ -249,19 +307,23 @@ class CLinkTool(SimpleTool):
         ansi_escape = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
 
         # Determine effective session ID for monitor display
-        effective_session_id = continuation_id or arguments.get("_instance_id") or "standalone"
+        # Use 'thread:' prefix for conversation IDs to match storage keys
+        if continuation_id:
+            effective_session_id = continuation_id if continuation_id.startswith("thread:") else f"thread:{continuation_id}"
+        else:
+            effective_session_id = arguments.get("_instance_id") or "standalone"
 
         # --- PRE-CREATE ASSISTANT TURN FOR LIVE UPDATES ---
         # Initialize an empty assistant turn so we can update it with streaming content
         # This ensures the DB always has the latest state even before the tool finishes
         if continuation_id:
-            from utils.conversation_memory import update_current_turn
             # Add placeholder turn
             model_info_placeholder = {"model_provider": client_config.name, "model_name": "loading..."}
             add_turn(continuation_id, "assistant", "⏳ *Processing...*", tool_name=self.get_name(), **model_info_placeholder)
 
         # Track state for UI notifications and DB updates
         state = {
+            "start_time": time.monotonic(),
             "last_msg": "", 
             "last_time": 0.0,
             "last_db_update": 0.0,
@@ -404,6 +466,13 @@ class CLinkTool(SimpleTool):
                                 state["accumulated_logs"].append(content)
                                 db_updated_needed = True
 
+                            elif msg_type == "turn.failed":
+                                err_obj = data.get("error", {})
+                                err_msg = err_obj.get("message") if isinstance(err_obj, dict) else str(err_obj)
+                                content = f"❌ Error: {err_msg}"
+                                state["accumulated_logs"].append(content)
+                                db_updated_needed = True
+
                             elif msg_type in ["item.started", "item.completed"]:
                                 item = data.get("item", {})
                                 label = item.get("type")
@@ -439,7 +508,8 @@ class CLinkTool(SimpleTool):
                         current_thinking = "".join(state["accumulated_thinking"])
                         current_logs = "\n".join(state["accumulated_logs"])
                         live_content = ""
-                        if current_thinking: live_content += f"<thinking>{current_thinking}</thinking>\n\n"
+                        if current_thinking: 
+                            live_content += f"<thinking>\n> 🧠 **Thinking:**\n> {current_thinking}\n</thinking>\n\n"
                         if current_logs: live_content += f"### 🔄 Live Progress\n{current_logs}\n\n"
                         live_content += "⏳ *Processing...*"
                         update_current_turn(continuation_id, live_content, tool_name=self.get_name())
@@ -474,31 +544,64 @@ class CLinkTool(SimpleTool):
             # Record error turn before raising to ensure persistence
             error_msg = f"Error during CLI execution: {exc}"
             
-            # Special handling for Interrupted/Partial results OR general errors with output
+            # Special handling for Interrupted/Partial results OR general errors with output/accumulated data
             is_cli_error = isinstance(exc, CLIAgentError)
             is_interrupted = is_cli_error and ("interrupted" in str(exc).lower() or "interrupted" in (exc.stderr or "").lower())
+            has_accumulated_data = bool(state["accumulated_thinking"] or state["accumulated_logs"])
             
-            if is_cli_error and (is_interrupted or exc.stdout):
+            if is_interrupted or (is_cli_error and exc.stdout) or has_accumulated_data:
                 try:
                     # Notify monitor about interruption/salvage
                     if publisher:
                         status_msg = "⚠️ Task interrupted by user. Salvaging progress..." if is_interrupted else "❌ Task failed. Capturing partial output..."
                         await publisher.tool_log(self.get_name(), status_msg, session_id=effective_session_id)
 
-                    # Attempt to parse partial stdout to salvage progress
-                    partial_parsed = agent._parser.parse(exc.stdout, exc.stderr)
-                    partial_content = partial_parsed.content
-                    if partial_parsed.thinking:
-                        partial_content = f"<thinking>{partial_parsed.thinking}</thinking>\n\n{partial_content}"
+                    # Attempt to parse partial stdout if available
+                    partial_content = ""
+                    model_used = "error"
+                    if is_cli_error and exc.stdout:
+                        try:
+                            partial_parsed = agent._parser.parse(exc.stdout, exc.stderr)
+                            partial_content = partial_parsed.content
+                            model_used = partial_parsed.metadata.get("model_used") or model_used
+                        except Exception:
+                            partial_content = exc.stdout
+                    
+                    # --- REPRODUCIBILITY ENHANCEMENT START ---
+                    # Build a concise timeline of what happened
+                    progress_timeline = ""
+                    if state["accumulated_logs"]:
+                        progress_timeline = "### 🔄 Progress Timeline\n" + "\n".join(state["accumulated_logs"])
+                    
+                    # Prepend thinking if any (crucial: use accumulated state if stdout parsing failed/skipped)
+                    thinking = "".join(state["accumulated_thinking"])
+                    if is_cli_error and exc.stdout:
+                        try:
+                            # Prefer thinking from parser if it found tags
+                            parsed_thought = agent._parser.parse(exc.stdout, exc.stderr).thinking
+                            if parsed_thought: thinking = parsed_thought
+                        except Exception: pass
+                        
+                    if thinking:
+                        partial_content = f"<thinking>{thinking}</thinking>\n\n{partial_content}"
                     
                     header = "⚠️ **Task Interrupted**" if is_interrupted else "❌ **Task Failed**"
-                    salvaged_content = f"{header}\n\nProgress before stopping:\n{partial_content}"
+                    salvaged_content = f"{header}\n\n{progress_timeline}\n\nProgress before stopping:\n{partial_content}"
+                    # --- REPRODUCIBILITY ENHANCEMENT END ---
                     
                     if not is_interrupted:
                         salvaged_content += f"\n\nError Details:\n{exc}"
 
+                    # Notify monitor with the detailed salvaged content so it appears in Live Logs
+                    if publisher:
+                        await publisher.tool_log(self.get_name(), salvaged_content, session_id=effective_session_id)
+
                     # Record this salvaged turn so it's in the history for next time
-                    model_info = {"provider": client_config.name, "model_name": partial_parsed.metadata.get("model_used") or "error"}
+                    model_info = {
+                        "provider": client_config.name, 
+                        "model_name": model_used,
+                        "model_metadata": {"logs": state["accumulated_logs"]}
+                    }
                     self._record_assistant_turn(continuation_id, salvaged_content, request, model_info)
                     
                     # If interrupted, return graceful success. If error, re-raise but with context saved.
@@ -511,20 +614,37 @@ class CLinkTool(SimpleTool):
                                 "cli_name": client_config.name,
                                 "status": "interrupted",
                                 "interrupted_by": "user",
-                                "partial": True
+                                "partial": True,
+                                "logs": state["accumulated_logs"]
                             },
                         )
                         return [TextContent(type="text", text=tool_output.model_dump_json())]
                 except Exception as parse_exc:
-                    logger.debug(f"Failed to parse partial results: {parse_exc}")
+                    logger.debug(f"Failed to salvage output: {parse_exc}")
                     if publisher:
                         await publisher.tool_log(self.get_name(), f"Failed to salvage output: {parse_exc}", session_id=effective_session_id)
 
+            # Fallback for errors with NO accumulated data
             try:
+                # Still try to include thinking even in fallback if available
+                final_error_msg = error_msg
+                thinking = "".join(state["accumulated_thinking"])
+                if thinking:
+                    final_error_msg = f"<thinking>{thinking}</thinking>\n\n{error_msg}"
+                
                 model_info = {"provider": client_config.name, "model_name": "error"}
-                self._record_assistant_turn(continuation_id, error_msg, request, model_info)
+                self._record_assistant_turn(continuation_id, final_error_msg, request, model_info)
             except Exception:
                 logger.debug("Failed to record error turn", exc_info=True)
+
+            # Notify monitor of failure
+            if publisher:
+                duration_ms = int((time.monotonic() - state.get("start_time", time.monotonic())) * 1000)
+                await publisher.tool_end(self.get_name(), duration_ms=duration_ms, is_error=True, session_id=effective_session_id)
+                try:
+                    await publisher.stop()
+                except Exception:
+                    pass
 
             if isinstance(exc, CLIAgentError):
                 metadata = self._build_error_metadata(client_config, exc)
@@ -535,99 +655,68 @@ class CLinkTool(SimpleTool):
             else:
                 self._raise_tool_error(str(exc))
 
-        metadata = self._build_success_metadata(client_config, role_config, result)
-        metadata = self._prune_metadata(metadata, client_config, reason="normal")
-
-        # Check for error status in parsed result (even if CLI return code was 0)
-        if result.parsed.metadata.get("is_error"):
-            error_content = result.parsed.content
-            # Record error turn before raising to ensure persistence
-            try:
-                error_model_info = {
-                    "provider": client_config.name,
-                    "model_name": result.parsed.metadata.get("model_used") or "error"
-                }
-                self._record_assistant_turn(continuation_id, error_content, request, error_model_info)
-            except Exception:
-                logger.debug("Failed to record error turn for parsed error", exc_info=True)
-                
-            self._raise_tool_error(
-                error_content,
-                metadata=metadata
-            )
-
-        # If content is empty for Claude, try to construct it from metadata
-        if client_config.name == "claude" and not result.parsed.content.strip():
-            raw_metadata = result.parsed.metadata.get("raw")
-            if raw_metadata and isinstance(raw_metadata, dict):
-                # Attempt to parse usage/cost information for a meaningful message
-                cost = raw_metadata.get("total_cost_usd")
-                usage = raw_metadata.get("usage", {})
-                model_usage = raw_metadata.get("modelUsage", {})
-                num_turns = raw_metadata.get("num_turns")
-                duration_ms = raw_metadata.get("duration_ms")
-
-                content_parts = ["Claude CLI execution completed successfully, but returned no direct textual result."]
-                if num_turns is not None:
-                    content_parts.append(f"Turns: {num_turns}")
-                if duration_ms is not None:
-                    content_parts.append(f"Duration: {duration_ms}ms")
-                if cost is not None:
-                    content_parts.append(f"Total Cost: ${cost:.6f}")
-                if usage:
-                    content_parts.append("Usage Details:")
-                    if usage.get("input_tokens") is not None:
-                        content_parts.append(f"  Input Tokens: {usage['input_tokens']:,}")
-                    if usage.get("output_tokens") is not None:
-                        content_parts.append(f"  Output Tokens: {usage['output_tokens']:,}")
-                if model_usage:
-                    for model, stats in model_usage.items():
-                        content_parts.append(f"Model ({model}):")
-                        if stats.get("inputTokens") is not None:
-                            content_parts.append(f"  Input Tokens: {stats['inputTokens']:,}")
-                        if stats.get("outputTokens") is not None:
-                            content_parts.append(f"  Output Tokens: {stats['outputTokens']:,}")
-                        if stats.get("costUSD") is not None:
-                            content_parts.append(f"  Cost: ${stats['costUSD']:.6f}")
-
-                content = "\n".join(content_parts)
-                logger.info(f"Generated content for empty Claude response: {content}")
-            else:
-                content = "Claude CLI execution completed, but no textual result was returned and metadata was unparseable."
-        else:
-            content = result.parsed.content
-
-        # Apply output size limits (truncation/summarization)
-        content, metadata = self._apply_output_limit(client_config, content, metadata)
-
-        # Prepend thinking content if available to preserve reasoning history
-        if result.parsed.thinking:
-            # Use standard thinking tags for better compatibility with models
-            content = f"<thinking>{result.parsed.thinking}</thinking>\n\n{content}"
+        # --- CRITICAL: RECORD RAW SUCCESS IMMEDIATELY TO DB ---
+        # This ensures that even if subsequent processing (like size limits or JSON encoding) fails,
+        # the history already contains the full successful response.
+        raw_content = result.parsed.content
+        raw_thinking = result.parsed.thinking or "".join(state["accumulated_thinking"])
+        db_content = raw_content
+        if raw_thinking:
+            db_content = f"<thinking>\n> 🧠 **Thinking:**\n> {raw_thinking}\n</thinking>\n\n{raw_content}"
+        
+        # Append timeline to DB content
+        if state["accumulated_logs"]:
+            db_content += "\n\n### 🔄 Progress Timeline\n" + "\n".join(state["accumulated_logs"])
 
         model_info = {
             "provider": client_config.name,
             "model_name": result.parsed.metadata.get("model_used"),
+            "model_metadata": {"logs": state["accumulated_logs"]}
         }
-
-        # Always record assistant turn if continuation is active.
-        # Since request.continuation_id is now updated, _create_continuation_offer_response
-        # will skip its own recording logic, so we handle it here.
+        
         if continuation_id:
             try:
-                self._record_assistant_turn(continuation_id, content, request, model_info)
-            except Exception:
-                logger.debug(f"Failed to record assistant turn for continuation {continuation_id}", exc_info=True)
+                self._record_assistant_turn(continuation_id, db_content, request, model_info)
+                logger.debug(f"Recorded successful raw turn to history for {continuation_id}")
+            except Exception as db_exc:
+                logger.warning(f"Failed to record raw success turn: {db_exc}")
+
+        # Now proceed with metadata and output limits for the MCP response
+        metadata = self._build_success_metadata(client_config, role_config, result)
+        metadata = self._prune_metadata(metadata, client_config, reason="normal")
+        metadata["logs"] = state["accumulated_logs"]
+
+        # Check for error status in parsed result (even if CLI return code was 0)
+        if result.parsed.metadata.get("is_error"):
+            # Notify monitor of failure
+            if publisher:
+                duration_ms = int((time.monotonic() - state.get("start_time", time.monotonic())) * 1000)
+                await publisher.tool_end(self.get_name(), duration_ms=duration_ms, is_error=True, session_id=effective_session_id)
+            
+            # (Already recorded to DB above, but let's re-record with error status if needed)
+            self._raise_tool_error(result.parsed.content, metadata=metadata)
+
+        # Apply output size limits (truncation/summarization/FILE OFFLOAD)
+        content, metadata = self._apply_output_limit(client_config, raw_content, metadata)
+
+        # Prepare final response content for the main agent
+        final_response_text = content
+        if raw_thinking:
+            final_response_text = f"<thinking>\n> 🧠 **Thinking:**\n> {raw_thinking}\n</thinking>\n\n{final_response_text}"
+            
+        # Append progress timeline for reproducibility
+        if state["accumulated_logs"]:
+            timeline = "### 🔄 Progress Timeline\n" + "\n".join(state["accumulated_logs"])
+            if timeline not in final_response_text:
+                final_response_text += f"\n\n{timeline}"
 
         # Continuation offer logic needs updated continuation_id
-        # We need to make sure request.continuation_id is updated for _create_continuation_offer
         request.continuation_id = continuation_id
-        
         continuation_offer = self._create_continuation_offer(request, model_info)
         
         if continuation_offer:
             tool_output = self._create_continuation_offer_response(
-                content,
+                final_response_text,
                 continuation_offer,
                 request,
                 model_info,
@@ -636,12 +725,33 @@ class CLinkTool(SimpleTool):
         else:
             tool_output = ToolOutput(
                 status="success",
-                content=content,
+                content=final_response_text,
                 content_type="text",
                 metadata=metadata,
             )
 
-        return [TextContent(type="text", text=tool_output.model_dump_json())]
+        # Notify monitor of completion
+        if publisher:
+            duration_ms = int((time.monotonic() - state.get("start_time", time.monotonic())) * 1000)
+            await publisher.tool_end(self.get_name(), duration_ms=duration_ms, tool_output=tool_output.model_dump_json(), session_id=effective_session_id)
+            # Ensure background tasks are flushed and stopped to avoid hanging the calling agent
+            try:
+                await publisher.stop()
+            except Exception:
+                pass
+
+        try:
+            return [TextContent(type="text", text=tool_output.model_dump_json())]
+        except Exception as payload_exc:
+            logger.error(f"Failed to serialize final clink output: {payload_exc}")
+            # Return extreme fallback for size issues
+            fallback_output = ToolOutput(
+                status="success",
+                content=final_response_text[:1000] + "\n\n(Output heavily truncated due to serialization failure)",
+                content_type="text",
+                metadata={"error": "Serialization failed", "cli_name": client_config.name}
+            )
+            return [TextContent(type="text", text=fallback_output.model_dump_json())]
 
     async def prepare_prompt(self, request) -> str:
         client_config = self._registry.get_client(request.cli_name)
@@ -662,6 +772,7 @@ class CLinkTool(SimpleTool):
         *,
         system_prompt: str,
         include_system_prompt: bool,
+        reasoning_history: list[str] | None = None,
     ) -> str:
         """Load the role prompt and assemble the final user message."""
         self._active_system_prompt = system_prompt
@@ -675,6 +786,11 @@ class CLinkTool(SimpleTool):
             if include_system_prompt and active_prompt:
                 sections.append(active_prompt)
             sections.append(guidance)
+
+            if reasoning_history:
+                history_text = "\n\n---\n\n".join(reasoning_history)
+                sections.append(f"=== REASONING HISTORY (YOUR PREVIOUS THOUGHTS) ===\n{history_text}")
+
             sections.append("=== USER REQUEST ===\n" + user_content)
             if file_section:
                 sections.append("=== FILE REFERENCES ===\n" + file_section)
@@ -724,6 +840,56 @@ class CLinkTool(SimpleTool):
         if len(content) <= MAX_RESPONSE_CHARS:
             return content, metadata
 
+        # --- LARGE OUTPUT OFFLOADING START ---
+        try:
+            # Use the already created work/outputs directory
+            output_dir = Path(PROJECT_ROOT) / "work" / "outputs"
+            output_dir.mkdir(parents=True, exist_ok=True)
+            
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            safe_name = client.name.replace("/", "_")
+            filename = f"clink_output_{safe_name}_{timestamp}_{uuid.uuid4().hex[:8]}.txt"
+            file_path = output_dir / filename
+            
+            # Write full content to file
+            file_path.write_text(content, encoding="utf-8")
+            
+            # Prepare message for the agent to read the file
+            abs_path = str(file_path.absolute())
+            offload_message = (
+                f"\n\n[MANDATORY] CLI '{client.name}' produced a huge response ({len(content):,} characters).\n"
+                f"The full content has been saved to an external file for stability:\n"
+                f"PATH: {abs_path}\n\n"
+                f"YOU MUST use the `read_file` tool to examine the details of this output if needed.\n"
+            )
+            
+            # Extract summary or excerpt
+            summary = self._extract_summary(content)
+            if summary:
+                if len(summary) > 5000: summary = summary[:5000] + "..."
+                display_content = f"<SUMMARY>\n{summary}\n</SUMMARY>\n\n{offload_message}"
+            else:
+                excerpt = content[:4000] + "..."
+                display_content = f"EXCERPT OF OUTPUT:\n{excerpt}\n\n{offload_message}"
+                
+            # Clean up metadata - CRITICAL to remove huge raw fields
+            cleaned_metadata = self._prune_metadata(metadata, client, reason="offload")
+            cleaned_metadata.pop("raw", None)
+            cleaned_metadata.pop("raw_output_file", None)
+            cleaned_metadata.update({
+                "output_offloaded": True,
+                "output_file_path": abs_path,
+                "output_original_length": len(content)
+            })
+            
+            logger.info(f"Offloaded large clink output to {abs_path} ({len(content)} chars)")
+            return display_content, cleaned_metadata
+            
+        except Exception as offload_exc:
+            logger.error(f"Failed to offload large clink output: {offload_exc}")
+            # Fallback to normal truncation logic below...
+        # --- LARGE OUTPUT OFFLOADING END ---
+
         summary = self._extract_summary(content)
         if summary:
             summary_text = summary
@@ -734,7 +900,12 @@ class CLinkTool(SimpleTool):
                     MAX_RESPONSE_CHARS,
                 )
                 summary_text = summary_text[:MAX_RESPONSE_CHARS]
+            
+            # CRITICAL: Prune huge raw data from metadata to ensure MCP transport success
             summary_metadata = self._prune_metadata(metadata, client, reason="summary")
+            summary_metadata.pop("raw", None)
+            summary_metadata.pop("raw_output_file", None)
+            
             summary_metadata.update(
                 {
                     "output_summarized": True,
@@ -749,9 +920,13 @@ class CLinkTool(SimpleTool):
                 len(content),
                 len(summary_text),
             )
-            return summary_text, summary_metadata
+            return f"<SUMMARY>\n{summary_text}\n</SUMMARY>", summary_metadata
 
+        # CRITICAL: Prune huge raw data from metadata to ensure MCP transport success
         truncated_metadata = self._prune_metadata(metadata, client, reason="truncated")
+        truncated_metadata.pop("raw", None)
+        truncated_metadata.pop("raw_output_file", None)
+        
         truncated_metadata.update(
             {
                 "output_truncated": True,

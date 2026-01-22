@@ -425,7 +425,27 @@
                         });
                         
                         text = text.replace(/&lt;thinking&gt;([\s\S]*?)&lt;\/thinking&gt;/gi, (match, thought) => {
-                            return `<div class="thinking-block"><div class="thinking-header">Thinking Process</div><div class="message-content">${thought.trim()}</div></div>`;
+                            let cleanThought = thought.trim();
+                            // Strip redundant markdown markers used for terminal view
+                            cleanThought = cleanThought.replace(/^>\s*🧠\s*\*\*Thinking:\*\*\s*\n?>\s*/i, "");
+                            // Also handle single-line version or variants
+                            cleanThought = cleanThought.replace(/^>\s*/gm, ""); // Remove blockquote markers
+                            return `<div class="thinking-block"><div class="thinking-header">Thinking Process</div><div class="message-content">${cleanThought.trim()}</div></div>`;
+                        });
+
+                        // 2.5 Format Progress Timeline
+                        text = text.replace(/### 🔄 Progress Timeline\n([\s\S]*?)(?=\n\n|$)/g, (match, timeline) => {
+                            const lines = timeline.trim().split('\n').map(line => {
+                                const isExec = line.includes('🛠️');
+                                const isSuccess = line.includes('✅');
+                                const isError = line.includes('❌');
+                                const color = isSuccess ? '#2ed573' : (isError ? '#ff4757' : '#ffa502');
+                                return `<div style="color: ${color}; font-size: 12px; margin-bottom: 2px; font-family: monospace;">${line}</div>`;
+                            }).join('');
+                            return `<div style="margin: 15px 0; padding: 10px; background: rgba(0, 212, 255, 0.05); border: 1px solid rgba(0, 212, 255, 0.2); border-radius: 4px;">
+                                <div style="color: #00d4ff; font-weight: bold; font-size: 11px; text-transform: uppercase; margin-bottom: 8px;">🔄 Progress Timeline</div>
+                                ${lines}
+                            </div>`;
                         });
 
                         // 3. Format bash code blocks (Terminal-like)
