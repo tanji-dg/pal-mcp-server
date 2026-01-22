@@ -5,14 +5,27 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>PAL MCP Monitor</title>
     <style>
+        :root {
+            --bg-color: #1a1a2e;
+            --card-bg: #16213e;
+            --text-color: #eee;
+            --accent-color: #00d4ff;
+            --success-color: #2ed573;
+            --error-color: #ff4757;
+            --warning-color: #ffa502;
+            --font-mono: 'Consolas', 'Monaco', 'Courier New', monospace;
+        }
+
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: #1a1a2e;
-            color: #eee;
+            background: var(--bg-color);
+            color: var(--text-color);
             min-height: 100vh;
             padding: 20px;
         }
+
+        /* Header */
         .header {
             display: flex;
             justify-content: space-between;
@@ -21,12 +34,13 @@
             padding-bottom: 15px;
             border-bottom: 1px solid #333;
         }
-        h1 { font-size: 24px; color: #00d4ff; }
+        h1 { font-size: 24px; color: var(--accent-color); }
         .status { display: flex; align-items: center; gap: 10px; }
-        .status-dot { width: 12px; height: 12px; border-radius: 50%; background: #ff4757; }
-        .status-dot.connected { background: #2ed573; animation: pulse 2s infinite; }
+        .status-dot { width: 12px; height: 12px; border-radius: 50%; background: var(--error-color); }
+        .status-dot.connected { background: var(--success-color); animation: pulse 2s infinite; }
         @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
-        
+
+        /* Stats Grid */
         .stats {
             display: grid;
             grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
@@ -34,18 +48,19 @@
             margin-bottom: 20px;
         }
         .stat-card {
-            background: #252a41;
+            background: var(--card-bg);
             padding: 15px;
             border-radius: 8px;
             text-align: center;
             border: 1px solid #ffffff11;
         }
         .stat-value { font-size: 24px; font-weight: bold; color: #fff; }
-        .stat-label { font-size: 12px; color: #888; text-transform: uppercase; margin-top: 5px; }
-        
+        .stat-label { font-size: 11px; color: #888; text-transform: uppercase; margin-top: 5px; }
+
+        /* Instances */
         .instances { display: grid; gap: 15px; }
         .instance-card {
-            background: #252a41;
+            background: var(--card-bg);
             border-radius: 10px;
             padding: 20px;
             border: 1px solid #ffffff11;
@@ -55,179 +70,131 @@
             position: relative;
             transition: all 0.3s ease;
         }
+        .instance-card.busy { border-left: 4px solid var(--warning-color); }
+        .instance-card.idle { border-left: 4px solid var(--success-color); }
+        .instance-card.offline { border-left: 4px solid var(--error-color); opacity: 0.7; }
+
         .instance-header {
             display: flex;
             justify-content: space-between;
             align-items: flex-start;
-            margin-bottom: 5px;
         }
-        .instance-id {
-            font-family: monospace;
-            font-weight: bold;
-            font-size: 14px;
-            color: #00d4ff;
-        }
-        .instance-meta {
-            display: flex;
-            flex-direction: column;
-            align-items: flex-end;
-            gap: 8px;
-        }
-        .instance-meta-row {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            justify-content: flex-end;
-        }
-        .model-tag {
-            background: #a55eea22;
-            color: #a55eea;
-            padding: 2px 8px;
-            border-radius: 4px;
-            font-size: 11px;
-            font-weight: bold;
-            margin-left: 8px;
-            border: 1px solid #a55eea44;
-        }
-        .role-tag {
-            background: #20bf6b22;
-            color: #20bf6b;
-            padding: 2px 8px;
-            border-radius: 4px;
-            font-size: 11px;
-            font-weight: bold;
-            margin-left: 8px;
-            border: 1px solid #20bf6b44;
-        }
+        .instance-id-container { display: flex; align-items: center; gap: 10px; }
+        .instance-id { font-family: var(--font-mono); font-weight: bold; font-size: 14px; color: var(--accent-color); }
         .session-tag {
-            background: #ffa50222;
-            color: #ffa502;
-            padding: 2px 8px;
+            background: rgba(255, 165, 2, 0.1);
+            color: var(--warning-color);
+            padding: 2px 6px;
             border-radius: 4px;
             font-size: 11px;
-            font-weight: bold;
-            font-family: monospace;
             margin-left: 8px;
-            border: 1px solid #ffa50244;
+            border: 1px solid rgba(255, 165, 2, 0.2);
         }
-        .instance-phase {
-            background: #ffa50222;
-            color: #ffa502;
-            padding: 2px 8px;
-            border-radius: 4px;
-            font-size: 11px;
-            font-weight: bold;
-            margin-left: 8px;
-            border: 1px solid #ffa50244;
-            display: flex;
-            align-items: center;
-            gap: 4px;
-        }
+
+        .instance-meta { display: flex; flex-direction: column; align-items: flex-end; gap: 8px; }
+        .instance-meta-row { display: flex; align-items: center; gap: 10px; justify-content: flex-end; }
+        
+        .model-tag { background: rgba(165, 94, 226, 0.1); color: #a55eea; padding: 2px 8px; border-radius: 4px; font-size: 11px; border: 1px solid rgba(165, 94, 226, 0.2); }
+        .role-tag { background: rgba(32, 191, 107, 0.1); color: #20bf6b; padding: 2px 8px; border-radius: 4px; font-size: 11px; border: 1px solid rgba(32, 191, 107, 0.2); }
+        .instance-phase { background: rgba(255, 165, 2, 0.1); color: var(--warning-color); padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: bold; display: flex; align-items: center; gap: 4px; }
         .instance-phase::before { content: "•"; animation: blink 1s infinite; }
         @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.2; } }
-        
-        .instance-state {
-            padding: 4px 12px;
-            border-radius: 20px;
-            font-size: 12px;
-            font-weight: bold;
-            text-transform: uppercase;
-        }
-        .instance-state.idle { background: #2ed573; color: #000; }
-        .instance-state.busy { background: #ffa502; color: #000; }
-        .instance-state.offline { background: #ff4757; color: #fff; }
-        
-        .kill-btn, .interrupt-btn {
-            background: transparent;
-            border-radius: 4px;
-            cursor: pointer;
-            font-size: 12px;
-            padding: 2px 6px;
-            transition: all 0.2s;
-            display: none;
-        }
-        .kill-btn { background: #ff4757; color: white; border: none; }
-        .interrupt-btn { border: 1px solid #ffa502; color: #ffa502; }
-        .interrupt-btn:hover { background: #ffa502; color: #1a1a2e; }
-        .instance-card:hover .kill-btn, .instance-card:hover .interrupt-btn { display: inline-block; }
 
+        .instance-state { padding: 4px 12px; border-radius: 20px; font-size: 11px; font-weight: bold; text-transform: uppercase; }
+        .instance-state.idle { background: var(--success-color); color: #000; }
+        .instance-state.busy { background: var(--warning-color); color: #000; }
+        .instance-state.offline { background: var(--error-color); color: #fff; }
+
+        /* Instance Metrics */
         .instance-metrics {
             display: grid;
             grid-template-columns: repeat(7, 1fr);
             gap: 10px;
-            margin-bottom: 15px;
         }
-        .metric {
-            background: #1a1a2e;
-            padding: 10px;
-            border-radius: 5px;
-            text-align: center;
-        }
-        .metric-value { font-size: 18px; font-weight: bold; }
-        .metric-label { font-size: 11px; color: #888; }
+        .metric { background: #0f1525; padding: 10px; border-radius: 6px; text-align: center; border: 1px solid #ffffff05; }
+        .metric-value { font-size: 16px; font-weight: bold; }
+        .metric-label { font-size: 10px; color: #666; text-transform: uppercase; margin-top: 4px; }
+
+        /* Logs */
+        .logs-section { margin-top: 20px; background: #111d35; padding: 15px; border-radius: 10px; }
+        .logs-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+        .header-controls { display: flex; align-items: center; gap: 15px; font-size: 12px; color: #888; }
         
-        .logs-section {
-            margin-top: 20px;
-            background: #16213e;
-            padding: 15px;
-            border-radius: 10px;
-        }
-        .logs-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
-        .header-controls { display: flex; align-items: center; gap: 15px; }
         .logs-container {
-            background: #0f1525;
-            padding: 10px;
-            border-radius: 5px;
-            font-family: monospace;
+            background: #080c18;
+            padding: 12px;
+            border-radius: 6px;
+            font-family: var(--font-mono);
             font-size: 12px;
-            height: 400px;
+            height: 450px;
             overflow-y: auto;
             display: flex;
             flex-direction: column;
             gap: 4px;
             user-select: text;
         }
-        /* Terminal View Styles */
-        .log-entry.terminal { display: block; border-bottom: none; font-family: monospace; }
-        .term-line { display: flex; align-items: flex-start; white-space: pre-wrap; word-break: break-all; }
-        .term-meta { color: #666; margin-right: 8px; font-size: 10px; flex-shrink: 0; padding-top: 2px; }
-        .term-content { color: #eee; flex-grow: 1; }
+
+        .log-entry.terminal { display: block; border-bottom: none; }
+        .term-line { display: flex; align-items: flex-start; white-space: pre-wrap; word-break: break-all; margin-bottom: 2px; }
+        .term-meta { color: #555; margin-right: 10px; font-size: 10px; flex-shrink: 0; padding-top: 2px; }
+        
+        .term-content { color: #ddd; flex-grow: 1; }
+        .term-content.thinking { color: #888; font-style: italic; }
+        .term-content.summary { color: #ce9178; font-weight: bold; }
+        .term-content.tool-use { color: var(--warning-color); font-weight: bold; }
+        .term-content.tool-result { color: var(--success-color); }
+        .term-content.error { color: var(--error-color); }
+        .term-content.system { color: var(--accent-color); font-style: italic; }
+
         .term-thinking-block {
-            background: rgba(178, 190, 195, 0.1);
+            background: rgba(178, 190, 195, 0.08);
             color: #b2bec3;
-            padding: 8px 12px;
-            border-radius: 4px;
-            margin: 4px 0;
-            border-left: 3px solid #b2bec3;
+            padding: 10px 14px;
+            border-radius: 6px;
+            margin: 6px 0;
+            border-left: 3px solid #636e72;
             font-style: italic;
             font-size: 11px;
         }
         .term-summary-block {
-            background: rgba(46, 213, 115, 0.05);
-            color: #2ed573;
-            padding: 10px 14px;
-            border-radius: 6px;
-            margin: 8px 0;
-            border-left: 4px solid #2ed573;
-            font-size: 12px;
+            background: rgba(206, 145, 120, 0.08);
+            color: #ce9178;
+            padding: 12px 16px;
+            border-radius: 8px;
+            margin: 10px 0;
+            border-left: 4px solid #ce9178;
+            font-size: 13px;
         }
         .term-code-block {
             background: #1e1e1e;
             color: #d4d4d4;
-            padding: 8px 12px;
-            border-radius: 4px;
-            margin: 4px 0;
+            padding: 10px 14px;
+            border-radius: 6px;
+            margin: 8px 0;
             white-space: pre;
             overflow-x: auto;
             border: 1px solid #333;
         }
+
+        .kill-btn, .interrupt-btn {
+            background: transparent;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+            padding: 2px 8px;
+            transition: all 0.2s;
+            display: none;
+        }
+        .kill-btn { background: var(--error-color); color: white; border: none; }
+        .interrupt-btn { border: 1px solid var(--warning-color); color: var(--warning-color); }
+        .instance-card:hover .kill-btn, .instance-card:hover .interrupt-btn { display: inline-block; }
     </style>
 </head>
 <body>
     <div class="header">
         <h1>🖥️ PAL MCP Monitor</h1>
         <div style="display: flex; align-items: center; gap: 20px;">
-            <a href="/history" style="color: #888; text-decoration: none; font-size: 14px; border: 1px solid #333; padding: 5px 10px; border-radius: 4px;">📜 History</a>
+            <a href="/history" style="color: #888; text-decoration: none; font-size: 14px; border: 1px solid #333; padding: 5px 12px; border-radius: 6px;">📜 History</a>
             <div class="status">
                 <div class="status-dot" id="statusDot"></div>
                 <span id="statusText">Disconnected</span>
@@ -249,7 +216,7 @@
     </div>
 
     <div class="instances" id="instances">
-        <div class="no-instances">📡 Waiting for instances to register...</div>
+        <div style="text-align:center; padding: 40px; color: #666;">📡 Waiting for instances to register...</div>
     </div>
 
     <div class="logs-section">
@@ -286,10 +253,10 @@
             document.getElementById('autoScroll').checked = autoScroll;
         }
 
-        function toggleTz() { useLocalTime = document.getElementById('tzLocal').checked; localStorage.setItem('monitor_use_localtime', useLocalTime); refreshLogTimes(); }
+        function toggleTz() { useLocalTime = document.getElementById('tzLocal').checked; localStorage.setItem('monitor_use_localtime', useLocalTime); reRenderLogs(); }
         function toggleHideOffline() { hideOffline = document.getElementById('hideOffline').checked; localStorage.setItem('monitor_hide_offline', hideOffline); updateUI(lastData); }
         function toggleHideIdle() { hideIdle = document.getElementById('hideIdle').checked; localStorage.setItem('monitor_hide_idle', hideIdle); updateUI(lastData); }
-        function toggleTerminalView() { terminalView = document.getElementById('terminalView').checked; localStorage.setItem('monitor_terminal_view', terminalView); document.getElementById('logsContainer').innerHTML = ''; allLogs.forEach(l => appendLog(l, false)); }
+        function toggleTerminalView() { terminalView = document.getElementById('terminalView').checked; localStorage.setItem('monitor_terminal_view', terminalView); reRenderLogs(); }
         function toggleAutoScroll() { autoScroll = document.getElementById('autoScroll').checked; localStorage.setItem('monitor_auto_scroll', autoScroll); }
 
         function formatNumber(n) { return n >= 1000 ? (n/1000).toFixed(1) + 'k' : n; }
@@ -302,29 +269,39 @@
             if (ms < 1000) return Math.round(ms) + 'ms';
             return (ms / 1000).toFixed(1) + 's';
         }
-        function escapeHtml(t) { return String(text=t).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
+        function escapeHtml(t) { if(!t) return ''; return String(t).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
 
         function formatTerminalText(text) {
             if (!text) return '';
             let escaped = escapeHtml(text);
+            
             const thinkingRegex = /&lt;thinking&gt;([\s\S]*?)&lt;\/thinking&gt;/gi;
-            escaped = escaped.replace(thinkingRegex, (m, p1) => `<div class="term-thinking-block">${p1.replace(/^&gt;\s*/gm, "").trim()}</div>`);
+            escaped = escaped.replace(thinkingRegex, (m, p1) => {
+                let clean = p1.replace(/^&gt;\s*🧠\s*\*\*Thinking:\*\*\s*\n?&gt;\s*/i, "").replace(/^&gt;\s*/gm, "").trim();
+                return `<div class="term-thinking-block">${clean}</div>`;
+            });
+
             const summaryRegex = /&lt;SUMMARY&gt;([\s\S]*?)&lt;\/SUMMARY&gt;/gi;
-            escaped = escaped.replace(summaryRegex, (m, p1) => `<div class="term-summary-block"><div style="font-size:10px;font-weight:bold;text-transform:uppercase;margin-bottom:4px;opacity:0.8;">📋 Summary</div>${p1.trim()}</div>`);
+            escaped = escaped.replace(summaryRegex, (m, p1) => {
+                return `<div class="term-summary-block"><div style="font-size:10px;font-weight:bold;text-transform:uppercase;margin-bottom:6px;opacity:0.8;">📋 Summary</div>${p1.trim()}</div>`;
+            });
+
             const timelineRegex = /### 🔄 Progress Timeline\n([\s\S]*?)(?=\n\n|$)/g;
             escaped = escaped.replace(timelineRegex, (m, p1) => {
                 const lines = p1.trim().split('\n').map(l => {
                     const color = l.includes('✅') ? '#2ed573' : (l.includes('❌') ? '#ff4757' : '#ffa502');
-                    return `<div style="color:${color};font-size:11px;font-family:monospace;">${l}</div>`;
+                    return `<div style="color:${color};font-size:11px;font-family:monospace;margin-bottom:2px;">${l}</div>`;
                 }).join('');
-                return `<div style="margin:12px 0;padding:10px;background:rgba(0,212,255,0.05);border:1px solid rgba(0,212,255,0.2);border-radius:4px;"><div style="color:#00d4ff;font-weight:bold;font-size:10px;text-transform:uppercase;margin-bottom:6px;">🔄 Progress Timeline</div>${lines}</div>`;
+                return `<div style="margin:12px 0;padding:12px;background:rgba(0,212,255,0.05);border:1px solid rgba(0,212,255,0.2);border-radius:6px;"><div style="color:#00d4ff;font-weight:bold;font-size:10px;text-transform:uppercase;margin-bottom:8px;">🔄 Progress Timeline</div>${lines}</div>`;
             });
+
             const codeRegex = /```[a-z]*\n?([\s\S]*?)\n?```/g;
             return escaped.replace(codeRegex, (m, p1) => `<div class="term-code-block">${p1.trim()}</div>`);
         }
 
         function getShortId(sessionId, instanceId) {
-            let rawId = sessionId || (instanceId ? instanceId.split('@')[0] : 'system');
+            let rawId = sessionId;
+            if (!rawId || rawId === 'standalone') rawId = (instanceId ? instanceId.split('@')[0] : 'system');
             let cleanId = String(rawId);
             if (cleanId.toLowerCase().startsWith('thread:')) cleanId = cleanId.substr(7);
             return cleanId.substr(0, 8);
@@ -334,6 +311,7 @@
             if (!data) return;
             lastData = data;
             const allInstances = data.instances || [];
+            
             document.getElementById('totalInstances').textContent = allInstances.length;
             document.getElementById('busyInstances').textContent = allInstances.filter(i => i.state === 'busy').length;
             document.getElementById('totalCalls').textContent = allInstances.reduce((sum, i) => sum + (i.total_calls || 0), 0);
@@ -343,7 +321,7 @@
             document.getElementById('totalThinking').textContent = formatDuration(allInstances.reduce((sum, i) => sum + (i.thinking_ms || 0), 0));
             document.getElementById('totalExecution').textContent = formatDuration(allInstances.reduce((sum, i) => sum + (i.execution_ms || 0), 0));
             
-            const withMetrics = allInstances.filter(i => i.total_calls > 0);
+            const withMetrics = allInstances.filter(i => (i.total_calls || 0) > 0);
             document.getElementById('avgExecTime').textContent = withMetrics.length ? formatDuration(withMetrics.reduce((sum, i) => sum + (i.avg_execution_time_1m || 0), 0) / withMetrics.length) : '0ms';
             document.getElementById('errorRate').textContent = withMetrics.length ? (withMetrics.reduce((sum, i) => sum + (i.error_rate_1m || 0), 0) / withMetrics.length * 100).toFixed(1) + '%' : '0%';
 
@@ -353,7 +331,7 @@
 
             const container = document.getElementById('instances');
             if (instances.length === 0) {
-                container.innerHTML = '<div class="no-instances">📡 No instances to show</div>';
+                container.innerHTML = '<div style="text-align:center; padding: 40px; color: #666;">📡 No instances to show</div>';
                 return;
             }
 
@@ -362,19 +340,22 @@
                 return `
                     <div class="instance-card ${inst.state}">
                         <div class="instance-header">
-                            <div class="instance-id">${inst.instance_id} ${inst.session_id ? `<span class="session-tag" title="Session: ${inst.session_id}">[${shortId}]</span>` : ''}</div>
+                            <div class="instance-id-container">
+                                <span class="instance-id">${inst.instance_id}</span> 
+                                ${inst.session_id ? `<span class="session-tag" title="Session: ${inst.session_id}">[${shortId}]</span>` : ''}
+                            </div>
                             <div class="instance-meta">
                                 <div class="instance-meta-row">
                                     ${inst.model_name ? `<span class="model-tag">${inst.model_name}</span>` : ''}
-                                    ${inst.active_role ? `<span class="role-tag" style="margin-right:12px;">${inst.active_role}</span>` : ''}
+                                    ${inst.active_role ? `<span class="role-tag">${inst.active_role}</span>` : ''}
                                     ${inst.last_status && inst.state === 'busy' ? `<span class="instance-phase">${inst.last_status}</span>` : ''}
                                     ${inst.state === 'busy' ? `
                                         <span style="color:#b2bec3;font-size:11px;margin-left:12px;font-weight:bold;">🧠 ${formatDuration(inst.thinking_ms)}</span>
                                         <span style="color:#2ed573;font-size:11px;margin-left:12px;font-weight:bold;">🛠️ ${formatDuration(inst.execution_ms)}</span>
                                     ` : ''}
                                     <span class="instance-state ${inst.state}">${inst.state}</span>
-                                    ${inst.state === 'busy' ? `<button class="interrupt-btn" onclick="interruptInstance('${inst.instance_id}')">✋</button>` : ''}
-                                    ${inst.state !== 'offline' ? `<button class="kill-btn" onclick="killInstance('${inst.instance_id}')">💀</button>` : ''}
+                                    ${inst.state === 'busy' ? `<button class="interrupt-btn" onclick="interruptInstance('${inst.instance_id}')" title="Interrupt">✋</button>` : ''}
+                                    ${inst.state !== 'offline' ? `<button class="kill-btn" onclick="killInstance('${inst.instance_id}')" title="Kill">💀</button>` : ''}
                                 </div>
                             </div>
                         </div>
@@ -395,10 +376,14 @@
         function appendLog(event, buffer = true) {
             if (buffer) { allLogs.push(event); if (allLogs.length > MAX_LOGS) allLogs.shift(); }
             const container = document.getElementById('logsContainer');
+            
+            const timeStr = new Date(event.timestamp).toLocaleTimeString(undefined, { hour12: false });
+            const session = getShortId(event.session_id, event.instance_id);
+            const tool = event.tool_name || 'system';
+            const parsed = parseLogContent(event.log_data);
+            if (!parsed) return;
+
             if (terminalView) {
-                const parsed = parseLogContent(event.log_data);
-                if (!parsed) return;
-                const session = getShortId(event.session_id, event.instance_id);
                 const canMerge = lastLogEntryRef && lastLogEntryRef.id === session && lastLogEntryRef.type === parsed.type && parsed.isDelta;
                 if (canMerge) {
                     const contentEl = lastLogEntryRef.element.querySelector('.term-content');
@@ -407,17 +392,24 @@
                 } else {
                     const entry = document.createElement('div');
                     entry.className = 'log-entry terminal';
-                    entry.innerHTML = `<div class="term-line"><span class="term-meta">[${getShortId(event.session_id, event.instance_id)}]</span><div class="term-content ${parsed.type}">${formatTerminalText(parsed.text)}</div></div>`;
+                    entry.innerHTML = `<div class="term-line"><span class="term-meta">[${timeStr}] [${session}] [${tool}]</span><div class="term-content ${parsed.type}">${formatTerminalText(parsed.text)}</div></div>`;
                     container.appendChild(entry);
                     lastLogEntryRef = { id: session, type: parsed.type, element: entry, rawText: parsed.text };
                 }
             } else {
                 const entry = document.createElement('div');
                 entry.className = 'log-entry';
-                entry.innerHTML = `<span class="log-time">[${new Date(event.timestamp).toLocaleTimeString()}]</span><span class="log-session">[${getShortId(event.session_id, event.instance_id)}]</span><span class="log-msg">${escapeHtml(event.log_data)}</span>`;
+                entry.innerHTML = `<div class="term-line"><span class="term-meta">[${timeStr}] [${session}]</span><span class="term-content ${parsed.type}">${escapeHtml(parsed.text)}</span></div>`;
                 container.appendChild(entry);
+                lastLogEntryRef = null;
             }
             if (autoScroll) container.scrollTop = container.scrollHeight;
+        }
+
+        function reRenderLogs() {
+            document.getElementById('logsContainer').innerHTML = '';
+            lastLogEntryRef = null;
+            allLogs.forEach(l => appendLog(l, false));
         }
 
         function parseLogContent(raw) {
@@ -426,10 +418,13 @@
                 if (raw.trim().startsWith('{')) {
                     const data = JSON.parse(raw);
                     if (['message_start', 'message_delta', 'message_stop', 'content_block_start', 'content_block_stop', 'ping'].includes(data.type)) return null;
+                    
                     if (data.type === 'message' || data.type === 'assistant') {
                         let content = data.content || data.thought;
                         if (data.message && data.message.content) content = data.message.content;
                         if (Array.isArray(content)) {
+                            const toolUse = content.find(c => c.type === 'tool_use');
+                            if (toolUse) return { type: 'tool-use', text: `> Executing ${toolUse.name}${toolUse.input ? ': ' + JSON.stringify(toolUse.input) : ''}`, isDelta: false };
                             const thinking = content.find(c => c.type === 'thinking');
                             if (thinking) return { type: 'thinking', text: thinking.thinking || thinking.text || '', isDelta: false };
                             content = content.filter(c => c.type === 'text' || typeof c === 'string').map(c => c.text || c).join('');
@@ -437,14 +432,35 @@
                         if (!content && data.thinking) content = data.thinking;
                         if (content) return { type: 'thinking', text: content, isDelta: data.delta === true || data.type === 'message' };
                     }
+                    
                     if (data.type === 'content_block_delta' && data.delta) {
                         const text = data.delta.text || data.delta.thinking;
                         if (text) return { type: 'thinking', text: text, isDelta: true };
                     }
-                    if (data.type === 'tool_use') return { type: 'tool-use', text: `> Executing ${data.name}...`, isDelta: false };
-                    if (data.type === 'tool_result') return { type: 'tool-result', text: `< Tool finished.`, isDelta: false };
+                    
+                    if (data.type === 'tool_use') return { type: 'tool-use', text: `> Executing ${data.name || data.tool_name}...`, isDelta: false };
+                    if (data.type === 'tool_result') {
+                        const isError = data.status === 'error' || data.is_error;
+                        let text = data.content || data.output || '';
+                        if (Array.isArray(text)) text = text.join(' ');
+                        return { type: isError ? 'error' : 'tool-result', text: `< ${text}`, isDelta: false };
+                    }
+                    
+                    if (data.type === 'error' || data.type === 'turn.failed') {
+                        const err = (data.type === 'turn.failed') ? (data.error || {}) : data;
+                        return { type: 'error', text: `! Error: ${err.message || 'unknown error'}`, isDelta: false };
+                    }
+                    if (data.type === 'result') {
+                        const isError = data.status === 'error' || data.is_error;
+                        return { type: isError ? 'error' : 'system', text: isError ? '! Failed' : '> Finished', isDelta: false };
+                    }
                 }
             } catch (e) {}
+            
+            const lower = raw.toLowerCase();
+            if (lower.includes('error') || lower.includes('fail') || lower.includes('exception')) return { type: 'error', text: raw, isDelta: false };
+            if (raw.startsWith('> ') || raw.startsWith('! ') || raw.includes('📋 Summary:')) return { type: 'system', text: raw, isDelta: false };
+            
             return { type: 'raw', text: raw, isDelta: false };
         }
 
@@ -456,8 +472,8 @@
             ws.onmessage = (e) => { const d = JSON.parse(e.data); if (d.type === 'state_update') updateUI(d); else if (d.event_type === 'tool_log') appendLog(d); };
         }
 
-        async function interruptInstance(id) { await fetch(`/interrupt/${id}`, { method: 'POST' }); }
-        async function killInstance(id) { if (confirm('Kill process?')) await fetch(`/kill/${id}`, { method: 'POST' }); }
+        async function interruptInstance(id) { await fetch(`/api/instances/${id}/interrupt`, { method: 'POST' }); }
+        async function killInstance(id) { if (confirm('Kill instance?')) await fetch(`/api/instances/${id}/kill`, { method: 'POST' }); }
 
         window.onload = () => { initControls(); connect(); };
     </script>

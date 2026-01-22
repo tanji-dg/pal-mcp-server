@@ -874,21 +874,8 @@ class MonitorCoordinator:
             elif event_type == ToolEventType.TOOL_START:
                 tool_name = get_val(event, 'tool_name')
                 tool_input = get_val(event, 'tool_input')
-                session_id = get_val(event, 'session_id') # Capture explicit session_id
-                
-                # If not explicit, try to parse from tool_input
-                if not session_id and tool_input:
-                    try:
-                        import json
-                        args = json.loads(tool_input)
-                        session_id = args.get('continuation_id')
-                    except Exception:
-                        pass
-                
                 if tool_name:
                     tracker.start_tool(tool_name, tool_input)
-                    if session_id:
-                        tracker.session_id = session_id
                     logger.debug(f"Tool started: {tool_name} on {instance_id}")
 
             elif event_type == ToolEventType.TOOL_END:
