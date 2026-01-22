@@ -421,16 +421,21 @@
 
                         // 2. Format <SUMMARY> and <thinking> blocks
                         text = text.replace(/&lt;SUMMARY&gt;([\s\S]*?)&lt;\/SUMMARY&gt;/gi, (match, summary) => {
-                            return `<div class="summary-block"><div class="summary-header">Summary</div><div class="message-content">${summary.trim()}</div></div>`;
+                            return `<div class="summary-block" style="background: rgba(46, 213, 115, 0.05); border-left: 4px solid #2ed573; color: #2ed573; padding: 10px 14px; border-radius: 6px; margin: 8px 0;">
+                                <div style="font-size: 10px; font-weight: bold; text-transform: uppercase; margin-bottom: 6px; display: flex; align-items: center; gap: 6px; opacity: 0.8;">📋 Summary</div>
+                                <div class="message-content" style="font-size: 13px;">${summary.trim()}</div>
+                            </div>`;
                         });
                         
                         text = text.replace(/&lt;thinking&gt;([\s\S]*?)&lt;\/thinking&gt;/gi, (match, thought) => {
                             let cleanThought = thought.trim();
-                            // Strip redundant markdown markers used for terminal view
-                            cleanThought = cleanThought.replace(/^>\s*🧠\s*\*\*Thinking:\*\*\s*\n?>\s*/i, "");
-                            // Also handle single-line version or variants
-                            cleanThought = cleanThought.replace(/^>\s*/gm, ""); // Remove blockquote markers
-                            return `<div class="thinking-block"><div class="thinking-header">Thinking Process</div><div class="message-content">${cleanThought.trim()}</div></div>`;
+                            // Strip redundant markdown markers
+                            cleanThought = cleanThought.replace(/^&gt;\s*🧠\s*\*\*Thinking:\*\*\s*\n?&gt;\s*/i, "");
+                            cleanThought = cleanThought.replace(/^&gt;\s*/gm, ""); 
+                            return `<div class="thinking-block" style="background: rgba(178, 190, 195, 0.1); border-left: 3px solid #b2bec3; color: #b2bec3; padding: 8px 12px; border-radius: 4px; margin: 4px 0; font-style: italic; font-size: 12px;">
+                                <div class="thinking-header" style="color: #7f8fa6; font-weight: bold; font-size: 10px; text-transform: uppercase; margin-bottom: 5px; font-style: normal;">💭 Thinking Process</div>
+                                <div class="message-content">${cleanThought.trim()}</div>
+                            </div>`;
                         });
 
                         // 2.5 Format Progress Timeline

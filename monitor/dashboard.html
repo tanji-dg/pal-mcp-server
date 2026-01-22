@@ -5,11 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>PAL MCP Monitor</title>
     <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
             background: #1a1a2e;
@@ -25,90 +21,63 @@
             padding-bottom: 15px;
             border-bottom: 1px solid #333;
         }
-        h1 {
-            font-size: 24px;
-            color: #00d4ff;
-        }
-        .status {
-            display: flex;
-            align-items: center;
-            gap: 10px;
-        }
-        .status-dot {
-            width: 12px;
-            height: 12px;
-            border-radius: 50%;
-            background: #ff4757;
-        }
-        .status-dot.connected {
-            background: #2ed573;
-            animation: pulse 2s infinite;
-        }
-        @keyframes pulse {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.5; }
-        }
+        h1 { font-size: 24px; color: #00d4ff; }
+        .status { display: flex; align-items: center; gap: 10px; }
+        .status-dot { width: 12px; height: 12px; border-radius: 50%; background: #ff4757; }
+        .status-dot.connected { background: #2ed573; animation: pulse 2s infinite; }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+        
         .stats {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
             gap: 15px;
             margin-bottom: 20px;
         }
         .stat-card {
-            background: #16213e;
-            border-radius: 10px;
-            padding: 20px;
+            background: #252a41;
+            padding: 15px;
+            border-radius: 8px;
             text-align: center;
+            border: 1px solid #ffffff11;
         }
-        .stat-value {
-            font-size: 36px;
-            font-weight: bold;
-            color: #00d4ff;
-        }
-        .stat-label {
-            color: #888;
-            margin-top: 5px;
-        }
-        .instances {
-            display: grid;
-            gap: 15px;
-        }
+        .stat-value { font-size: 24px; font-weight: bold; color: #fff; }
+        .stat-label { font-size: 12px; color: #888; text-transform: uppercase; margin-top: 5px; }
+        
+        .instances { display: grid; gap: 15px; }
         .instance-card {
-            background: #16213e;
+            background: #252a41;
             border-radius: 10px;
             padding: 20px;
-            border-left: 4px solid #00d4ff;
+            border: 1px solid #ffffff11;
             display: flex;
             flex-direction: column;
-        }
-        .instance-card.busy {
-            border-left-color: #ffa502;
-        }
-        .instance-card.offline {
-            border-left-color: #ff4757;
-            opacity: 0.6;
+            gap: 15px;
+            position: relative;
+            transition: all 0.3s ease;
         }
         .instance-header {
             display: flex;
             justify-content: space-between;
-            align-items: center;
-            margin-bottom: 15px;
+            align-items: flex-start;
+            margin-bottom: 5px;
         }
         .instance-id {
             font-family: monospace;
+            font-weight: bold;
             font-size: 14px;
             color: #00d4ff;
         }
-        .active-tool-tag {
-            background: #00d4ff22;
-            color: #00d4ff;
-            padding: 2px 8px;
-            border-radius: 4px;
-            font-size: 11px;
-            font-weight: bold;
-            text-transform: uppercase;
-            margin-left: 10px;
-            border: 1px solid #00d4ff44;
+        .instance-meta {
+            display: flex;
+            flex-direction: column;
+            align-items: flex-end;
+            gap: 8px;
+        }
+        .instance-meta-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            justify-content: flex-end;
         }
         .model-tag {
             background: #a55eea22;
@@ -141,18 +110,6 @@
             margin-left: 8px;
             border: 1px solid #ffa50244;
         }
-        .badge-session { background: #6b7280; }
-        .badge-tokens-in { background: #374151; border: 1px solid #4b5563; }
-        .badge-tokens-out { background: #065f46; color: #34d399; }
-        .badge-tokens-cache { background: #1e3a8a; color: #93c5fd; }
-        
-        .token-metrics {
-            display: flex;
-            gap: 4px;
-            justify-content: flex-end;
-            font-family: var(--font-mono);
-            font-size: 10px;
-        }
         .instance-phase {
             background: #ffa50222;
             color: #ffa502;
@@ -161,70 +118,42 @@
             font-size: 11px;
             font-weight: bold;
             margin-left: 8px;
-            margin-right: auto;
             border: 1px solid #ffa50244;
             display: flex;
             align-items: center;
             gap: 4px;
         }
-        .instance-phase::before {
-            content: "•";
-            animation: blink 1s infinite;
-        }
-        @keyframes blink {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.2; }
-        }
+        .instance-phase::before { content: "•"; animation: blink 1s infinite; }
+        @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.2; } }
+        
         .instance-state {
             padding: 4px 12px;
             border-radius: 20px;
             font-size: 12px;
             font-weight: bold;
             text-transform: uppercase;
-            flex-shrink: 0;
         }
-        .instance-state.idle {
-            background: #2ed573;
-            color: #000;
-        }
-        .instance-state.busy {
-            background: #ffa502;
-            color: #000;
-        }
-        .instance-state.offline {
-            background: #ff4757;
-            color: #fff;
-        }
-        .kill-btn {
-            background: #ff4757;
-            color: white;
-            border: none;
-            border-radius: 4px;
-            padding: 2px 8px;
-            font-size: 11px;
-            cursor: pointer;
-            margin-left: 10px;
-            display: none; /* Hidden by default, shown via JS if active */
-        }
-        .kill-btn:hover { background: #ff4757; color: white; border-color: #ff4757; }
-        .interrupt-btn {
+        .instance-state.idle { background: #2ed573; color: #000; }
+        .instance-state.busy { background: #ffa502; color: #000; }
+        .instance-state.offline { background: #ff4757; color: #fff; }
+        
+        .kill-btn, .interrupt-btn {
             background: transparent;
-            border: 1px solid #ffa502;
-            color: #ffa502;
             border-radius: 4px;
             cursor: pointer;
             font-size: 12px;
             padding: 2px 6px;
             transition: all 0.2s;
+            display: none;
         }
+        .kill-btn { background: #ff4757; color: white; border: none; }
+        .interrupt-btn { border: 1px solid #ffa502; color: #ffa502; }
         .interrupt-btn:hover { background: #ffa502; color: #1a1a2e; }
+        .instance-card:hover .kill-btn, .instance-card:hover .interrupt-btn { display: inline-block; }
 
-        .instance-card:hover .kill-btn {
-            display: inline-block;
-        }
         .instance-metrics {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+            grid-template-columns: repeat(7, 1fr);
             gap: 10px;
             margin-bottom: 15px;
         }
@@ -234,234 +163,63 @@
             border-radius: 5px;
             text-align: center;
         }
-        .metric-value {
-            font-size: 18px;
-            font-weight: bold;
-        }
-        .metric-label {
-            font-size: 11px;
-            color: #888;
-        }
-        .active-tool {
-            background: #ffa502;
-            color: #000;
-            padding: 8px 15px;
-            border-radius: 5px;
-            display: inline-block;
-            margin-bottom: 15px;
-        }
-        .recent-calls {
-            margin-top: 15px;
-        }
-        .recent-calls h4 {
-            color: #888;
-            font-size: 12px;
-            margin-bottom: 10px;
-        }
-        .call-list {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 8px;
-        }
-        .call-item {
-            background: #1a1a2e;
-            padding: 5px 10px;
-            border-radius: 4px;
-            font-size: 12px;
-            font-family: monospace;
-        }
-        .call-item.success {
-            border-left: 3px solid #2ed573;
-        }
-        .call-item.error {
-            border-left: 3px solid #ff4757;
-        }
-        .call-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 4px;
-        }
-        .call-name {
-            font-weight: bold;
-        }
-        .call-detail {
-            font-size: 10px;
-            color: #aaa;
-            white-space: pre-wrap; /* Allow line breaks */
-            word-break: break-all;
-            padding-top: 4px;
-            border-top: 1px solid #ffffff11;
-            margin-top: 4px;
-        }
-        .call-detail.input {
-            color: #00d4ff;
-        }
-        .call-detail.output {
-            color: #2ed573;
-        }
+        .metric-value { font-size: 18px; font-weight: bold; }
+        .metric-label { font-size: 11px; color: #888; }
+        
         .logs-section {
             margin-top: 20px;
             background: #16213e;
             padding: 15px;
             border-radius: 10px;
         }
-        .logs-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 10px;
-        }
-        .logs-header h3 {
-            font-size: 16px;
-            color: #888;
-            margin: 0;
-        }
-        .header-controls {
-            display: flex;
-            align-items: center;
-            gap: 15px;
-        }
-        .toggle-control {
-            font-size: 12px;
-            color: #888;
-        }
-        .toggle-control label {
-            display: flex;
-            align-items: center;
-            gap: 5px;
-            cursor: pointer;
-        }
+        .logs-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+        .header-controls { display: flex; align-items: center; gap: 15px; }
         .logs-container {
             background: #0f1525;
             padding: 10px;
             border-radius: 5px;
             font-family: monospace;
             font-size: 12px;
-            height: 300px;
+            height: 400px;
             overflow-y: auto;
             display: flex;
             flex-direction: column;
             gap: 4px;
-        }
-        .log-entry {
-            display: flex;
-            gap: 10px;
-            border-bottom: 1px solid #1a2639;
-            padding-bottom: 2px;
-            line-height: 1.4;
-        }
-        .log-time {
-            color: #666;
-            min-width: 70px;
-            flex-shrink: 0;
-        }
-        .log-session {
-            color: #ffa502;
-            font-family: monospace;
-            min-width: 80px;
-            flex-shrink: 0;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            white-space: nowrap;
-        }
-        .log-tool {
-            color: #00d4ff;
-            font-weight: bold;
-            min-width: 70px;
-            flex-shrink: 0;
-        }
-        .log-msg {
-            color: #ddd;
-            white-space: pre-wrap;
-            word-break: break-all;
-        }
-        .log-msg.error {
-            color: #ff4757;
-        }
-        .no-instances {
-            text-align: center;
-            padding: 60px 20px;
-            color: #666;
-        }
-        .no-instances .icon {
-            font-size: 48px;
-            margin-bottom: 15px;
-        }
-        .no-instances {
-            text-align: center;
-            padding: 60px 20px;
-            color: #666;
+            user-select: text;
         }
         /* Terminal View Styles */
-        .log-entry.terminal {
-            display: block; /* Stack vertically, no flex row */
-            border-bottom: none;
-            padding-bottom: 0;
-            font-family: 'Consolas', 'Monaco', monospace;
-        }
-        .term-line {
-            display: flex;
-            align-items: flex-start;
-            white-space: pre-wrap;
-            word-break: break-all;
-        }
-        .term-meta {
-            color: #666;
-            margin-right: 8px;
-            font-size: 10px;
-            user-select: none;
-            flex-shrink: 0;
-            padding-top: 2px;
-        }
-        .term-content {
-            color: #eee;
-            flex-grow: 1;
-        }
-        .term-content.thinking {
+        .log-entry.terminal { display: block; border-bottom: none; font-family: monospace; }
+        .term-line { display: flex; align-items: flex-start; white-space: pre-wrap; word-break: break-all; }
+        .term-meta { color: #666; margin-right: 8px; font-size: 10px; flex-shrink: 0; padding-top: 2px; }
+        .term-content { color: #eee; flex-grow: 1; }
+        .term-thinking-block {
+            background: rgba(178, 190, 195, 0.1);
             color: #b2bec3;
-        }
-        .term-content.summary {
-            color: #ce9178;
-            font-weight: bold;
-            background: rgba(206, 145, 120, 0.1);
-            padding: 2px 4px;
-            border-radius: 2px;
-        }
-        .term-content.summary {
-            color: #ce9178;
-            font-weight: bold;
-            background: rgba(206, 145, 120, 0.1);
-            padding: 2px 4px;
-            border-radius: 2px;
-        }
-        .term-content.tool-use {
-            color: #ffa502;
-            font-weight: bold;
-        }
-        .term-content.tool-result {
-            color: #2ed573;
-        }
-        .term-content.error {
-            color: #ff4757;
-        }
-        .term-content.system {
-            color: #00d4ff;
+            padding: 8px 12px;
+            border-radius: 4px;
+            margin: 4px 0;
+            border-left: 3px solid #b2bec3;
             font-style: italic;
+            font-size: 11px;
+        }
+        .term-summary-block {
+            background: rgba(46, 213, 115, 0.05);
+            color: #2ed573;
+            padding: 10px 14px;
+            border-radius: 6px;
+            margin: 8px 0;
+            border-left: 4px solid #2ed573;
+            font-size: 12px;
         }
         .term-code-block {
-            background: #00000044;
-            border: 1px solid #ffffff22;
-            border-left: 3px solid #00d4ff;
-            padding: 8px;
-            margin: 8px 0;
+            background: #1e1e1e;
+            color: #d4d4d4;
+            padding: 8px 12px;
             border-radius: 4px;
-            font-family: 'Consolas', 'Monaco', monospace;
-            color: #ecf0f1;
+            margin: 4px 0;
             white-space: pre;
             overflow-x: auto;
-            line-height: 1.5;
-            display: block;
+            border: 1px solid #333;
         }
     </style>
 </head>
@@ -478,82 +236,31 @@
     </div>
 
     <div class="stats">
-        <div class="stat-card">
-            <div class="stat-value" id="totalInstances">0</div>
-            <div class="stat-label">Instances</div>
-        </div>
-        <div class="stat-card">
-            <div class="stat-value" id="busyInstances">0</div>
-            <div class="stat-label">Busy</div>
-        </div>
-        <div class="stat-card">
-            <div class="stat-value" id="totalCalls">0</div>
-            <div class="stat-label">Total Calls</div>
-        </div>
-        <div class="stat-card">
-            <div class="stat-value text-error" id="totalErrors">0</div>
-            <div class="stat-label">Errors</div>
-        </div>
-        <div class="stat-card">
-            <div class="stat-value" id="totalInputTokens">0</div>
-            <div class="stat-label">Tokens Usage</div>
-        </div>
-        <div class="stat-card">
-            <div class="stat-value text-accent" id="totalOutputTokens">0</div>
-            <div class="stat-label">Total Out Tokens</div>
-        </div>
-        <div class="stat-card">
-            <div class="stat-value" id="avgExecTime">0ms</div>
-            <div class="stat-label">Avg Exec Time (1h)</div>
-        </div>
-        <div class="stat-card">
-            <div class="stat-value" id="errorRate">0%</div>
-            <div class="stat-label">Error Rate (1h)</div>
-        </div>
+        <div class="stat-card"><div class="stat-value" id="totalInstances">0</div><div class="stat-label">Instances</div></div>
+        <div class="stat-card"><div class="stat-value" id="busyInstances">0</div><div class="stat-label">Busy</div></div>
+        <div class="stat-card"><div class="stat-value" id="totalCalls">0</div><div class="stat-label">Total Calls</div></div>
+        <div class="stat-card"><div class="stat-value text-error" id="totalErrors">0</div><div class="stat-label">Errors</div></div>
+        <div class="stat-card"><div class="stat-value" id="totalThinking">0s</div><div class="stat-label">🧠 Thinking Time</div></div>
+        <div class="stat-card"><div class="stat-value" id="totalExecution">0s</div><div class="stat-label">🛠️ Tool Execution</div></div>
+        <div class="stat-card"><div class="stat-value" id="totalInputTokens">0</div><div class="stat-label">Tokens Usage</div></div>
+        <div class="stat-card"><div class="stat-value text-accent" id="totalOutputTokens">0</div><div class="stat-label">Total Out Tokens</div></div>
+        <div class="stat-card"><div class="stat-value" id="avgExecTime">0ms</div><div class="stat-label">Avg Exec Time</div></div>
+        <div class="stat-card"><div class="stat-value" id="errorRate">0%</div><div class="stat-label">Error Rate</div></div>
     </div>
 
     <div class="instances" id="instances">
-        <div class="no-instances">
-            <div class="icon">📡</div>
-            <p>No MCP instances connected</p>
-            <p style="margin-top: 10px; font-size: 14px;">Waiting for instances to register...</p>
-        </div>
+        <div class="no-instances">📡 Waiting for instances to register...</div>
     </div>
 
     <div class="logs-section">
         <div class="logs-header">
             <h3>📜 Live Logs</h3>
             <div class="header-controls">
-                <div class="toggle-control">
-                    <label>
-                        <input type="checkbox" id="hideOffline" onchange="toggleHideOffline()"> Hide Offline
-                    </label>
-                </div>
-                <div class="toggle-control">
-                    <label>
-                        <input type="checkbox" id="hideIdle" onchange="toggleHideIdle()"> Hide Idle
-                    </label>
-                </div>
-                <div class="toggle-control">
-                    <label>
-                        <input type="checkbox" id="terminalView" onchange="toggleTerminalView()"> Terminal View
-                    </label>
-                </div>
-                <div class="toggle-control">
-                    <label>
-                        <input type="checkbox" id="autoScroll" onchange="toggleAutoScroll()"> Auto Scroll
-                    </label>
-                </div>
-                <div class="toggle-control">
-                    <label>
-                        <input type="checkbox" id="fullOutput" onchange="toggleFullOutput()"> Full Output
-                    </label>
-                </div>
-                <div class="toggle-control">
-                    <label>
-                        <input type="checkbox" id="tzLocal" onchange="toggleTz()"> LocalTime
-                    </label>
-                </div>
+                <label class="toggle-control"><input type="checkbox" id="hideOffline" onchange="toggleHideOffline()"> Hide Offline</label>
+                <label class="toggle-control"><input type="checkbox" id="hideIdle" onchange="toggleHideIdle()"> Hide Idle</label>
+                <label class="toggle-control"><input type="checkbox" id="terminalView" onchange="toggleTerminalView()"> Terminal View</label>
+                <label class="toggle-control"><input type="checkbox" id="autoScroll" onchange="toggleAutoScroll()"> Auto Scroll</label>
+                <label class="toggle-control"><input type="checkbox" id="tzLocal" onchange="toggleTz()"> LocalTime</label>
             </div>
         </div>
         <div class="logs-container" id="logsContainer"></div>
@@ -561,811 +268,198 @@
 
     <script>
         let ws = null;
-        let lastData = null; // Cache last data for re-rendering
-        let lastLogEntryRef = null; // { id: string, type: string, element: HTMLElement }
-        let allLogs = []; // Buffer for re-rendering when switching views
+        let lastData = null;
+        let lastLogEntryRef = null;
+        let allLogs = [];
         const MAX_LOGS = 500;
-
-        // Load preferences
         let useLocalTime = localStorage.getItem('monitor_use_localtime') !== 'false';
         let hideOffline = localStorage.getItem('monitor_hide_offline') === 'true';
         let hideIdle = localStorage.getItem('monitor_hide_idle') === 'true';
         let terminalView = localStorage.getItem('monitor_terminal_view') === 'true';
-        let autoScroll = localStorage.getItem('monitor_auto_scroll') !== 'false'; // Default true
-        let fullOutput = localStorage.getItem('monitor_full_output') === 'true';
+        let autoScroll = localStorage.getItem('monitor_auto_scroll') !== 'false';
 
         function initControls() {
-            const tzCb = document.getElementById('tzLocal');
-            if (tzCb) tzCb.checked = useLocalTime;
-
-            const offlineCb = document.getElementById('hideOffline');
-            if (offlineCb) offlineCb.checked = hideOffline;
-
-            const idleCb = document.getElementById('hideIdle');
-            if (idleCb) idleCb.checked = hideIdle;
-
-            const termCb = document.getElementById('terminalView');
-            if (termCb) termCb.checked = terminalView;
-
-            const scrollCb = document.getElementById('autoScroll');
-            if (scrollCb) scrollCb.checked = autoScroll;
-
-            const fullCb = document.getElementById('fullOutput');
-            if (fullCb) fullCb.checked = fullOutput;
+            document.getElementById('tzLocal').checked = useLocalTime;
+            document.getElementById('hideOffline').checked = hideOffline;
+            document.getElementById('hideIdle').checked = hideIdle;
+            document.getElementById('terminalView').checked = terminalView;
+            document.getElementById('autoScroll').checked = autoScroll;
         }
 
-        function toggleTz() {
-            useLocalTime = document.getElementById('tzLocal').checked;
-            localStorage.setItem('monitor_use_localtime', useLocalTime);
-            refreshLogTimes();
-        }
+        function toggleTz() { useLocalTime = document.getElementById('tzLocal').checked; localStorage.setItem('monitor_use_localtime', useLocalTime); refreshLogTimes(); }
+        function toggleHideOffline() { hideOffline = document.getElementById('hideOffline').checked; localStorage.setItem('monitor_hide_offline', hideOffline); updateUI(lastData); }
+        function toggleHideIdle() { hideIdle = document.getElementById('hideIdle').checked; localStorage.setItem('monitor_hide_idle', hideIdle); updateUI(lastData); }
+        function toggleTerminalView() { terminalView = document.getElementById('terminalView').checked; localStorage.setItem('monitor_terminal_view', terminalView); document.getElementById('logsContainer').innerHTML = ''; allLogs.forEach(l => appendLog(l, false)); }
+        function toggleAutoScroll() { autoScroll = document.getElementById('autoScroll').checked; localStorage.setItem('monitor_auto_scroll', autoScroll); }
 
-        function toggleFullOutput() {
-            fullOutput = document.getElementById('fullOutput').checked;
-            localStorage.setItem('monitor_full_output', fullOutput);
-            reRenderLogs();
+        function formatNumber(n) { return n >= 1000 ? (n/1000).toFixed(1) + 'k' : n; }
+        function formatUptime(s) { 
+            if (s < 60) return Math.round(s) + 's';
+            if (s < 3600) return Math.floor(s/60) + 'm ' + Math.round(s%60) + 's';
+            return Math.floor(s/3600) + 'h ' + Math.floor((s%3600)/60) + 'm';
         }
-
-        function toggleHideOffline() {
-            hideOffline = document.getElementById('hideOffline').checked;
-            localStorage.setItem('monitor_hide_offline', hideOffline);
-            if (lastData) {
-                updateUI(lastData);
-            }
+        function formatDuration(ms) {
+            if (ms < 1000) return Math.round(ms) + 'ms';
+            return (ms / 1000).toFixed(1) + 's';
         }
-
-        function toggleHideIdle() {
-            hideIdle = document.getElementById('hideIdle').checked;
-            localStorage.setItem('monitor_hide_idle', hideIdle);
-            if (lastData) {
-                updateUI(lastData);
-            }
-        }
-
-        function toggleTerminalView() {
-            terminalView = document.getElementById('terminalView').checked;
-            localStorage.setItem('monitor_terminal_view', terminalView);
-            reRenderLogs();
-        }
-
-        function reRenderLogs() {
-            const container = document.getElementById('logsContainer');
-            container.innerHTML = '';
-            lastLogEntryRef = null;
-            
-            // Temporary disable autoScroll during batch re-render for performance
-            const oldAutoScroll = autoScroll;
-            autoScroll = false;
-            
-            allLogs.forEach(log => {
-                appendLog(log, false); // Don't buffer again
-            });
-            
-            autoScroll = oldAutoScroll;
-            if (autoScroll) {
-                container.scrollTop = container.scrollHeight;
-            }
-        }
-
-        function toggleAutoScroll() {
-            autoScroll = document.getElementById('autoScroll').checked;
-            localStorage.setItem('monitor_auto_scroll', autoScroll);
-            if (autoScroll) {
-                const container = document.getElementById('logsContainer');
-                container.scrollTop = container.scrollHeight;
-            }
-        }
-
-        function refreshLogTimes() {
-            const entries = document.querySelectorAll('.log-entry:not(.terminal)');
-            entries.forEach(entry => {
-                const timestamp = entry.getAttribute('data-timestamp');
-                if (timestamp) {
-                    entry.querySelector('.log-time').textContent = `[${formatLogTime(timestamp)}]`;
-                }
-            });
-        }
-
-        function formatLogTime(isoString) {
-            const date = new Date(isoString);
-            if (useLocalTime) {
-                // Local Time (Browser default)
-                return date.toLocaleTimeString(undefined, { 
-                    hour12: false,
-                    hour: '2-digit',
-                    minute: '2-digit',
-                    second: '2-digit'
-                });
-            } else {
-                // UTC
-                return date.toLocaleTimeString('en-GB', { 
-                    timeZone: 'UTC',
-                    hour12: false,
-                    hour: '2-digit',
-                    minute: '2-digit',
-                    second: '2-digit'
-                });
-            }
-        }
+        function escapeHtml(t) { return String(text=t).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
 
         function formatTerminalText(text) {
             if (!text) return '';
-            
-            // Escape HTML but preserve special formatting
             let escaped = escapeHtml(text);
-            
-            // Detect code blocks: ```lang ... ```
-            // After escapeHtml, we still have ``` but < and > are &lt; and &gt;
-            const codeBlockRegex = /```[a-z]*\n?([\s\S]*?)\n?```/g;
-            
-            return escaped.replace(codeBlockRegex, (match, code) => {
-                return `<div class="term-code-block">${code.trim()}</div>`;
+            const thinkingRegex = /&lt;thinking&gt;([\s\S]*?)&lt;\/thinking&gt;/gi;
+            escaped = escaped.replace(thinkingRegex, (m, p1) => `<div class="term-thinking-block">${p1.replace(/^&gt;\s*/gm, "").trim()}</div>`);
+            const summaryRegex = /&lt;SUMMARY&gt;([\s\S]*?)&lt;\/SUMMARY&gt;/gi;
+            escaped = escaped.replace(summaryRegex, (m, p1) => `<div class="term-summary-block"><div style="font-size:10px;font-weight:bold;text-transform:uppercase;margin-bottom:4px;opacity:0.8;">📋 Summary</div>${p1.trim()}</div>`);
+            const timelineRegex = /### 🔄 Progress Timeline\n([\s\S]*?)(?=\n\n|$)/g;
+            escaped = escaped.replace(timelineRegex, (m, p1) => {
+                const lines = p1.trim().split('\n').map(l => {
+                    const color = l.includes('✅') ? '#2ed573' : (l.includes('❌') ? '#ff4757' : '#ffa502');
+                    return `<div style="color:${color};font-size:11px;font-family:monospace;">${l}</div>`;
+                }).join('');
+                return `<div style="margin:12px 0;padding:10px;background:rgba(0,212,255,0.05);border:1px solid rgba(0,212,255,0.2);border-radius:4px;"><div style="color:#00d4ff;font-weight:bold;font-size:10px;text-transform:uppercase;margin-bottom:6px;">🔄 Progress Timeline</div>${lines}</div>`;
             });
+            const codeRegex = /```[a-z]*\n?([\s\S]*?)\n?```/g;
+            return escaped.replace(codeRegex, (m, p1) => `<div class="term-code-block">${p1.trim()}</div>`);
         }
 
         function getShortId(sessionId, instanceId) {
-            // Priority: Session ID (thread:...) > PID (from instanceId)
             let rawId = sessionId || (instanceId ? instanceId.split('@')[0] : 'system');
-            
-            // Special handling for conversation IDs: strip 'thread:' prefix
-            if (rawId.startsWith('thread:')) {
-                rawId = rawId.substr(7);
-            }
-            
-            return rawId.substr(0, 8);
-        }
-
-        function connect() {
-            // Automatically determine WebSocket URL based on current page location
-            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-            const host = window.location.host;
-            const url = `${protocol}//${host}/ws`;
-
-            if (ws) {
-                console.log("Closing existing WebSocket connection...");
-                ws.close();
-            }
-
-            console.log(`Attempting to connect to Monitor WebSocket: ${url}`);
-            ws = new WebSocket(url);
-
-            ws.onopen = () => {
-                console.log("WebSocket connection established successfully.");
-                document.getElementById('statusDot').classList.add('connected');
-                document.getElementById('statusText').textContent = 'Connected';
-            };
-
-            ws.onclose = (event) => {
-                console.log(`WebSocket connection closed. Code: ${event.code}, Reason: ${event.reason}`);
-                document.getElementById('statusDot').classList.remove('connected');
-                document.getElementById('statusText').textContent = 'Disconnected';
-                // Auto-reconnect after 3 seconds
-                setTimeout(() => {
-                    if (!ws || ws.readyState === WebSocket.CLOSED) {
-                        console.log("Attempting automatic reconnection...");
-                        connect();
-                    }
-                }, 3000);
-            };
-
-            ws.onerror = (error) => {
-                console.error('WebSocket connection error:', error);
-            };
-
-            ws.onmessage = (event) => {
-                try {
-                    const data = JSON.parse(event.data);
-                    if (data.type === 'state_update') {
-                        updateUI(data);
-                    } else if (data.event_type === 'tool_log') {
-                        appendLog(data, true); // Buffer this new log
-                    } else if (data.type === 'ping') {
-                        ws.send('pong');
-                    }
-                } catch (e) {
-                    console.error('Parse error:', e);
-                }
-            };
-        }
-
-        function appendLog(event, buffer = true) {
-            if (buffer) {
-                allLogs.push(event);
-                if (allLogs.length > MAX_LOGS) {
-                    allLogs.shift();
-                }
-            }
-
-            const container = document.getElementById('logsContainer');
-            
-            if (terminalView) {
-                renderTerminalLog(event, container);
-            } else {
-                renderRawLog(event, container);
-            }
-
-            // Limit DOM entries (should match MAX_LOGS or slightly more for terminal chunks)
-            if (!terminalView) { // Terminal view handles merging, so line count != log count
-                while (container.children.length > MAX_LOGS) {
-                    container.removeChild(container.firstChild);
-                }
-            }
-        }
-
-        function renderRawLog(event, container) {
-            const entry = document.createElement('div');
-            entry.className = 'log-entry';
-            // Store raw timestamp for timezone switching
-            entry.setAttribute('data-timestamp', event.timestamp);
-            
-            const time = formatLogTime(event.timestamp);
-            const tool = event.tool_name || 'system';
-            const session = getShortId(event.session_id, event.instance_id);
-            
-            const msg = event.log_data || '';
-            
-            // Check for error keywords to highlight, but exclude "is_error":false patterns common in JSON
-            const isError = /error|fail|exception/i.test(msg) && !/"is_error"\s*:\s*false/i.test(msg);
-            
-            entry.innerHTML = `
-                <span class="log-time">[${time}]</span>
-                <span class="log-session" title="${event.session_id || ''}">[${session}]</span>
-                <span class="log-tool">[${tool}]</span>
-                <span class="log-msg ${isError ? 'error' : ''}">${escapeHtml(msg)}</span>
-            `;
-            
-            container.appendChild(entry);
-            
-            // Auto-scroll
-            if (autoScroll) {
-                container.scrollTop = container.scrollHeight;
-            }
-        }
-
-        function renderTerminalLog(event, container) {
-            const parsed = parseLogContent(event.log_data);
-            if (!parsed) return;
-
-            const session = getShortId(event.session_id, event.instance_id);
-            
-            // Attempt to merge with previous line if:
-            // 1. Same session
-            // 2. Same content type (e.g. thinking -> thinking)
-            // 3. Is a delta update
-            // 4. Previous element exists
-            const canMerge = lastLogEntryRef 
-                && lastLogEntryRef.id === session 
-                && lastLogEntryRef.type === parsed.type 
-                && parsed.isDelta
-                && document.body.contains(lastLogEntryRef.element);
-
-            if (canMerge) {
-                const contentSpan = lastLogEntryRef.element.querySelector('.term-content');
-                if (contentSpan) {
-                    // When merging deltas, we might need to re-format the whole text to detect newly closed code blocks
-                    const newRawText = (lastLogEntryRef.rawText || '') + parsed.text;
-                    lastLogEntryRef.rawText = newRawText;
-                    contentSpan.innerHTML = formatTerminalText(newRawText);
-                    
-                    if (autoScroll) {
-                        container.scrollTop = container.scrollHeight;
-                    }
-                    return;
-                }
-            }
-
-            // Create new line
-            const entry = document.createElement('div');
-            entry.className = 'log-entry terminal';
-            
-            const time = formatLogTime(event.timestamp).split(' ')[0]; // Just time part
-            
-            entry.innerHTML = `
-                <div class="term-line">
-                    <span class="term-meta">[${session}]</span>
-                    <span class="term-content ${parsed.type}">${formatTerminalText(parsed.text)}</span>
-                </div>
-            `;
-            
-            container.appendChild(entry);
-            
-            if (autoScroll) {
-                container.scrollTop = container.scrollHeight;
-            }
-
-            // Update reference for merging
-            if (parsed.isDelta) {
-                lastLogEntryRef = { id: session, type: parsed.type, element: entry, rawText: parsed.text };
-            } else {
-                lastLogEntryRef = null;
-            }
-        }
-
-        function parseLogContent(raw) {
-            if (!raw) return { type: 'unknown', text: '', isDelta: false };
-            
-            try {
-                if (raw.trim().startsWith('{')) {
-                    let data = JSON.parse(raw);
-                    let wasStreamEvent = false;
-                    
-                    // Handle API errors without 'type' field
-                    if (!data.type && data.error) {
-                        let msg = data.error.message || JSON.stringify(data.error);
-                        let delayInfo = "";
-                        
-                        // Extract delay info if available
-                        if (data.error.details && Array.isArray(data.error.details)) {
-                            for (const detail of data.error.details) {
-                                if (detail.metadata && detail.metadata.quotaResetDelay) {
-                                    delayInfo = ` [Quota Reset: ${detail.metadata.quotaResetDelay}]`;
-                                } else if (detail.retryDelay) {
-                                    delayInfo = ` [Retry Delay: ${detail.retryDelay}]`;
-                                }
-                            }
-                        }
-                        return { type: 'error', text: `! API Error: ${msg}${delayInfo}`, isDelta: false };
-                    }
-                    
-                    // Unwrap Claude stream_event wrapper
-                    if (data.type === 'stream_event' && data.event) {
-                        data = data.event;
-                        wasStreamEvent = true;
-                    }
-                    
-                    // Ignore internal stream/control events
-                    if (data.type === 'stream' || data.type === 'ping') {
-                        return null; 
-                    }
-
-                    // Handle Claude tool results nested in user message
-                    if (data.type === 'user' && data.message && Array.isArray(data.message.content)) {
-                        const toolResult = data.message.content.find(c => c.type === 'tool_result');
-                        if (toolResult) {
-                            let text = toolResult.content || '';
-                            if (typeof text !== 'string') text = JSON.stringify(text);
-                            // Truncate unless Full Output is enabled
-                            if (!fullOutput && text.length > 300) {
-                                text = text.substr(0, 300) + '...';
-                            }
-                            return { type: toolResult.is_error ? 'error' : 'tool-result', text: `< ${text}`, isDelta: false };
-                        }
-                        return null; // Ignore other user messages
-                    }
-                    
-                    // Ignore Claude stream lifecycle events
-                    const ignoredClaudeEvents = [
-                        'message_start', 'content_block_start', 
-                        'message_delta', 'message_stop', 'content_block_stop'
-                    ];
-                    if (ignoredClaudeEvents.includes(data.type)) {
-                        return null;
-                    }
-                    
-                    // 1. Standard Message / Assistant (Claude/Gemini)
-                    if (data.type === 'message' || data.type === 'assistant') {
-                        let content = data.content || data.thought;
-                        
-                        // Handle Claude message object (nested in 'message' field)
-                        if (data.message && data.message.content) {
-                             content = data.message.content;
-                        }
-                        
-                        // Handle Claude content list (e.g. [{"type":"text", "text":"..."}, {"type":"tool_use", ...}])
-                        if (Array.isArray(content)) {
-                            // Check for tool_use in content list
-                            const toolUse = content.find(c => c.type === 'tool_use');
-                            if (toolUse) {
-                                let details = '';
-                                if (toolUse.input) {
-                                    if (toolUse.input.command) details = `: ${toolUse.input.command}`;
-                                    else details = `: ${JSON.stringify(toolUse.input)}`;
-                                }
-                                // Truncate unless Full Output is enabled
-                                if (!fullOutput && details.length > 80) {
-                                    details = details.substr(0, 80) + '...';
-                                }
-                                return { type: 'tool-use', text: `> Executing ${toolUse.name}${details}`, isDelta: false };
-                            }
-
-                            // Check for thinking in content list
-                            const thinking = content.find(c => c.type === 'thinking');
-                            if (thinking) {
-                                const text = thinking.thinking || thinking.text || '';
-                                if (text) return { type: 'thinking', text: text, isDelta: false };
-                            }
-
-                            content = content
-                                .filter(c => c.type === 'text' || typeof c === 'string')
-                                .map(c => c.text || c)
-                                .join('');
-                        }
-                        
-                        // Support top-level thinking field
-                        if (!content && data.thinking) {
-                            content = data.thinking;
-                        }
-                        
-                        // Check for delta flag or if it looks like a partial chunk
-                        // Gemini sends 'delta': true
-                        // Claude stream usually sends 'message' type for chunks or 'content_block_delta'
-                        const isDelta = data.delta === true || data.type === 'message'; 
-                        
-                        if (content && typeof content === 'string') {
-                            return { type: 'thinking', text: content, isDelta: isDelta };
-                        }
-                    }
-
-                    // 2. Claude specific: content_block_delta
-                    // {"type":"content_block_delta", "index":0, "delta":{"type":"text_delta", "text":"..."}}
-                    if (data.type === 'content_block_delta' && data.delta) {
-                        const delta = data.delta;
-                        const text = delta.text || delta.thinking;
-                        if (text) {
-                            return { type: 'thinking', text: text, isDelta: true };
-                        }
-                        if (delta.type === 'input_json_delta') {
-                            return null; // Ignore JSON streaming for tools
-                        }
-                    }
-                    
-                    // 3. Error (Top level)
-                    if (data.type === 'error') {
-                        return { type: 'error', text: `! Error: ${data.message || 'unknown error'}`, isDelta: false };
-                    }
-                    
-                    // 4. Tool Use
-                    if (data.type === 'tool_use') {
-                        let details = '';
-                        const input = data.input || data.parameters; // Gemini uses parameters
-                        if (input) {
-                            if (input.command) details = `: ${input.command}`;
-                            else details = `: ${JSON.stringify(input)}`;
-                        }
-                        // Truncate unless Full Output is enabled
-                        if (!fullOutput && details.length > 80) {
-                            details = details.substr(0, 80) + '...';
-                        }
-                        return { type: 'tool-use', text: `> Executing ${data.name || data.tool_name}${details}`, isDelta: false };
-                    }
-                    
-                    // 4. Tool Result
-                    if (data.type === 'tool_result') {
-                        const isError = data.status === 'error' || data.is_error;
-                        let text = data.content || data.output || '';
-                        // Extract text from list content if needed
-                        if (Array.isArray(text)) text = text.join(' ');
-                        if (typeof text !== 'string') text = JSON.stringify(text);
-                        // Truncate unless Full Output is enabled
-                        if (!fullOutput && text.length > 300) {
-                            text = text.substr(0, 300) + '...';
-                        }
-                        return { type: isError ? 'error' : 'tool-result', text: `< ${text}`, isDelta: false };
-                    }
-
-                    // 5. Final Result
-                    if (data.type === 'result') {
-                        const isError = data.status === 'error' || data.is_error;
-                        
-                        if (isError) {
-                            let errorMsg = "Operation failed";
-                            if (data.error) {
-                                errorMsg = data.error.message || JSON.stringify(data.error);
-                            }
-                            return { type: 'error', text: `! Failed: ${errorMsg}`, isDelta: false };
-                        }
-
-                        // Extract result content if available, otherwise just summary
-                        let resultText = '';
-                        if (data.result) {
-                             if (typeof data.result === 'string') resultText = data.result;
-                             else if (Array.isArray(data.result)) resultText = data.result.join('\n');
-                        }
-                        
-                        if (resultText && resultText.length < 100) {
-                             return { type: 'system', text: `> Finished: ${resultText}`, isDelta: false };
-                        }
-                        const cost = data.total_cost_usd;
-                        const costStr = (typeof cost === 'number' && cost > 0) ? ` (Cost: $${cost.toFixed(4)})` : '';
-                        return { type: 'system', text: `> Finished${costStr}`, isDelta: false };
-                    }
-
-                    // 7. Initialization & Status (Gemini/Claude)
-                    if (data.type === 'init' || (data.type === 'system' && (data.subtype === 'init' || data.subtype === 'status'))) {
-                        if (data.subtype === 'status' && data.status) {
-                            return { type: 'system', text: `> System Status: ${data.status}`, isDelta: false };
-                        }
-                        const model = data.model || 'unknown model';
-                        return { type: 'system', text: `> Initialized (Model: ${model})`, isDelta: false };
-                    }
-
-                    // 7. Codex Events (item.started, item.completed, turn.completed)
-                    if (data.type === 'turn.completed') {
-                        return null; // Ignore turn completion
-                    }
-
-                    if (data.type === 'item.started' || data.type === 'item.completed') {
-                        const item = data.item || {};
-                        const itemType = item.type;
-                        
-                        // Reasoning -> Thinking (Ignore completed)
-                        if (itemType === 'reasoning') {
-                            if (data.type === 'item.started' && item.text) {
-                                return { type: 'thinking', text: item.text, isDelta: true };
-                            }
-                            return null;
-                        }
-                        
-                        // Message -> Ignore (Content usually streamed via deltas or item.started if text present)
-                        if (itemType === 'message') {
-                            return null;
-                        }
-                        
-                        // Command Execution -> Tool Use/Result
-                        if (itemType === 'command_execution') {
-                            if (data.type === 'item.started') {
-                                return { type: 'tool-use', text: `> Executing ${item.command}...`, isDelta: false };
-                            }
-                            if (data.type === 'item.completed') {
-                                const isError = item.status === 'failed' || item.status === 'error';
-                                if (isError) {
-                                    return { type: 'error', text: `! Command failed: ${item.command}`, isDelta: false };
-                                }
-                                // Success completion
-                                return { type: 'tool-result', text: `< Command finished: ${item.command}`, isDelta: false };
-                            }
-                        }
-                    }
-
-                    // Final safety: if it was a stream event and we reached here, ignore it
-                    if (wasStreamEvent) {
-                        return null;
-                    }
-                }
-            } catch (e) {
-                // Ignore parse errors, treat as raw text
-            }
-            
-            // Fallback for raw text
-            if (raw.includes('📋 Summary:')) {
-                return { type: 'summary', text: raw, isDelta: false };
-            }
-            return { type: 'raw', text: raw, isDelta: false };
+            let cleanId = String(rawId);
+            if (cleanId.toLowerCase().startsWith('thread:')) cleanId = cleanId.substr(7);
+            return cleanId.substr(0, 8);
         }
 
         function updateUI(data) {
-            lastData = data; // Cache for filtering updates
-            let instances = data.instances || [];
-
-            // Filter instances based on preferences
-            if (hideOffline) {
-                instances = instances.filter(i => i.state !== 'offline');
-            }
-            if (hideIdle) {
-                instances = instances.filter(i => i.state !== 'idle');
-            }
-
-            // Update stats (always use full counts for stats from original data)
+            if (!data) return;
+            lastData = data;
             const allInstances = data.instances || [];
             document.getElementById('totalInstances').textContent = allInstances.length;
-            document.getElementById('busyInstances').textContent =
-                allInstances.filter(i => i.state === 'busy').length;
-
-            const totalCalls = allInstances.reduce((sum, i) => sum + (i.total_calls || 0), 0);
-            document.getElementById('totalCalls').textContent = totalCalls;
-
-            const totalErrors = allInstances.reduce((sum, i) => sum + (i.total_errors || 0), 0);
-            document.getElementById('totalErrors').textContent = totalErrors;
-
-            const totalIn = allInstances.reduce((sum, i) => sum + (i.input_tokens || 0), 0);
-            document.getElementById('totalInputTokens').textContent = formatNumber(totalIn);
-
-            const totalOut = allInstances.reduce((sum, i) => sum + (i.output_tokens || 0), 0);
-            document.getElementById('totalOutputTokens').textContent = formatNumber(totalOut);
-
-            // Only count instances that have actually made calls in the window for averaging
-            const instancesWithMetrics = allInstances.filter(i => (i.recent_calls && i.recent_calls.length > 0) || i.total_calls > 0);
+            document.getElementById('busyInstances').textContent = allInstances.filter(i => i.state === 'busy').length;
+            document.getElementById('totalCalls').textContent = allInstances.reduce((sum, i) => sum + (i.total_calls || 0), 0);
+            document.getElementById('totalErrors').textContent = allInstances.reduce((sum, i) => sum + (i.total_errors || 0), 0);
+            document.getElementById('totalInputTokens').textContent = formatNumber(allInstances.reduce((sum, i) => sum + (i.input_tokens || 0), 0));
+            document.getElementById('totalOutputTokens').textContent = formatNumber(allInstances.reduce((sum, i) => sum + (i.output_tokens || 0), 0));
+            document.getElementById('totalThinking').textContent = formatDuration(allInstances.reduce((sum, i) => sum + (i.thinking_ms || 0), 0));
+            document.getElementById('totalExecution').textContent = formatDuration(allInstances.reduce((sum, i) => sum + (i.execution_ms || 0), 0));
             
-            const avgTime = instancesWithMetrics.length > 0
-                ? Math.round(instancesWithMetrics.reduce((sum, i) => sum + (i.avg_execution_time_1m || 0), 0) / instancesWithMetrics.length)
-                : 0;
-            document.getElementById('avgExecTime').textContent = formatDuration(avgTime);
+            const withMetrics = allInstances.filter(i => i.total_calls > 0);
+            document.getElementById('avgExecTime').textContent = withMetrics.length ? formatDuration(withMetrics.reduce((sum, i) => sum + (i.avg_execution_time_1m || 0), 0) / withMetrics.length) : '0ms';
+            document.getElementById('errorRate').textContent = withMetrics.length ? (withMetrics.reduce((sum, i) => sum + (i.error_rate_1m || 0), 0) / withMetrics.length * 100).toFixed(1) + '%' : '0%';
 
-            const avgError = instancesWithMetrics.length > 0
-                ? (instancesWithMetrics.reduce((sum, i) => sum + (i.error_rate_1m || 0), 0) / instancesWithMetrics.length * 100).toFixed(1)
-                : 0;
-            document.getElementById('errorRate').textContent = avgError + '%';
+            let instances = allInstances;
+            if (hideOffline) instances = instances.filter(i => i.state !== 'offline');
+            if (hideIdle) instances = instances.filter(i => i.state !== 'idle');
 
-            // Update instances
             const container = document.getElementById('instances');
-
             if (instances.length === 0) {
-                container.innerHTML = `
-                    <div class="no-instances">
-                        <div class="icon">📡</div>
-                        <p>No MCP instances connected</p>
-                        <p style="margin-top: 10px; font-size: 14px;">Waiting for instances to register...</p>
-                    </div>
-                `;
+                container.innerHTML = '<div class="no-instances">📡 No instances to show</div>';
                 return;
             }
 
             container.innerHTML = instances.map(inst => {
-                const uptime = formatUptime(inst.uptime_seconds);
-                const recentCalls = (inst.recent_calls || []).slice(0, 5);
                 const shortId = getShortId(inst.session_id, inst.instance_id);
-
                 return `
                     <div class="instance-card ${inst.state}">
                         <div class="instance-header">
-                            <span class="instance-id" title="${inst.instance_id}">${inst.instance_id}</span>
-                            <div style="display: flex; align-items: center; gap: 8px;">
-                                <span class="session-tag" title="Correlating ID: ${inst.session_id || inst.instance_id}">[${shortId}]</span>
-                                ${inst.active_tool ? `<span class="active-tool-tag">${inst.active_tool}</span>` : ''}
-                                ${inst.model_name ? `<span class="model-tag">${inst.model_name}</span>` : ''}
-                                    ${inst.active_role ? `<span class="role-tag" style="margin-right: 15px;">${inst.active_role}</span>` : ''}
-                                    
+                            <div class="instance-id">${inst.instance_id} ${inst.session_id ? `<span class="session-tag" title="Session: ${inst.session_id}">[${shortId}]</span>` : ''}</div>
+                            <div class="instance-meta">
+                                <div class="instance-meta-row">
+                                    ${inst.model_name ? `<span class="model-tag">${inst.model_name}</span>` : ''}
+                                    ${inst.active_role ? `<span class="role-tag" style="margin-right:12px;">${inst.active_role}</span>` : ''}
                                     ${inst.last_status && inst.state === 'busy' ? `<span class="instance-phase">${inst.last_status}</span>` : ''}
                                     ${inst.state === 'busy' ? `
-                                        <span style="color: #b2bec3; font-size: 11px; margin-left: 12px; font-weight: bold;">🧠 ${formatDuration(inst.thinking_ms)}</span>
-                                        <span style="color: #2ed573; font-size: 11px; margin-left: 12px; font-weight: bold;">🛠️ ${formatDuration(inst.execution_ms)}</span>
+                                        <span style="color:#b2bec3;font-size:11px;margin-left:12px;font-weight:bold;">🧠 ${formatDuration(inst.thinking_ms)}</span>
+                                        <span style="color:#2ed573;font-size:11px;margin-left:12px;font-weight:bold;">🛠️ ${formatDuration(inst.execution_ms)}</span>
                                     ` : ''}
-                                <span class="instance-state ${inst.state}">${inst.state}</span>
-                                ${inst.state === 'busy' ? `<button class="interrupt-btn" onclick="interruptInstance('${inst.instance_id}')" title="Interrupt Current Task">✋</button>` : ''}
-                                ${inst.state !== 'offline' ? `<button class="kill-btn" onclick="killInstance('${inst.instance_id}')" title="Terminate Process">💀</button>` : ''}
-                            </div>
-                        </div>
-
-                        <div class="instance-metrics">
-                            <div class="metric">
-                                <div class="metric-value">${uptime}</div>
-                                <div class="metric-label">Uptime</div>
-                            </div>
-                            <div class="metric">
-                                <div class="metric-value">${formatNumber(inst.input_tokens || 0)}</div>
-                                <div class="metric-label">In Tokens</div>
-                            </div>
-                            <div class="metric">
-                                <div class="metric-value text-accent">${formatNumber(inst.output_tokens || 0)}</div>
-                                <div class="metric-label">Out Tokens</div>
-                            </div>
-                            <div class="metric">
-                                <div class="metric-value">${inst.total_calls}</div>
-                                <div class="metric-label">Calls</div>
-                            </div>
-                            <div class="metric">
-                                <div class="metric-value">${formatDuration(Math.round(inst.avg_execution_time_1m || 0))}</div>
-                                <div class="metric-label">Avg Time</div>
-                            </div>
-                        </div>
-
-                        ${recentCalls.length > 0 ? `
-                            <div class="recent-calls">
-                                <h4>Recent Tool Calls</h4>
-                                <div class="call-list">
-                                    ${recentCalls.map(call => `
-                                        <div class="call-item ${call.status}">
-                                            <div class="call-header">
-                                                <span class="call-name">
-                                                    ${call.tool}
-                                                    ${call.model_name ? `<span class="model-tag" style="font-size: 9px; padding: 1px 4px;">${call.model_name}</span>` : ''}
-                                                </span>
-                                                <span class="call-duration">${formatDuration(call.duration_ms)}</span>
-                                            </div>
-                                            ${call.tool_input ? `<div class="call-detail input">In: ${formatToolData(call.tool_input)}</div>` : ''}
-                                            ${call.tool_output ? `<div class="call-detail output">Out: ${formatToolData(call.tool_output)}</div>` : ''}
-                                        </div>
-                                    `).join('')}
+                                    <span class="instance-state ${inst.state}">${inst.state}</span>
+                                    ${inst.state === 'busy' ? `<button class="interrupt-btn" onclick="interruptInstance('${inst.instance_id}')">✋</button>` : ''}
+                                    ${inst.state !== 'offline' ? `<button class="kill-btn" onclick="killInstance('${inst.instance_id}')">💀</button>` : ''}
                                 </div>
                             </div>
-                        ` : ''}
+                        </div>
+                        <div class="instance-metrics">
+                            <div class="metric"><div class="metric-value">${formatUptime(inst.uptime_seconds)}</div><div class="metric-label">Uptime</div></div>
+                            <div class="metric"><div class="metric-value" style="color:#b2bec3;">🧠 ${formatDuration(inst.thinking_ms)}</div><div class="metric-label">Thinking</div></div>
+                            <div class="metric"><div class="metric-value" style="color:#2ed573;">🛠️ ${formatDuration(inst.execution_ms)}</div><div class="metric-label">Execution</div></div>
+                            <div class="metric"><div class="metric-value">${formatNumber(inst.input_tokens || 0)}</div><div class="metric-label">In Tokens</div></div>
+                            <div class="metric"><div class="metric-value text-accent">${formatNumber(inst.output_tokens || 0)}</div><div class="metric-label">Out Tokens</div></div>
+                            <div class="metric"><div class="metric-value">${inst.total_calls}</div><div class="metric-label">Calls</div></div>
+                            <div class="metric"><div class="metric-value">${formatDuration(Math.round(inst.avg_execution_time_1m || 0))}</div><div class="metric-label">Avg Time</div></div>
+                        </div>
                     </div>
                 `;
             }).join('');
         }
 
-        function formatToolData(raw) {
-            if (!raw) return '';
-            let processed = '';
-            try {
-                const data = JSON.parse(raw);
-                // If it's a command execution, prettify the command string
-                if (data.command && typeof data.command === 'string') {
-                    // Prettify by adding newlines after &&, ||, ;
-                    let cmd = data.command;
-                    cmd = cmd.replace(/ && /g, ' &&\n  ');
-                    cmd = cmd.replace(/ \|\| /g, ' ||\n  ');
-                    cmd = cmd.replace(/; /g, ';\n  ');
-                    processed = cmd;
+        function appendLog(event, buffer = true) {
+            if (buffer) { allLogs.push(event); if (allLogs.length > MAX_LOGS) allLogs.shift(); }
+            const container = document.getElementById('logsContainer');
+            if (terminalView) {
+                const parsed = parseLogContent(event.log_data);
+                if (!parsed) return;
+                const session = getShortId(event.session_id, event.instance_id);
+                const canMerge = lastLogEntryRef && lastLogEntryRef.id === session && lastLogEntryRef.type === parsed.type && parsed.isDelta;
+                if (canMerge) {
+                    const contentEl = lastLogEntryRef.element.querySelector('.term-content');
+                    lastLogEntryRef.rawText += parsed.text;
+                    contentEl.innerHTML = formatTerminalText(lastLogEntryRef.rawText);
                 } else {
-                    // Prettify general JSON
-                    processed = JSON.stringify(data, null, 2);
+                    const entry = document.createElement('div');
+                    entry.className = 'log-entry terminal';
+                    entry.innerHTML = `<div class="term-line"><span class="term-meta">[${getShortId(event.session_id, event.instance_id)}]</span><div class="term-content ${parsed.type}">${formatTerminalText(parsed.text)}</div></div>`;
+                    container.appendChild(entry);
+                    lastLogEntryRef = { id: session, type: parsed.type, element: entry, rawText: parsed.text };
                 }
-            } catch (e) {
-                // Not JSON or parse failed
-                processed = raw;
+            } else {
+                const entry = document.createElement('div');
+                entry.className = 'log-entry';
+                entry.innerHTML = `<span class="log-time">[${new Date(event.timestamp).toLocaleTimeString()}]</span><span class="log-session">[${getShortId(event.session_id, event.instance_id)}]</span><span class="log-msg">${escapeHtml(event.log_data)}</span>`;
+                container.appendChild(entry);
             }
-            
-            // Always enforce a strict limit for display in the instance cards
-            // to prevent the UI from becoming unusable with large payloads.
-            return escapeHtml(truncate(processed, 500));
+            if (autoScroll) container.scrollTop = container.scrollHeight;
         }
 
-        function truncate(str, n=50) {
-            if (!str) return '';
-            const s = String(str);
-            return (s.length > n) ? s.substr(0, n-1) + '...' : s;
-        }
-
-        function escapeHtml(text) {
-            if (text == null) return '';
-            return String(text)
-                .replace(/&/g, "&amp;")
-                .replace(/</g, "&lt;")
-                .replace(/>/g, "&gt;")
-                .replace(/"/g, "&quot;")
-                .replace(/'/g, "&#039;");
-        }
-
-        function formatDuration(ms) {
-            if (ms < 1000) return Math.round(ms) + 'ms';
-            const seconds = ms / 1000;
-            if (seconds < 60) return seconds.toFixed(1) + 's';
-            const minutes = Math.floor(seconds / 60);
-            const remainingSeconds = Math.round(seconds % 60);
-            return `${minutes}m ${remainingSeconds}s`;
-        }
-
-        function formatUptime(seconds) {
-            if (seconds < 60) return Math.round(seconds) + 's';
-            if (seconds < 3600) return Math.round(seconds / 60) + 'm';
-            if (seconds < 86400) return Math.round(seconds / 3600) + 'h';
-            return Math.round(seconds / 86400) + 'd';
-        }
-
-        function formatNumber(num) {
-            if (num >= 1000000000) {
-                return (num / 1000000000).toFixed(1) + 'B';
-            }
-            if (num >= 1000000) {
-                return (num / 1000000).toFixed(1) + 'M';
-            }
-            if (num >= 1000) {
-                return (num / 1000).toFixed(1) + 'K';
-            }
-            return num.toLocaleString();
-        }
-
-        async function killInstance(instanceId) {
-            if (!confirm(`Are you sure you want to hard-kill instance ${instanceId}?\nThis sends a SIGTERM signal to the process.`)) {
-                return;
-            }
+        function parseLogContent(raw) {
+            if (!raw) return null;
             try {
-                const response = await fetch(`/api/instances/${instanceId}/kill`, { method: 'POST' });
-                const result = await response.json();
-                alert(result.message || result.detail);
-            } catch (e) {
-                alert(`Error: ${e.message}`);
-            }
+                if (raw.trim().startsWith('{')) {
+                    const data = JSON.parse(raw);
+                    if (['message_start', 'message_delta', 'message_stop', 'content_block_start', 'content_block_stop', 'ping'].includes(data.type)) return null;
+                    if (data.type === 'message' || data.type === 'assistant') {
+                        let content = data.content || data.thought;
+                        if (data.message && data.message.content) content = data.message.content;
+                        if (Array.isArray(content)) {
+                            const thinking = content.find(c => c.type === 'thinking');
+                            if (thinking) return { type: 'thinking', text: thinking.thinking || thinking.text || '', isDelta: false };
+                            content = content.filter(c => c.type === 'text' || typeof c === 'string').map(c => c.text || c).join('');
+                        }
+                        if (!content && data.thinking) content = data.thinking;
+                        if (content) return { type: 'thinking', text: content, isDelta: data.delta === true || data.type === 'message' };
+                    }
+                    if (data.type === 'content_block_delta' && data.delta) {
+                        const text = data.delta.text || data.delta.thinking;
+                        if (text) return { type: 'thinking', text: text, isDelta: true };
+                    }
+                    if (data.type === 'tool_use') return { type: 'tool-use', text: `> Executing ${data.name}...`, isDelta: false };
+                    if (data.type === 'tool_result') return { type: 'tool-result', text: `< Tool finished.`, isDelta: false };
+                }
+            } catch (e) {}
+            return { type: 'raw', text: raw, isDelta: false };
         }
 
-        async function interruptInstance(instanceId) {
-            // No confirm for interrupt as it's intended to be a common action
-            try {
-                const response = await fetch(`/api/instances/${instanceId}/interrupt`, { method: 'POST' });
-                const result = await response.json();
-                // We don't alert on success, just let the UI update
-                if (!response.ok) alert(result.detail || 'Failed to interrupt');
-            } catch (e) {
-                alert(`Error: ${e.message}`);
-            }
+        function connect() {
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
+            ws.onopen = () => { document.getElementById('statusDot').classList.add('connected'); document.getElementById('statusText').textContent = 'Connected'; };
+            ws.onclose = () => { document.getElementById('statusDot').classList.remove('connected'); document.getElementById('statusText').textContent = 'Disconnected'; setTimeout(connect, 3000); };
+            ws.onmessage = (e) => { const d = JSON.parse(e.data); if (d.type === 'state_update') updateUI(d); else if (d.event_type === 'tool_log') appendLog(d); };
         }
 
-        // Auto-connect on load
-        window.onload = () => {
-            initControls();
-            connect();
-        };
+        async function interruptInstance(id) { await fetch(`/interrupt/${id}`, { method: 'POST' }); }
+        async function killInstance(id) { if (confirm('Kill process?')) await fetch(`/kill/${id}`, { method: 'POST' }); }
+
+        window.onload = () => { initControls(); connect(); };
     </script>
 </body>
 </html>
