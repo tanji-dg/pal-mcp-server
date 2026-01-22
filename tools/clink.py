@@ -6,6 +6,7 @@ import json
 import logging
 import re
 import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -624,27 +625,36 @@ class CLinkTool(SimpleTool):
                     if publisher:
                         await publisher.tool_log(self.get_name(), f"Failed to salvage output: {parse_exc}", session_id=effective_session_id)
 
-            # Fallback for errors with NO accumulated data
-            try:
-                # Still try to include thinking even in fallback if available
-                final_error_msg = error_msg
-                thinking = "".join(state["accumulated_thinking"])
-                if thinking:
-                    final_error_msg = f"<thinking>{thinking}</thinking>\n\n{error_msg}"
-                
-                model_info = {"provider": client_config.name, "model_name": "error"}
-                self._record_assistant_turn(continuation_id, final_error_msg, request, model_info)
-            except Exception:
-                logger.debug("Failed to record error turn", exc_info=True)
-
-            # Notify monitor of failure
-            if publisher:
-                duration_ms = int((time.monotonic() - state.get("start_time", time.monotonic())) * 1000)
-                await publisher.tool_end(self.get_name(), duration_ms=duration_ms, is_error=True, session_id=effective_session_id)
+            # Fallback for errors: capture any possible salvaged content
+            salvaged_json = None
+            if is_interrupted or has_accumulated_data or (is_cli_error and exc.stdout):
                 try:
-                    await publisher.stop()
+                    # Capture current salvaged state as ToolOutput JSON for monitor
+                    # This ensures the history shows progress even on hard errors
+                    salvaged_json = ToolOutput(
+                        status="error",
+                        content=salvaged_content if 'salvaged_content' in locals() else error_msg,
+                        content_type="text",
+                        metadata={
+                            "cli_name": client_config.name,
+                            "status": "interrupted" if is_interrupted else "failed",
+                            "partial": True,
+                            "logs": state["accumulated_logs"]
+                        }
+                    ).model_dump_json()
                 except Exception:
                     pass
+
+            # Notify monitor of failure with salvaged content if available
+            if publisher:
+                duration_ms = int((time.monotonic() - state.get("start_time", time.monotonic())) * 1000)
+                await publisher.tool_error(
+                    self.get_name(), 
+                    duration_ms=duration_ms, 
+                    error_message=str(exc),
+                    tool_output=salvaged_json,
+                    session_id=effective_session_id
+                )
 
             if isinstance(exc, CLIAgentError):
                 metadata = self._build_error_metadata(client_config, exc)
@@ -691,7 +701,13 @@ class CLinkTool(SimpleTool):
             # Notify monitor of failure
             if publisher:
                 duration_ms = int((time.monotonic() - state.get("start_time", time.monotonic())) * 1000)
-                await publisher.tool_end(self.get_name(), duration_ms=duration_ms, is_error=True, session_id=effective_session_id)
+                await publisher.tool_error(
+                    self.get_name(), 
+                    duration_ms=duration_ms, 
+                    error_message=result.parsed.content,
+                    tool_output=result.parsed.content,
+                    session_id=effective_session_id
+                )
             
             # (Already recorded to DB above, but let's re-record with error status if needed)
             self._raise_tool_error(result.parsed.content, metadata=metadata)
@@ -734,11 +750,6 @@ class CLinkTool(SimpleTool):
         if publisher:
             duration_ms = int((time.monotonic() - state.get("start_time", time.monotonic())) * 1000)
             await publisher.tool_end(self.get_name(), duration_ms=duration_ms, tool_output=tool_output.model_dump_json(), session_id=effective_session_id)
-            # Ensure background tasks are flushed and stopped to avoid hanging the calling agent
-            try:
-                await publisher.stop()
-            except Exception:
-                pass
 
         try:
             return [TextContent(type="text", text=tool_output.model_dump_json())]

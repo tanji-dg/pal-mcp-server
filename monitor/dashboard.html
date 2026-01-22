@@ -312,18 +312,29 @@
             lastData = data;
             const allInstances = data.instances || [];
             
+            // Helper to get value with snake_case and camelCase support
+            const get = (obj, key) => {
+                if (!obj) return 0;
+                const camelKey = key.replace(/_([a-z])/g, (g) => g[1].toUpperCase());
+                return obj[key] || obj[camelKey] || 0;
+            };
+
+            // Global Stats
             document.getElementById('totalInstances').textContent = allInstances.length;
             document.getElementById('busyInstances').textContent = allInstances.filter(i => i.state === 'busy').length;
-            document.getElementById('totalCalls').textContent = allInstances.reduce((sum, i) => sum + (i.total_calls || 0), 0);
-            document.getElementById('totalErrors').textContent = allInstances.reduce((sum, i) => sum + (i.total_errors || 0), 0);
-            document.getElementById('totalInputTokens').textContent = formatNumber(allInstances.reduce((sum, i) => sum + (i.input_tokens || 0), 0));
-            document.getElementById('totalOutputTokens').textContent = formatNumber(allInstances.reduce((sum, i) => sum + (i.output_tokens || 0), 0));
-            document.getElementById('totalThinking').textContent = formatDuration(allInstances.reduce((sum, i) => sum + (i.thinking_ms || 0), 0));
-            document.getElementById('totalExecution').textContent = formatDuration(allInstances.reduce((sum, i) => sum + (i.execution_ms || 0), 0));
             
-            const withMetrics = allInstances.filter(i => (i.total_calls || 0) > 0);
-            document.getElementById('avgExecTime').textContent = withMetrics.length ? formatDuration(withMetrics.reduce((sum, i) => sum + (i.avg_execution_time_1m || 0), 0) / withMetrics.length) : '0ms';
-            document.getElementById('errorRate').textContent = withMetrics.length ? (withMetrics.reduce((sum, i) => sum + (i.error_rate_1m || 0), 0) / withMetrics.length * 100).toFixed(1) + '%' : '0%';
+            document.getElementById('totalCalls').textContent = get(data, 'total_calls');
+            document.getElementById('totalErrors').textContent = get(data, 'total_errors');
+            
+            document.getElementById('totalInputTokens').textContent = formatNumber(get(data, 'total_input_tokens'));
+            document.getElementById('totalOutputTokens').textContent = formatNumber(get(data, 'total_output_tokens'));
+            
+            document.getElementById('totalThinking').textContent = formatDuration(get(data, 'total_thinking_ms'));
+            document.getElementById('totalExecution').textContent = formatDuration(get(data, 'total_execution_ms'));
+            
+            const withMetrics = allInstances.filter(i => (get(i, 'total_calls')) > 0);
+            document.getElementById('avgExecTime').textContent = withMetrics.length ? formatDuration(withMetrics.reduce((sum, i) => sum + (get(i, 'avg_execution_time_1m')), 0) / withMetrics.length) : '0ms';
+            document.getElementById('errorRate').textContent = withMetrics.length ? (withMetrics.reduce((sum, i) => sum + (get(i, 'error_rate_1m')), 0) / withMetrics.length * 100).toFixed(1) + '%' : '0%';
 
             let instances = allInstances;
             if (hideOffline) instances = instances.filter(i => i.state !== 'offline');
@@ -350,8 +361,8 @@
                                     ${inst.active_role ? `<span class="role-tag">${inst.active_role}</span>` : ''}
                                     ${inst.last_status && inst.state === 'busy' ? `<span class="instance-phase">${inst.last_status}</span>` : ''}
                                     ${inst.state === 'busy' ? `
-                                        <span style="color:#b2bec3;font-size:11px;margin-left:12px;font-weight:bold;">🧠 ${formatDuration(inst.thinking_ms)}</span>
-                                        <span style="color:#2ed573;font-size:11px;margin-left:12px;font-weight:bold;">🛠️ ${formatDuration(inst.execution_ms)}</span>
+                                        <span style="color:#b2bec3;font-size:11px;margin-left:12px;font-weight:bold;">🧠 ${formatDuration(get(inst, 'thinking_ms'))}</span>
+                                        <span style="color:#2ed573;font-size:11px;margin-left:12px;font-weight:bold;">🛠️ ${formatDuration(get(inst, 'execution_ms'))}</span>
                                     ` : ''}
                                     <span class="instance-state ${inst.state}">${inst.state}</span>
                                     ${inst.state === 'busy' ? `<button class="interrupt-btn" onclick="interruptInstance('${inst.instance_id}')" title="Interrupt">✋</button>` : ''}
@@ -360,13 +371,13 @@
                             </div>
                         </div>
                         <div class="instance-metrics">
-                            <div class="metric"><div class="metric-value">${formatUptime(inst.uptime_seconds)}</div><div class="metric-label">Uptime</div></div>
-                            <div class="metric"><div class="metric-value" style="color:#b2bec3;">🧠 ${formatDuration(inst.thinking_ms)}</div><div class="metric-label">Thinking</div></div>
-                            <div class="metric"><div class="metric-value" style="color:#2ed573;">🛠️ ${formatDuration(inst.execution_ms)}</div><div class="metric-label">Execution</div></div>
-                            <div class="metric"><div class="metric-value">${formatNumber(inst.input_tokens || 0)}</div><div class="metric-label">In Tokens</div></div>
-                            <div class="metric"><div class="metric-value text-accent">${formatNumber(inst.output_tokens || 0)}</div><div class="metric-label">Out Tokens</div></div>
-                            <div class="metric"><div class="metric-value">${inst.total_calls}</div><div class="metric-label">Calls</div></div>
-                            <div class="metric"><div class="metric-value">${formatDuration(Math.round(inst.avg_execution_time_1m || 0))}</div><div class="metric-label">Avg Time</div></div>
+                            <div class="metric"><div class="metric-value">${formatUptime(get(inst, 'uptime_seconds'))}</div><div class="metric-label">Uptime</div></div>
+                            <div class="metric"><div class="metric-value" style="color:#b2bec3;">🧠 ${formatDuration(get(inst, 'thinking_ms'))}</div><div class="metric-label">Thinking</div></div>
+                            <div class="metric"><div class="metric-value" style="color:#2ed573;">🛠️ ${formatDuration(get(inst, 'execution_ms'))}</div><div class="metric-label">Execution</div></div>
+                            <div class="metric"><div class="metric-value">${formatNumber(get(inst, 'input_tokens'))}</div><div class="metric-label">In Tokens</div></div>
+                            <div class="metric"><div class="metric-value text-accent">${formatNumber(get(inst, 'output_tokens'))}</div><div class="metric-label">Out Tokens</div></div>
+                            <div class="metric"><div class="metric-value">${get(inst, 'total_calls')}</div><div class="metric-label">Calls</div></div>
+                            <div class="metric"><div class="metric-value">${formatDuration(Math.round(get(inst, 'avg_execution_time_1m')))}</div><div class="metric-label">Avg Time</div></div>
                         </div>
                     </div>
                 `;

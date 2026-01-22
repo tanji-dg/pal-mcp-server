@@ -890,8 +890,9 @@ class MonitorCoordinator:
                 tool_name = get_val(event, 'tool_name')
                 duration_ms = get_val(event, 'duration_ms')
                 model_name = get_val(event, 'model_name')
+                tool_output = get_val(event, 'tool_output')
                 error_message = get_val(event, 'error_message') or 'Unknown error'
-                tracker.end_tool(tool_name, duration_ms or 0, is_error=True, model_name=model_name)
+                tracker.end_tool(tool_name, duration_ms or 0, is_error=True, tool_output=tool_output, model_name=model_name)
                 logger.warning(f"Tool error: {tool_name} on {instance_id} - {error_message}")
 
             elif event_type == ToolEventType.TOOL_LOG:
@@ -994,6 +995,9 @@ class MonitorCoordinator:
                 try:
                     state = await self.get_aggregated_state()
                     message = state.to_json()
+                    
+                    if state.total_calls > 0 or state.total_thinking_ms > 0:
+                        logger.debug(f"Broadcasting metrics: calls={state.total_calls}, thinking={state.total_thinking_ms}ms, execution={state.total_execution_ms}ms")
                 except Exception as e:
                     logger.error(f"Failed to generate aggregated state for broadcast: {e}", exc_info=True)
                     continue

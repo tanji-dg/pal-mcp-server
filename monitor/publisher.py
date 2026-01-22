@@ -314,16 +314,40 @@ class MonitorPublisher:
         )
         await self._publish_event(event)
 
-    async def tool_error(self, tool_name: str, duration_ms: int, error_message: str, model_name: Optional[str] = None, session_id: Optional[str] = None):
+    async def tool_error(self, tool_name: str, duration_ms: int, error_message: str, tool_output: Optional[Any] = None, model_name: Optional[str] = None, session_id: Optional[str] = None):
         """Record that a tool execution resulted in an error."""
         if not self.enabled:
             return
+
+        # Serialize salvaged output if present
+        serialized_output = None
+        if tool_output:
+            import json
+            try:
+                if hasattr(tool_output, "model_dump"):
+                    serialized_output = tool_output.model_dump_json()
+                elif hasattr(tool_output, "to_dict"):
+                    serialized_output = json.dumps(tool_output.to_dict())
+                elif isinstance(tool_output, list):
+                    try:
+                        serialized_output = json.dumps([
+                            item.model_dump() if hasattr(item, "model_dump") else item 
+                            for item in tool_output
+                        ])
+                    except Exception:
+                        serialized_output = json.dumps(tool_output)
+                else:
+                    serialized_output = json.dumps(tool_output)
+            except Exception as e:
+                logger.debug(f"Publisher: Error serialization failed: {e}")
+                serialized_output = str(tool_output)
 
         event = ToolEvent(
             event_type=ToolEventType.TOOL_ERROR,
             instance_id=self.instance_id,
             tool_name=tool_name,
             duration_ms=duration_ms,
+            tool_output=serialized_output,
             model_name=model_name,
             session_id=session_id,
             error_message=error_message[:500],  # Truncate long error messages

@@ -36,10 +36,12 @@ class CodexJSONLParser(BaseParser):
                     text = item.get("text")
                     if isinstance(text, str) and text.strip():
                         agent_messages.append(text.strip())
-            elif event_type == "error":
-                message = event.get("message")
-                if isinstance(message, str) and message.strip():
-                    errors.append(message.strip())
+            elif event_type == "error" or event_type == "turn.failed":
+                err_obj = event.get("error") if event_type == "turn.failed" else event
+                if isinstance(err_obj, dict):
+                    message = err_obj.get("message")
+                    if isinstance(message, str) and message.strip():
+                        errors.append(message.strip())
             elif event_type == "turn.completed":
                 turn_usage = event.get("usage")
                 if isinstance(turn_usage, dict):

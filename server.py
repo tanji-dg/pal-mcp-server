@@ -941,8 +941,13 @@ async def handle_call_tool(name: str, arguments: dict[str, Any]) -> list[TextCon
                             except Exception:
                                 pass
 
+                    # Extract session ID if available for better log grouping
+                    effective_session_id = arguments.get("continuation_id")
+                    if effective_session_id and isinstance(effective_session_id, str) and not effective_session_id.startswith("thread:"):
+                        effective_session_id = f"thread:{effective_session_id}"
+
                     publisher = get_publisher()
-                    await publisher.tool_end(name, tool_duration_ms, result, model_name=effective_model_name)
+                    await publisher.tool_end(name, tool_duration_ms, result, model_name=effective_model_name, session_id=effective_session_id)
                 except Exception as e:
                     logger.debug(f"Failed to publish tool end event: {e}")
 
@@ -955,7 +960,13 @@ async def handle_call_tool(name: str, arguments: dict[str, Any]) -> list[TextCon
                     from monitor.publisher import get_publisher
                     publisher = get_publisher()
                     duration = int((time.time() - tool_start_time) * 1000)
-                    await publisher.tool_error(name, duration, "Operation cancelled", model_name=model_name)
+                    
+                    # Extract session ID if available
+                    effective_session_id = arguments.get("continuation_id")
+                    if effective_session_id and isinstance(effective_session_id, str) and not effective_session_id.startswith("thread:"):
+                        effective_session_id = f"thread:{effective_session_id}"
+                        
+                    await publisher.tool_error(name, duration, "Operation cancelled", model_name=model_name, session_id=effective_session_id)
                 except Exception:
                     pass
             raise
@@ -970,9 +981,14 @@ async def handle_call_tool(name: str, arguments: dict[str, Any]) -> list[TextCon
 
                     # Attempt to extract model name for error event
                     effective_model_name = arguments.get("_resolved_model_name") or model_name
+                    
+                    # Extract session ID if available
+                    effective_session_id = arguments.get("continuation_id")
+                    if effective_session_id and isinstance(effective_session_id, str) and not effective_session_id.startswith("thread:"):
+                        effective_session_id = f"thread:{effective_session_id}"
 
                     publisher = get_publisher()
-                    await publisher.tool_error(name, tool_duration_ms, str(tool_error), model_name=effective_model_name)
+                    await publisher.tool_error(name, tool_duration_ms, str(tool_error), model_name=effective_model_name, session_id=effective_session_id)
                 except Exception as e:
                     logger.debug(f"Failed to publish tool error event: {e}")
 

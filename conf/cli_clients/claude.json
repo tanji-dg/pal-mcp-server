@@ -4,8 +4,6 @@
   "additional_args": [
     "--dangerously-skip-permissions",
     "-p",
-    "--output-format",
-    "stream-json",
     "--verbose",
     "--include-partial-messages"
   ],
@@ -27,15 +25,15 @@
       "role_args": ["--settings", "/home/htanji/.claude/settings.json.gemini3-high"]
     },
     "pro": {
-      "prompt_path": "systemprompts/clink/default_codereviewer.txt",
+      "prompt_path": "systemprompts/clink/default.txt",
       "role_args": [
     	"--model",
 	"claude-sonnet-4-5-20250929"
       ]
     },
-    "developer": {
+    "flash3": {
       "prompt_path": "systemprompts/clink/default.txt",
-      "role_args": ["--settings", "/home/htanji/.claude/settings.json.gemini"]
-    }
+      "role_args": ["--settings", "/home/htanji/.claude/settings.json.gemini3-flash"]
   }
+}
 }
