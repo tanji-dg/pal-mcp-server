@@ -139,7 +139,7 @@ async def test_clink_tool_truncates_large_output(monkeypatch):
     result = await tool.execute(arguments)
     payload = json.loads(result[0].text)
     assert payload["status"] in {"success", "continuation_available"}
-    assert "The full content has been saved to an external file" in payload["content"]
+    assert "The full content (including thinking and logs) has been saved to an external file" in payload["content"]
     metadata = payload.get("metadata", {})
     assert metadata.get("output_offloaded") is True
     assert metadata.get("events_removed_for_normal") is True
@@ -180,7 +180,7 @@ async def test_clink_tool_truncates_without_summary(monkeypatch):
     result = await tool.execute(arguments)
     payload = json.loads(result[0].text)
     assert payload["status"] in {"success", "continuation_available"}
-    assert "The full content has been saved to an external file" in payload["content"]
+    assert "The full content (including thinking and logs) has been saved to an external file" in payload["content"]
     metadata = payload.get("metadata", {})
     assert metadata.get("output_offloaded") is True
     assert metadata.get("events_removed_for_normal") is True

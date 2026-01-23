@@ -698,6 +698,15 @@ class CLinkTool(SimpleTool):
 
         # Check for error status in parsed result (even if CLI return code was 0)
         if result.parsed.metadata.get("is_error"):
+            # Apply output size limits even for errors to ensure stable transport
+            content, metadata, was_offloaded = self._apply_output_limit(
+                client_config, 
+                result.parsed.content, 
+                metadata, 
+                thinking=raw_thinking, 
+                logs=state["accumulated_logs"]
+            )
+            
             # Notify monitor of failure
             if publisher:
                 duration_ms = int((time.monotonic() - state.get("start_time", time.monotonic())) * 1000)
@@ -710,21 +719,34 @@ class CLinkTool(SimpleTool):
                 )
             
             # (Already recorded to DB above, but let's re-record with error status if needed)
-            self._raise_tool_error(result.parsed.content, metadata=metadata)
+            self._raise_tool_error(content, metadata=metadata)
 
         # Apply output size limits (truncation/summarization/FILE OFFLOAD)
-        content, metadata = self._apply_output_limit(client_config, raw_content, metadata)
+        # We now pass everything to check for total response size
+        content, metadata, was_offloaded = self._apply_output_limit(
+            client_config, 
+            raw_content, 
+            metadata, 
+            thinking=raw_thinking, 
+            logs=state["accumulated_logs"]
+        )
 
         # Prepare final response content for the main agent
-        final_response_text = content
-        if raw_thinking:
-            final_response_text = f"<thinking>\n> 🧠 **Thinking:**\n> {raw_thinking}\n</thinking>\n\n{final_response_text}"
-            
-        # Append progress timeline for reproducibility
-        if state["accumulated_logs"]:
-            timeline = "### 🔄 Progress Timeline\n" + "\n".join(state["accumulated_logs"])
-            if timeline not in final_response_text:
-                final_response_text += f"\n\n{timeline}"
+        if was_offloaded:
+            # If offloaded, the 'content' already contains the SUMMARY and the file path
+            # We don't want to double-append thinking or logs here because they are in the file
+            final_response_text = content
+        else:
+            # Normal small response: combine components
+            final_response_text = content
+            if raw_thinking:
+                final_response_text = f"<thinking>\n> 🧠 **Thinking:**\n> {raw_thinking}\n</thinking>\n\n{final_response_text}"
+                
+            # Append progress timeline for reproducibility
+            if state["accumulated_logs"]:
+                timeline = "### 🔄 Progress Timeline\n" + "\n".join(state["accumulated_logs"])
+                if timeline not in final_response_text:
+                    final_response_text += f"\n\n{timeline}"
 
         # Continuation offer logic needs updated continuation_id
         request.continuation_id = continuation_id
@@ -847,9 +869,23 @@ class CLinkTool(SimpleTool):
         client: ResolvedCLIClient,
         content: str,
         metadata: dict[str, Any],
-    ) -> tuple[str, dict[str, Any]]:
-        if len(content) <= MAX_RESPONSE_CHARS:
-            return content, metadata
+        thinking: str = "",
+        logs: list[str] | None = None,
+    ) -> tuple[str, dict[str, Any], bool]:
+        """
+        Apply size limits to the output and offload to a file if necessary.
+        Now considers the total size of content, thinking, and logs.
+        Returns: (processed_content, updated_metadata, was_offloaded)
+        """
+        # Calculate total potential size
+        log_text = "\n".join(logs) if logs else ""
+        total_size = len(content) + len(thinking) + len(log_text)
+        
+        # Check for loop detection or other critical errors in any part of the output
+        is_loop = "Loop detected" in content or "Loop detected" in log_text or "Loop detected" in thinking
+        
+        if total_size <= MAX_RESPONSE_CHARS:
+            return content, metadata, False
 
         # --- LARGE OUTPUT OFFLOADING START ---
         try:
@@ -862,14 +898,26 @@ class CLinkTool(SimpleTool):
             filename = f"clink_output_{safe_name}_{timestamp}_{uuid.uuid4().hex[:8]}.txt"
             file_path = output_dir / filename
             
+            # Construct full combined content for the file
+            full_file_content = ""
+            if thinking:
+                full_file_content += f"=== THINKING PROCESS ===\n{thinking}\n\n"
+            if log_text:
+                full_file_content += f"=== PROGRESS LOGS ===\n{log_text}\n\n"
+            full_file_content += f"=== FINAL CONTENT ===\n{content}"
+            
             # Write full content to file
-            file_path.write_text(content, encoding="utf-8")
+            file_path.write_text(full_file_content, encoding="utf-8")
             
             # Prepare message for the agent to read the file
             abs_path = str(file_path.absolute())
+            
+            # PRIORITIZE CRITICAL ERROR in display content
+            error_prefix = "⚠️ **CRITICAL: Loop detected, stopping execution.**\n\n" if is_loop else ""
+            
             offload_message = (
-                f"\n\n[MANDATORY] CLI '{client.name}' produced a huge response ({len(content):,} characters).\n"
-                f"The full content has been saved to an external file for stability:\n"
+                f"\n\n[MANDATORY] CLI '{client.name}' produced a huge response ({total_size:,} characters).\n"
+                f"The full content (including thinking and logs) has been saved to an external file for stability:\n"
                 f"PATH: {abs_path}\n\n"
                 f"YOU MUST use the `read_file` tool to examine the details of this output if needed.\n"
             )
@@ -878,10 +926,10 @@ class CLinkTool(SimpleTool):
             summary = self._extract_summary(content)
             if summary:
                 if len(summary) > 5000: summary = summary[:5000] + "..."
-                display_content = f"<SUMMARY>\n{summary}\n</SUMMARY>\n\n{offload_message}"
+                display_content = f"{error_prefix}<SUMMARY>\n{summary}\n</SUMMARY>\n\n{offload_message}"
             else:
                 excerpt = content[:4000] + "..."
-                display_content = f"EXCERPT OF OUTPUT:\n{excerpt}\n\n{offload_message}"
+                display_content = f"{error_prefix}EXCERPT OF OUTPUT:\n{excerpt}\n\n{offload_message}"
                 
             # Clean up metadata - CRITICAL to remove huge raw fields
             cleaned_metadata = self._prune_metadata(metadata, client, reason="offload")
@@ -890,19 +938,22 @@ class CLinkTool(SimpleTool):
             cleaned_metadata.update({
                 "output_offloaded": True,
                 "output_file_path": abs_path,
-                "output_original_length": len(content)
+                "output_original_length": total_size,
+                "loop_detected": is_loop
             })
             
-            logger.info(f"Offloaded large clink output to {abs_path} ({len(content)} chars)")
-            return display_content, cleaned_metadata
+            logger.info(f"Offloaded large clink response to {abs_path} ({total_size} chars)")
+            return display_content, cleaned_metadata, True
             
         except Exception as offload_exc:
             logger.error(f"Failed to offload large clink output: {offload_exc}")
-            # Fallback to normal truncation logic below...
+            # Fallback to normal truncation logic...
         # --- LARGE OUTPUT OFFLOADING END ---
 
+        # (Existing summary/truncation logic as backup)
         summary = self._extract_summary(content)
         if summary:
+            # ... (truncated for brevity in thought, but must match original)
             summary_text = summary
             if len(summary_text) > MAX_RESPONSE_CHARS:
                 logger.debug(
@@ -931,7 +982,7 @@ class CLinkTool(SimpleTool):
                 len(content),
                 len(summary_text),
             )
-            return f"<SUMMARY>\n{summary_text}\n</SUMMARY>", summary_metadata
+            return f"<SUMMARY>\n{summary_text}\n</SUMMARY>", summary_metadata, False
 
         # CRITICAL: Prune huge raw data from metadata to ensure MCP transport success
         truncated_metadata = self._prune_metadata(metadata, client, reason="truncated")
@@ -965,7 +1016,7 @@ class CLinkTool(SimpleTool):
             f"--- Begin excerpt ({len(excerpt)} of {len(content)} chars) ---\n{excerpt}\n--- End excerpt ---"
         )
 
-        return message, truncated_metadata
+        return message, truncated_metadata, False
 
     def _extract_summary(self, content: str) -> str | None:
         match = SUMMARY_PATTERN.search(content)
@@ -1018,6 +1069,11 @@ class CLinkTool(SimpleTool):
         return metadata
 
     def _raise_tool_error(self, message: str, metadata: dict[str, Any] | None = None) -> None:
+        # Apply size limits even to errors to prevent crashing MCP client
+        if len(message) > MAX_RESPONSE_CHARS:
+            original_len = len(message)
+            message = message[:MAX_RESPONSE_CHARS] + f"\n\n... (error message truncated, original length: {original_len} chars)"
+            
         error_output = ToolOutput(status="error", content=message, content_type="text", metadata=metadata)
         raise ToolExecutionError(error_output.model_dump_json())
 
