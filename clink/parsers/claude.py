@@ -134,19 +134,39 @@ class ClaudeJSONParser(BaseParser):
         elif isinstance(result, list):
              joined = [part.strip() for part in result if isinstance(part, str) and part.strip()]
              content = "\n".join(joined)
-        
+
         # 2. If no result content, use accumulated stream content
         if not content and accumulated_content:
             content = "".join(accumulated_content).strip()
 
+        # Extract thinking content
+        thinking_content = "".join(accumulated_thinking).strip() if accumulated_thinking else None
+
+        # If no thinking from stream, check payload (for non-stream or explicit result)
+        if not thinking_content and payload:
+            raw_thinking = payload.get("thinking")
+            if isinstance(raw_thinking, str):
+                thinking_content = raw_thinking.strip()
+            elif isinstance(payload.get("message"), dict):
+                msg_thinking = payload["message"].get("thinking")
+                if isinstance(msg_thinking, str):
+                    thinking_content = msg_thinking.strip()
+
         if content:
-            thinking_content = "".join(accumulated_thinking).strip() if accumulated_thinking else None
             return ParsedCLIResponse(content=content, metadata=metadata, thinking=thinking_content)
 
         # 3. Fallback to message extraction
         message = self._extract_message(payload or {})
         if message:
-            return ParsedCLIResponse(content=message, metadata=metadata)
+            return ParsedCLIResponse(content=message, metadata=metadata, thinking=thinking_content)
+
+        # 4. If we have thinking but no content, return a placeholder
+        if thinking_content:
+            return ParsedCLIResponse(
+                content="(No textual result provided by Claude)",
+                metadata=metadata,
+                thinking=thinking_content,
+            )
 
         stderr_text = stderr.strip()
         if stderr_text:

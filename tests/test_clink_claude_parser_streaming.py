@@ -101,3 +101,34 @@ def test_claude_parser_raises_error_if_no_content():
     
     with pytest.raises(ParserError, match="Claude CLI response did not contain a textual result"):
         parser.parse(stdout=stdout, stderr="")
+
+def test_claude_parser_handles_thinking_only_response():
+    """Verify that thinking-only responses are handled without error."""
+    parser = ClaudeJSONParser()
+
+    events = [
+        {"type": "system", "subtype": "init", "model": "claude-3-7-sonnet"},
+        {
+            "type": "stream_event",
+            "event": {
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {"type": "thinking_delta", "thinking": "I am thinking about the answer."}
+            }
+        },
+        {
+            "type": "result",
+            "status": "success",
+            "usage": {"input_tokens": 100, "output_tokens": 50}
+        }
+    ]
+
+    stdout = "\n".join(json.dumps(e) for e in events)
+
+    parsed = parser.parse(stdout=stdout, stderr="")
+
+    # Should have placeholder content
+    assert "no textual result" in parsed.content.lower() or "(No textual result" in parsed.content
+    # Should have thinking content
+    assert parsed.thinking == "I am thinking about the answer."
+    assert parsed.metadata["model_used"] == "claude-3-7-sonnet"
