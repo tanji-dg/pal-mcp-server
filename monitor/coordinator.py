@@ -356,6 +356,17 @@ class InstanceTracker:
                                 totals["cache_creation_input_tokens"] += m_stats.get("cache_creation_input_tokens") or m_stats.get("cacheCreationInputTokens") or 0
                             self._update_tokens_incremental(totals)
 
+                    elif msg_type == "content_block_delta":
+                        delta = data.get("delta", {})
+                        dtype = delta.get("type")
+                        if dtype == "thinking_delta":
+                            self.last_status = "Thinking"
+                        elif dtype == "text_delta":
+                            text = delta.get("text", "")
+                            # Heuristic: if text delta contains thinking tag start, assume thinking
+                            if "<thinking" in text or "&lt;thinking" in text:
+                                self.last_status = "Thinking"
+
                     if msg_type == "content_block_start":
                         # Handle streaming tool use start (Gemini/Claude)
                         content_block = data.get("content_block", {})
