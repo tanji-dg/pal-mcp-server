@@ -444,11 +444,25 @@
                         if (content) return { type: 'thinking', text: content, isDelta: data.delta === true || data.type === 'message' };
                     }
                     
+                    if (data.type === 'stream_event') {
+                        const evt = data.event;
+                        if (!evt) return null;
+                        
+                        if (evt.type === 'content_block_delta' && evt.delta) {
+                            const text = evt.delta.text || evt.delta.thinking;
+                            if (text) return { type: 'thinking', text: text, isDelta: true };
+                        }
+                        // Ignore other stream events (message_start, message_stop, etc.) to prevent raw JSON dump
+                        return null;
+                    }
+                    
                     if (data.type === 'content_block_delta' && data.delta) {
                         const text = data.delta.text || data.delta.thinking;
                         if (text) return { type: 'thinking', text: text, isDelta: true };
                     }
                     
+                    if (data.type === 'system') return null;
+
                     if (data.type === 'tool_use') return { type: 'tool-use', text: `> Executing ${data.name || data.tool_name}...`, isDelta: false };
                     if (data.type === 'tool_result') {
                         const isError = data.status === 'error' || data.is_error;
