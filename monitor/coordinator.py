@@ -865,6 +865,17 @@ class MonitorCoordinator:
                 logger.info(f"Instance auto-registered: {instance_id}")
 
             tracker = self.instances[instance_id]
+            
+            # Update thinking metrics based on elapsed time since last event
+            now_ts = time.time()
+            if tracker.last_status == "Thinking" and tracker._last_activity_time:
+                delta = int((now_ts - tracker._last_activity_time) * 1000)
+                # Filter outliers (negative or > 5 mins without heartbeat)
+                if 0 < delta < 300000:
+                    tracker.thinking_ms += delta
+            
+            tracker._last_activity_time = now_ts
+            
             interrupted = tracker.interrupted
 
             if event_type == ToolEventType.HEARTBEAT:
