@@ -636,6 +636,9 @@ class InstanceTracker:
         if is_error:
             self.total_errors += 1
 
+        if duration_ms > 0:
+            self.execution_ms += duration_ms
+
         if target_tool:
             # Extract tokens and status from final tool output if available
             extracted_content = None
