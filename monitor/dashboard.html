@@ -430,12 +430,20 @@
                     const data = JSON.parse(raw);
                     if (['message_start', 'message_delta', 'message_stop', 'content_block_start', 'content_block_stop', 'ping'].includes(data.type)) return null;
                     
-                    if (data.type === 'message' || data.type === 'assistant') {
+                    if (data.type === 'message' || data.type === 'assistant' || data.type === 'user') {
                         let content = data.content || data.thought;
                         if (data.message && data.message.content) content = data.message.content;
                         if (Array.isArray(content)) {
                             const toolUse = content.find(c => c.type === 'tool_use');
                             if (toolUse) return { type: 'tool-use', text: `> Executing ${toolUse.name}${toolUse.input ? ': ' + JSON.stringify(toolUse.input) : ''}`, isDelta: false };
+                            
+                            const toolResult = content.find(c => c.type === 'tool_result');
+                            if (toolResult) {
+                                let text = toolResult.content || '';
+                                if (Array.isArray(text)) text = text.map(t => t.text || JSON.stringify(t)).join(' ');
+                                return { type: 'tool-result', text: `< ${text}`, isDelta: false };
+                            }
+
                             const thinking = content.find(c => c.type === 'thinking');
                             if (thinking) return { type: 'thinking', text: thinking.thinking || thinking.text || '', isDelta: false };
                             content = content.filter(c => c.type === 'text' || typeof c === 'string').map(c => c.text || c).join('');
