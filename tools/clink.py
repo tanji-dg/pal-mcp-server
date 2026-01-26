@@ -343,8 +343,6 @@ class CLinkTool(SimpleTool):
         ansi_escape = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
 
         async def _notification_callback(line: str):
-            logger.debug(f"CLINK NOTIFICATION RAW LINE: {line.strip()}")
-            
             if not request_context:
                 logger.debug(f"CLI RAW (no context): [{client_config.name}] [Session: {effective_session_id[:8]}] {line.strip()}")
                 return
@@ -391,102 +389,155 @@ class CLinkTool(SimpleTool):
                     db_updated_needed = False
                     
                     # 1. JSON format handling
-                    json_start = msg.find('{')
-                    json_end = msg.rfind('}')
+                    # Handle cases where multiple JSON objects are concatenated in one line (e.g., }{)
+                    json_parts = msg.replace("}{", "}\n{").split("\n")
                     
-                    current_json_str = None
-                    if json_start != -1 and json_end != -1 and json_end > json_start:
-                        current_json_str = msg[json_start:json_end+1]
-                        try:
-                            data = json.loads(current_json_str)
-                            msg_type = data.get("type")
+                    for part in json_parts:
+                        part = part.strip()
+                        json_start = part.find('{')
+                        json_end = part.rfind('}')
+                        
+                        current_json_str = None
+                        if json_start != -1 and json_end != -1 and json_end > json_start:
+                            current_json_str = part[json_start:json_end+1]
+                            try:
+                                data = json.loads(current_json_str)
+                                msg_type = data.get("type")
 
-                            # Always forward raw JSON to monitor for token/state tracking
-                            if publisher:
-                                await publisher.tool_log(self.get_name(), current_json_str, session_id=effective_session_id)
+                                # Always forward raw JSON to monitor for token/state tracking
+                                if publisher:
+                                    await publisher.tool_log(self.get_name(), current_json_str, session_id=effective_session_id)
 
-                            # Gemini stream-json events
-                            if msg_type == "message":
-                                role = data.get("role")
-                                payload_content = data.get("content") or data.get("thought")
-                                if role == "assistant" and payload_content:
-                                    if data.get("delta") is True:
-                                        summary_msg = handle_summary_extraction(payload_content)
-                                        if summary_msg:
-                                            content = summary_msg
-                                        else:
-                                            state["accumulated_thinking"].append(payload_content)
-                                            if not state["in_summary"]:
-                                                content = f"🧠 Thinking: {payload_content}"
-                            
-                            # Claude stream-json events
-                            elif msg_type == "stream_event":
-                                event_data = data.get("event", {})
-                                etype = event_data.get("type")
-                                if etype == "content_block_delta":
-                                    delta = event_data.get("delta", {})
-                                    dtype = delta.get("type")
-                                    if dtype == "thinking_delta":
-                                        thought = delta.get("thinking")
-                                        if thought:
-                                            summary_msg = handle_summary_extraction(thought)
+                                # Gemini/Claude stream-json events
+                                if msg_type == "init":
+                                    model = data.get("model")
+                                    logger.debug(f"CLI INIT EVENT: [{client_config.name}] model={model}")
+                                    content = f"🚀 Initialized (Model: {model or 'unknown'})"
+                                    # No db_update needed for init
+                                
+                                elif msg_type == "error":
+                                    err_msg = data.get("message")
+                                    if not err_msg and isinstance(data.get("error"), dict):
+                                        err_msg = data["error"].get("message")
+                                    content = f"❌ Error: {err_msg or 'Unknown CLI error'}"
+                                    state["accumulated_logs"].append(content)
+                                    db_updated_needed = True
+
+                                elif msg_type == "result":
+                                    status = data.get("status", "success")
+                                    stats = data.get("stats") or {}
+                                    tokens = stats.get("total_tokens") or stats.get("totalTokens")
+                                    duration = stats.get("duration_ms")
+                                    
+                                    stat_str = ""
+                                    if tokens: stat_str += f"{tokens} tokens"
+                                    if duration: stat_str += f", {duration/1000:.1f}s"
+                                    
+                                    suffix = f" ({stat_str})" if stat_str else ""
+                                    content = f"{'✅' if status == 'success' else '⚠️'} Finished{suffix}"
+                                    logger.debug(f"CLI RESULT EVENT: [{client_config.name}] {content}")
+                                    # We don't necessarily need to show this in the UI if it's too noisy, 
+                                    # but for transparency it's better to show it.
+                                    db_updated_needed = True
+
+                                elif msg_type == "message":
+                                    role = data.get("role")
+                                    payload_content = data.get("content") or data.get("thought")
+                                    if role == "assistant" and payload_content:
+                                        if data.get("delta") is True:
+                                            summary_msg = handle_summary_extraction(payload_content)
                                             if summary_msg:
                                                 content = summary_msg
                                             else:
-                                                state["accumulated_thinking"].append(thought)
+                                                state["accumulated_thinking"].append(payload_content)
                                                 if not state["in_summary"]:
-                                                    content = f"🧠 Thinking: {thought}"
-                                    elif dtype == "text_delta":
-                                        text = delta.get("text")
-                                        if text:
-                                            summary_msg = handle_summary_extraction(text)
-                                            if summary_msg: content = summary_msg
+                                                    content = f"🧠 Thinking: {payload_content}"
                                 
-                            elif msg_type == "tool_use":
-                                name = data.get("tool_name") or data.get("name")
-                                tool_id = data.get("tool_id")
-                                if tool_id and name: tool_names[tool_id] = name
-                                log_entry = f"🛠️ Executing: {name or 'tool'}"
-                                content = log_entry
-                                state["accumulated_logs"].append(log_entry)
-                                db_updated_needed = True 
+                                # Claude stream-json events
+                                elif msg_type == "stream_event":
+                                    event_data = data.get("event", {})
+                                    etype = event_data.get("type")
+                                    if etype == "content_block_delta":
+                                        delta = event_data.get("delta", {})
+                                        dtype = delta.get("type")
+                                        if dtype == "thinking_delta":
+                                            thought = delta.get("thinking")
+                                            if thought:
+                                                summary_msg = handle_summary_extraction(thought)
+                                                if summary_msg:
+                                                    content = summary_msg
+                                                else:
+                                                    state["accumulated_thinking"].append(thought)
+                                                    if not state["in_summary"]:
+                                                        content = f"🧠 Thinking: {thought}"
+                                        elif dtype == "text_delta":
+                                            text = delta.get("text")
+                                            if text:
+                                                summary_msg = handle_summary_extraction(text)
+                                                if summary_msg: content = summary_msg
+                                    
+                                elif msg_type == "tool_use":
+                                    name = data.get("tool_name") or data.get("name")
+                                    tool_id = data.get("tool_id")
+                                    if tool_id and name: tool_names[tool_id] = name
+                                    log_entry = f"🛠️ Executing: {name or 'tool'}"
+                                    content = log_entry
+                                    state["accumulated_logs"].append(log_entry)
+                                    db_updated_needed = True 
+                                    
+                                elif msg_type == "tool_result":
+                                    tool_id = data.get("tool_id")
+                                    status = data.get("status")
+                                    name = tool_names.get(tool_id) if tool_id else None
+                                    log_entry = f"{'✅ Executed' if status == 'success' else '❌ Error in'}: {name or 'tool'}"
+                                    content = log_entry
+                                    state["accumulated_logs"].append(log_entry)
+                                    db_updated_needed = True
+
+                                elif msg_type == "tool_call":
+                                    status = data.get("status")
+                                    name = data.get("name")
+                                    content = f"{'🛠️ Executing' if status == 'Executing' else '✅ Executed'}: {name}"
+                                    state["accumulated_logs"].append(content)
+                                    db_updated_needed = True
+
+                                elif msg_type == "turn.failed":
+                                    err_obj = data.get("error", {})
+                                    err_msg = err_obj.get("message") if isinstance(err_obj, dict) else str(err_obj)
+                                    content = f"❌ Error: {err_msg}"
+                                    state["accumulated_logs"].append(content)
+                                    db_updated_needed = True
+
+                                elif msg_type in ["item.started", "item.completed"]:
+                                    item = data.get("item", {})
+                                    label = item.get("type")
+                                    if label == "command_execution":
+                                        content = f"{'🛠️ Executing' if msg_type == 'item.started' else '✅ Executed'}: {item.get('command')}"
+                                    elif label == "reasoning":
+                                        content = f"{'🧠 Thinking' if msg_type == 'item.started' else '🧠 Thought'}: {item.get('text')}"
+                                    if content: state["accumulated_logs"].append(content)
                                 
-                            elif msg_type == "tool_result":
-                                tool_id = data.get("tool_id")
-                                status = data.get("status")
-                                name = tool_names.get(tool_id) if tool_id else None
-                                log_entry = f"{'✅ Executed' if status == 'success' else '❌ Error in'}: {name or 'tool'}"
-                                content = log_entry
-                                state["accumulated_logs"].append(log_entry)
-                                db_updated_needed = True
+                                elif msg_type == "system":
+                                    logger.debug(f"CLI SYSTEM EVENT: {part}")
+                                    continue
+                            except json.JSONDecodeError:
+                                logger.debug(f"CLINK NOTIFICATION RAW LINE (JSON fail): {part}")
 
-                            elif msg_type == "tool_call":
-                                status = data.get("status")
-                                name = data.get("name")
-                                content = f"{'🛠️ Executing' if status == 'Executing' else '✅ Executed'}: {name}"
-                                state["accumulated_logs"].append(content)
-                                db_updated_needed = True
+                            # UI Notification (inside JSON loop to catch all events)
+                            if content:
+                                now = time.monotonic()
+                                clean_content = ansi_escape.sub("", content)
+                                session_label = f"[{effective_session_id[:8]}] " if effective_session_id != "standalone" else ""
+                                display_content = f"{session_label}{clean_content}"
 
-                            elif msg_type == "turn.failed":
-                                err_obj = data.get("error", {})
-                                err_msg = err_obj.get("message") if isinstance(err_obj, dict) else str(err_obj)
-                                content = f"❌ Error: {err_msg}"
-                                state["accumulated_logs"].append(content)
-                                db_updated_needed = True
-
-                            elif msg_type in ["item.started", "item.completed"]:
-                                item = data.get("item", {})
-                                label = item.get("type")
-                                if label == "command_execution":
-                                    content = f"{'🛠️ Executing' if msg_type == 'item.started' else '✅ Executed'}: {item.get('command')}"
-                                elif label == "reasoning":
-                                    content = f"{'🧠 Thinking' if msg_type == 'item.started' else '🧠 Thought'}: {item.get('text')}"
-                                if content: state["accumulated_logs"].append(content)
-                            
-                            elif msg_type == "system":
-                                logger.debug(f"CLI SYSTEM EVENT: {msg}")
-                                continue
-                        except json.JSONDecodeError: pass
+                                if display_content != state["last_msg"] or (now - state["last_time"]) > MIN_INTERVAL:
+                                    state["last_msg"] = display_content
+                                    state["last_time"] = now
+                                    await request_context.session.send_log_message(level="info", data=f"[{client_config.name}] {display_content}")
+                                content = None # Reset for next JSON part
+                        else:
+                            # Not JSON, or no braces found
+                            logger.debug(f"CLINK NOTIFICATION RAW LINE (text): {part}")
 
                     # 2. Text format handling
                     if not content:
@@ -516,8 +567,9 @@ class CLinkTool(SimpleTool):
                         update_current_turn(continuation_id, live_content, tool_name=self.get_name())
                         state["last_db_update"] = now
 
-                    # UI Notification
+                    # UI Notification (for text format)
                     if content:
+                        now = time.monotonic()
                         clean_content = ansi_escape.sub("", content)
                         session_label = f"[{effective_session_id[:8]}] " if effective_session_id != "standalone" else ""
                         display_content = f"{session_label}{clean_content}"

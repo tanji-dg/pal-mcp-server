@@ -425,76 +425,87 @@
 
         function parseLogContent(raw) {
             if (!raw) return null;
-            try {
-                if (raw.trim().startsWith('{')) {
-                    const data = JSON.parse(raw);
-                    if (['message_start', 'message_delta', 'message_stop', 'content_block_start', 'content_block_stop', 'ping'].includes(data.type)) return null;
-                    
-                    if (data.type === 'message' || data.type === 'assistant' || data.type === 'user') {
-                        let content = data.content || data.thought;
-                        if (data.message && data.message.content) content = data.message.content;
-                        if (Array.isArray(content)) {
-                            const toolUse = content.find(c => c.type === 'tool_use');
-                            if (toolUse) return { type: 'tool-use', text: `> Executing ${toolUse.name}${toolUse.input ? ': ' + JSON.stringify(toolUse.input) : ''}`, isDelta: false };
+            
+            let displayData = { type: 'raw', text: raw, isDelta: false };
+
+            // Handle potential multiple JSON objects in one line (}{)
+            const cleanRaw = raw.trim();
+            if (cleanRaw.startsWith('{')) {
+                try {
+                    // Try to extract and beautify if it's JSON
+                    // Handle concatenated JSON like }{
+                    const parts = cleanRaw.replace(/}{/g, "}\n{").split("\n");
+                    let beautified = [];
+                    let lastType = null;
+                    let isDelta = false;
+
+                    for (const part of parts) {
+                        try {
+                            const data = JSON.parse(part);
                             
-                            const toolResult = content.find(c => c.type === 'tool_result');
-                            if (toolResult) {
-                                let text = toolResult.content || '';
-                                if (Array.isArray(text)) text = text.map(t => t.text || JSON.stringify(t)).join(' ');
-                                return { type: 'tool-result', text: `< ${text}`, isDelta: false };
+                            // Beautify logic moved from server to client
+                            let pretty = null;
+                            const msgType = data.type;
+
+                            if (msgType === 'message' || msgType === 'assistant') {
+                                const content = data.content || data.thought || (data.message && data.message.content);
+                                if (content) {
+                                    pretty = `🧠 Thinking: ${content}`;
+                                    isDelta = data.delta === true || msgType === 'message';
+                                }
+                            } else if (msgType === 'tool_use') {
+                                pretty = `🛠️ Calling: ${data.name || data.tool_name || 'tool'}`;
+                            } else if (msgType === 'tool_result') {
+                                const icon = (data.status === 'error' || data.is_error) ? '❌' : '✅';
+                                pretty = `${icon} Result from: ${data.tool_id || 'tool'}`;
+                            } else if (msgType === 'init') {
+                                pretty = `🚀 Initialized (Model: ${data.model || 'unknown'})`;
+                            } else if (msgType === 'result') {
+                                const icon = (data.status === 'error' || data.is_error) ? '⚠️' : '🏁';
+                                pretty = `${icon} Finished`;
+                            } else if (msgType === 'error' || msgType === 'turn.failed') {
+                                const err = data.error || data;
+                                pretty = `❌ Error: ${err.message || 'unknown'}`;
+                            } else if (msgType === 'stream_event') {
+                                const evt = data.event || {};
+                                if (evt.type === 'content_block_delta' && evt.delta) {
+                                    const text = evt.delta.text || evt.delta.thinking;
+                                    if (text) { pretty = `🧠 Thinking: ${text}`; isDelta = true; }
+                                }
                             }
 
-                            const thinking = content.find(c => c.type === 'thinking');
-                            if (thinking) return { type: 'thinking', text: thinking.thinking || thinking.text || '', isDelta: false };
-                            content = content.filter(c => c.type === 'text' || typeof c === 'string').map(c => c.text || c).join('');
-                        }
-                        if (!content && data.thinking) content = data.thinking;
-                        if (content) return { type: 'thinking', text: content, isDelta: data.delta === true || data.type === 'message' };
+                            if (pretty) {
+                                beautified.push(pretty);
+                                lastType = msgType;
+                            }
+                        } catch (e) {}
                     }
-                    
-                    if (data.type === 'stream_event') {
-                        const evt = data.event;
-                        if (!evt) return null;
-                        
-                        if (evt.type === 'content_block_delta' && evt.delta) {
-                            const text = evt.delta.text || evt.delta.thinking;
-                            if (text) return { type: 'thinking', text: text, isDelta: true };
-                        }
-                        // Ignore other stream events (message_start, message_stop, etc.) to prevent raw JSON dump
-                        return null;
-                    }
-                    
-                    if (data.type === 'content_block_delta' && data.delta) {
-                        const text = data.delta.text || data.delta.thinking;
-                        if (text) return { type: 'thinking', text: text, isDelta: true };
-                    }
-                    
-                    if (data.type === 'system') return null;
 
-                    if (data.type === 'tool_use') return { type: 'tool-use', text: `> Executing ${data.name || data.tool_name}...`, isDelta: false };
-                    if (data.type === 'tool_result') {
-                        const isError = data.status === 'error' || data.is_error;
-                        let text = data.content || data.output || '';
-                        if (Array.isArray(text)) text = text.join(' ');
-                        return { type: isError ? 'error' : 'tool-result', text: `< ${text}`, isDelta: false };
+                    if (beautified.length > 0) {
+                        displayData.text = beautified.join("\n");
+                        displayData.isDelta = isDelta;
+                        
+                        // Map type for styling
+                        const t = beautified[0];
+                        if (t.includes('🧠')) displayData.type = 'thinking';
+                        else if (t.includes('🛠️')) displayData.type = 'tool-use';
+                        else if (t.includes('✅') || t.includes('❌')) displayData.type = t.includes('❌') ? 'error' : 'tool-result';
+                        else if (t.includes('🚀') || t.includes('🏁')) displayData.type = 'system';
+                        
+                        return displayData;
                     }
-                    
-                    if (data.type === 'error' || data.type === 'turn.failed') {
-                        const err = (data.type === 'turn.failed') ? (data.error || {}) : data;
-                        return { type: 'error', text: `! Error: ${err.message || 'unknown error'}`, isDelta: false };
-                    }
-                    if (data.type === 'result') {
-                        const isError = data.status === 'error' || data.is_error;
-                        return { type: isError ? 'error' : 'system', text: isError ? '! Failed' : '> Finished', isDelta: false };
-                    }
-                }
-            } catch (e) {}
+                } catch (e) {}
+            }
             
+            // Fallback for non-JSON or unparseable JSON
             const lower = raw.toLowerCase();
-            if (lower.includes('error') || lower.includes('fail') || lower.includes('exception')) return { type: 'error', text: raw, isDelta: false };
-            if (raw.startsWith('> ') || raw.startsWith('! ') || raw.includes('📋 Summary:')) return { type: 'system', text: raw, isDelta: false };
+            if (raw.includes('❌') || raw.includes('⚠️') || lower.includes('error') || lower.includes('fail')) displayData.type = 'error';
+            else if (raw.includes('🧠')) displayData.type = 'thinking';
+            else if (raw.includes('🛠️')) displayData.type = 'tool-use';
+            else if (raw.includes('✅')) displayData.type = 'tool-result';
+            else if (raw.includes('🚀') || raw.includes('🏁') || raw.includes('📋')) displayData.type = 'system';
             
-            return { type: 'raw', text: raw, isDelta: false };
+            return displayData;
         }
 
         function connect() {

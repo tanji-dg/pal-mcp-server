@@ -1,0 +1,390 @@
+=== THINKING PROCESS ===
+**Investigating Memory Issues**
+
+I'm currently focused on a SIGSEGV crash within `Exec`, specifically triggered by the JIT-compiled instruction `JBITQ Z,2,(k),e` (test case 2100.yaml). Even after addressing a missing return jump in `OPEA_HandleJBITQ`, the issue persists. My hypothesis leans towards stack corruption as the root cause, so I'm investigating how this instruction might be interacting with the stack.
+
+
+**Investigating a SIGSEGV**
+
+I'm still chasing down this SIGSEGV in `Exec` with the `2100.yaml` test. The return jump fix in `OPEA_HandleJBITQ` hasn't solved the crash. My current suspicions lean towards stack integrity problems within `generateDispatcher`, or `genEntry`/`genExit`, or potentially register corruption causing the issue. This is still a puzzle.
+
+
+**Re-Examining JBITQ Logic**
+
+I'm revisiting the `OPEA_HandleJBITQ` function in `LC701AJit_OPEA.cpp` again. I'm focusing on lines 632-678, where the logic for handling the JBITQ instruction resides. I'm hoping to identify any subtle errors that might be contributing to the instability, with particular attention on the calculations of 'condZ', 'bit', and 'mask'. My next step will be to double check assumptions, and debug the code line-by-line.
+
+
+**Analyzing Flag Manipulation**
+
+I'm focused on the flag manipulation within `OPEA_HandleJBITQ`. Lines 650-653 are under scrutiny. Specifically, the ror/rol sequences around `rflags` and `rScratch8` are concerning me. I am checking the logic related to condition code generation, as the flags are a potential source of instability. I'm also carefully tracing the conditional jump logic and whether `emit_AdvancePCStop` is handled correctly in all execution paths, or if there is a conflict.
+
+
+**Reviewing CompileBlock Behavior**
+
+I'm now tracing the control flow after `advancePCStop` is called within `OPEA_HandleJBITQ`. The key question is how `compileBlock` handles the exit triggered by `stopBlock_ = true`. Specifically, I'm examining what happens at the jump target `L_End`. I need to review `LC701AJit::compileBlock` to understand whether the termination logic is correctly handled after the conditional jump and the call to `advancePCStop`. I'm checking that we are indeed exiting as expected.
+
+
+**Verifying Block Termination**
+
+I'm now diving into `LC701AJit.cpp` to understand how `compileBlock` handles exits after `advancePCStop`. I need to ensure a jump back to the dispatcher occurs after a conditional jump with `stopBlock_` set. I'm focusing on the termination logic after `L_End`. Also, I'm checking the interaction of `emit_AdvancePCStop`, particularly at the jump target. I am also checking whether r10 (rflags) and r11b (rScratch8) are safely handled around the JBITQ code. My concern is that they might be inadvertently clobbered. I'm comparing this to the provided user context, and also examining the usage of registers such as rdi (rScratch16).
+
+
+**Investigating SEGV Crash**
+
+I'm currently focused on the SegFault occurring within `Exec` when `JBITQ` (opcode `EA C4`) is executed, despite the previous fix to `OPEA_HandleJBITQ`'s return jump. The issue persists. I need to dig deeper into the call stack to understand what's happening within `Exec`.
+
+
+**Analyzing JIT Implementation**
+
+I've confirmed that `compileBlock` and `generateDispatcher` are running correctly. My focus has shifted to the JIT implementation, specifically examining `generateDispatcher`, `genEntry`, `genExit`, and `advancePCStop` within `LC701AJit.cpp`. I need to re-verify `OPEA_HandleJBITQ` in `LC701AJit_OPEA.cpp`, especially how it interacts with `rScratch8` (r11b) and register saving/restoration. I am currently reviewing the assembly in `OPEA_HandleJBITQ`.
+
+
+**Examining Byte Reads**
+
+I'm now carefully examining the byte read operation within the JIT, specifically how it handles `rScratch16` (di). I've verified that `emit_ReadByte` reads from the memory location specified by `rMemBase + rScratch16` and stores the result in `al`. I'm paying close attention to register usage. I've reconfirmed that `r9` isn't used as `U` in the current header. I am working through the `test`, `setz`, and subsequent flag updates to confirm correct behavior with `r10` and `r11b`.
+
+
+**Verifying Flag Updates**
+
+I'm now diving into the flag manipulation within the JIT for the `JBITQ` opcode, focusing on the `ror` and `mov` operations. The `test` instruction on `rScratch8` (r11b) and the subsequent conditional jump are under scrutiny. I'm verifying the correctness of `emit_ReadByte` by confirming it's using `rMemBase + rScratch16`. There's no use of `emit_GetBankPtr`, which helps ensure a simple base register usage. I've ruled out `advancePCStop` calling `checkCpuFeatures`, and confirmed `advancePCStop` calls are as expected.
+
+
+**Reviewing Register Usage**
+
+I'm now zeroing in on the interaction of `emit_ReadByte` within the JIT, especially how it handles `rScratch8` (r11b). I'm focusing on potential register conflicts, since I suspect modification of `r11b` could corrupt the context pointer. I'm carefully checking the use of `r11` in `generateDispatcher`, `genEntry`, `genExit`, and `emit_AdvancePCStop`. I have confirmed that callbacks are disabled, so register usage within those shouldn't be the issue.
+
+
+**Confirming No Callbacks**
+
+I've determined `noCallbacksFastPath_` should be `true` due to the configuration flags in the test case, likely simplifying `emit_ReadByte` to a direct memory access. I'm now examining `LC701AJit.cpp` to verify this and understand how `emit_ReadByte` interacts with `generateDispatcher`, particularly concerning register usage and the implications of `emit_AdvancePCStop(4)` within `OPEA_HandleJBITQ`. The interaction between `genEntry`, `genExit`, and the return from `OPEA_HandleJBITQ` when it's a branch needs scrutiny.
+
+
+**Analyzing the Crash Situation**
+
+I'm currently investigating a SIGSEGV occurring within `Exec(1)` subsequent to the compilation of a JIT block. The relevant opcode is `2100.yaml` (`JBITQ Z,2,(k),e`), specifically handled by `OPEA_HandleJBITQ` in `src/hardwire/LC701AJit_OPEA.cpp`. I have started reading `src/hardwire/LC701`
+
+
+**Investigating the JIT Crash**
+
+I've examined the `OPEA_HandleJBITQ` implementation more closely and, though a previous potential jump issue was addressed, the crash in `Exec` persists. I'm focusing on the condition checks and jump logic within the function now, specifically lines 656-662 and 670-672 to understand why the crash still happens. I'll need to examine the register usage around the crash.
+
+
+**Examining the Control Flow**
+
+I'm now diving deeper into the control flow, contrasting the "Taken" and "Not Taken" paths in `OPEA_HandleJBITQ`. The key difference appears to be the handling of `advancePCStop` and the subsequent jump. While the "Taken" path directly calls `advancePCStop`, the "Not Taken" path calls `emit_AdvancePCStop` before jumping. I will check the `advancePCStop` and `emit_AdvancePCStop` implementations in `LC701AJit.cpp` to understand how the PC state is updated.
+
+
+**Reviewing the Flag Manipulation**
+
+I've confirmed the rflags (r10) manipulation in `OPEA_HandleJBITQ` using `ror`, `mov`, and `rol` seems correct, which indicates that it's treating the flags as 64-bit. I am concerned that the crash might be linked to stack alignment problems or register preservation because `advancePCStop` or `emit_AdvancePCStop` could potentially jump back to the dispatcher. I will look at the implementations of `advancePCStop`, `emit_AdvancePCStop`, `genEntry`, `genExit`, and `generateDispatcher` in `LC701AJit.cpp`. Specifically, I have noticed the difference between the two calls, line 666 and 674.
+
+
+**Clarifying the Branch Behavior**
+
+I'm now clarifying the behavior after a conditional branch handled by `OPEA_HandleJBITQ`. It seems `advancePCStop` solely updates `currentPC_` and `stopBlock_`, without emitting code. Conversely, `emit_AdvancePCStop` appears to emit code for PC updates and stopping. If `stopBlock_` is set by `advancePCStop`, the `compileBlock` loop breaks. I'm investigating the control flow after `compileBlock` to understand the jump back to the dispatcher or any potential exit point via `genExit()`. The key question is how this translates to JIT code.
+
+
+**Pinpointing the Missing Jump**
+
+I'm now zeroing in on the absence of an explicit jump in the "Taken" path using `advancePCStop`. It looks like if `advancePCStop` solely sets `stopBlock_`, execution *might* fall through to the next block or, worse, unintended memory. I am investigating if the JIT code generation step within `compileBlock` adds a jump, potentially via `genExit`, when `stopBlock_` is set. If not, this missing jump is the likely culprit.
+
+
+
+**Analyzing SIGSEGV in Exec**
+
+I'm currently investigating a SIGSEGV within `Exec` when running the `2100.yaml` test case. The issue appears linked to `JBITQ Z,2,(k),e`, specifically its handling, and I've observed a fix for `OPEA_HandleJBITQ`, which included a missing return jump. Further debugging is underway to pinpoint the precise location of the error and confirm the fix's impact.
+
+
+**Pinpointing Crash Location**
+
+I'm now diving deeper into the potential stack or register corruption. I'm focusing on `LC701AJit::generateDispatcher`, `genEntry`, `genExit`, and `advancePCStop` to rule out stack integrity problems or register mismanagement, especially concerning `rbp` and `rsi`. I have re-examined the control flow within `LC701AJit::OPEA_HandleJBITQ` as well.
+
+
+**Refining Flag Updates**
+
+I'm now refining the flag updates after examining bit operations and register usage. My attention is on the logic related to updating the flags register. I'm focusing on the implementation of `ror` and `mov` to ensure the correct flag values (H, N, PV, Z, TZ, S) are being set after the bit test operation. Specifically, I'm examining the conditional jump logic and whether `condZ` is being handled accurately to determine if the branch is taken or not, alongside cycle counting and PC increment.
+
+
+**Clarifying Control Flow**
+
+I've clarified the control flow within the `OPEA_HandleJBITQ` function. I now understand that `advancePCStop(4)` (line 674) updates the internal compiler state but does not emit code to advance `rpc`, which has implications for how program execution flows. The "taken" branch seems to erroneously fall through to `L_End`. Now I need to examine how the compilation state impacts program control, particularly if `stopBlock_` is set to `true`.
+
+
+**Confirming Missing Jump**
+
+I've zeroed in on the "Taken" path of the `OPEA_HandleJBITQ` instruction. It appears there's a missing jump back to the dispatcher loop within the generated block. Execution on this path falls through the end of the block, which is likely leading to memory corruption, as the instructions are not being emitted to generate a jump to the dispatcher. My next step involves examining `LC701AJit.cpp` to confirm this control flow issue, specifically within the `compileBlock` function and the emitted code for `advancePCStop` and `emit_AdvancePCStop`.
+
+
+**Verifying `genExit` Behavior**
+
+I'm now investigating how `genExit` handles the program counter, specifically in the context of the `OPEA_HandleJBITQ` instruction. My concern revolves around whether `genExit` correctly manages the return to the dispatcher loop, especially when the "Taken" path has already updated the program counter to the target address. I'm focusing on whether `genExit` emits a direct return (assuming the updated `rpc`), or expects the PC to fall through. The critical question is whether the assumption made by the code matches the actual update of the program counter in this "Taken" branch. I plan to closely review the emission of `genExit` and `emit_AdvancePCStop`, specifically their interaction with the program counter and the dispatcher jump logic.
+
+
+**Examining Function Interactions**
+
+I'm now reading `LC701AJit.cpp`, focusing on `emit_AdvancePCStop`, `genExit`, and `generateDispatcher`. I'm also re-examining `OPEA_HandleJBITQ` and its interaction with these functions, especially the paths where the branch is taken. I'm exploring how missing jumps might allow a fall-through to `genExit` and whether that is intended and handled correctly.
+
+
+
+**Analyzing the Code**
+
+I've been poring over the code and have a solid grasp of how it functions. I've pinpointed the SIGSEGV occurring within `LC701AJit::Exec`, specifically during the execution of `tests/lc701a/db/21/2100.yaml` with the `JBITQ` instruction.
+
+
+**Investigating Possible Corruption**
+
+I'm now diving deeper into the potential stack or register corruption. I've re-examined `OPEA_HandleJBITQ` in `src/hardwire/LC701AJit_OPEA.cpp`, specifically lines 632-678, to confirm the return jump. The crash's persistence suggests issues possibly stemming from the generation of code in `generateDispatcher`, `genEntry`, or `genExit`, as you suspected, or problems with how `advancePCStop` is handled, and I'm looking for clues in those areas.
+
+
+**Examining PC Control**
+
+I've just focused on how `advancePCStop` and `emit_AdvancePCStop` behave. Both jump to `dispatcherLoopLabel_`. In `OPEA_HandleJBITQ`, regardless of the conditional outcome, control eventually lands at the same location. The function `L(L_End)` is placed after the jumps, rendering this code dead, though this should be inconsequential.
+
+
+**Verifying Code Paths**
+
+I'm now investigating `emit_AdvancePCStop` and `advancePCStop` to understand their behavior. I've confirmed that both jump to `dispatcherLoopLabel_`. It seems that the function `L(L_End)` is indeed dead, which likely won't affect the crash. `emit_AdvancePCStop` updates `rpc`, `advancePC`, and sets `stopBlock_`. The `advancePCStop` function updates `currentPC_` and `stopBlock_` and includes logic dependent on `dispatcherLoopEntry_`, before storing the updated PC value.
+
+
+**Re-Evaluate Search Strategy**
+
+I'm now reconsidering my search strategy after the unexpected failure of the `generateDispatcher` grep. I suspect either a typo in my search term or that the function is defined under a different name, I have begun reading `src/hardwire` and related files to look for more information.
+
+
+**Investigating SIGSEGV Troubles**
+
+I'm currently focused on a SIGSEGV triggered by the `2100.yaml` instruction `JBITQ Z,2,(k),e` within `Hardwire JIT`. Although a prior fix addressed a return jump issue in `OPEA_HandleJBITQ`, the error persists within `Exec`. I'm now examining the execution context more closely.
+
+
+**Analyzing Stack Corruption**
+
+I'm now investigating potential stack corruption within the JIT dispatcher and `genEntry`/`genExit` functions. The focus is on ensuring stack integrity after jumps from the dispatcher-generated code. I'm also examining the possibility of unintended modification to persistent registers like `rContext` (rbp) and `rMemBase` (rsi) during code generation. I've re-examined the implementation of `advancePCStop`, to rule it out as a problem.
+
+
+**Examining Conditional Branching**
+
+I'm now diving into the conditional branching logic within the `JBITQ` instruction. Specifically, I'm analyzing how the `condZ` flag impacts the `test` instruction and subsequent jump. I'm scrutinizing the flag updates, particularly the bitwise manipulations of `rflags`, to ensure they accurately reflect the bit test result. I am also investigating whether the generated code correctly calculates and uses the bit mask.
+
+
+**Revisiting PC Advancement**
+
+I'm now zeroing in on the `advancePCStop` function within `LC701AJit.cpp` and how it interacts with the instruction execution. The comparison with `emit_AdvancePCStop` is now showing me their differences, and I'm currently assessing the generated code, especially around conditional jumps within the `JBITQ` instruction, and how these functions affect the PC manipulation. The differences in their behavior during jumps, specifically the impact on `currentPC_` and block termination, is my key focus now.
+
+
+**Clarifying PC Advancement**
+
+I'm now comparing `advancePCStop` and `emit_AdvancePC` within the `OPEA_HandleJBITQ` context. I noticed `advancePCStop` calls `genExit` directly or updates `regPC_` manually. Conversely, `emit_AdvancePC` handles both the address addition and `currentPC_` synchronization. This difference becomes crucial in the `L(L_Taken)` path of `JBITQ`, where `advancePCStop` is used. I'm focusing on ensuring consistent PC manipulation in this specific branching scenario to address the segmentation fault.
+
+
+**Verifying PC Updates**
+
+I'm now comparing PC update behaviors, specifically within `OPEA_HandleJBITQ`. The `L(L_Taken)` path correctly updates `rpc` and saves it via `advancePCStop`. I confirmed `rpc` updates before `advancePCStop`, which updates `currentPC_` and generates the block termination code, which works. However, the `Not taken` path's `emit_AdvancePCStop(4)` warrants further scrutiny. I need to ensure its interaction with the dispatcher and memory write behavior preserves program flow.
+
+
+**Confirming PC Persistence**
+
+I'm now examining how the `emit_AdvancePCStop(4)` function handles PC updates, specifically within the jump to `dispatcherLoopLabel_` in `generateDispatcher`. It looks like this function doesn't include code to save the PC value. I'm focusing on tracing the PC update through the `dispatcherLoopLabel_`, where the next instruction fetch occurs using `rpc`. I'm now verifying the synchronization of the PC value.
+
+
+**Addressing PC Writebacks**
+
+I'm now zeroing in on the interaction of `emit_AdvancePCStop` with the dispatcher loop, especially how it fails to write back the updated PC value to context memory (`ctx->PC`). Although the updated PC is stored in the `rpc` register and used within the JIT, I'm concerned about potential issues during mode switches or interrupt checks that might rely on `ctx->PC`. I am now focusing on how this lack of writeback could affect execution.
+
+
+**Investigating Flag Corruption**
+
+I'm now investigating a significant oversight related to flag updates. I've realized that `emit_AdvancePCStop`, employed for direct jumps, omits the `rflags` save, which is crucial for jump scenarios. While the dispatcher loads flags, this doesn't protect against corruption if we branch from a `emit_AdvancePCStop`. I'm now exploring how this flag corruption is related to the segmentation fault.
+
+
+**Pinpointing Flag Corruption**
+
+I've zeroed in on the `Not taken` path within `OPEA_HandleJBITQ`. The current thinking is that `emit_AdvancePCStop` doesn't save `rflags` when jumping to the loop start, which loads `rflags` from memory. Thus, the register's updated flag values are overwritten, while the memory-loaded flag values are old. This creates incorrect flag values. Furthermore, the `jmp(L_End)` following `emit_AdvancePCStop` in the `Not taken` path seems unreachable. I suspect this flag issue is linked to the segmentation fault. I'm now verifying the impact on the `dispatcherLoopLabel_` jump.
+
+
+**Examining Execution Cycles**
+
+I'm now investigating a potential mismatch between the expected and actual execution cycles within `repro_2100.cpp`. Although the address calculation with `rpc` in the dispatcher seems safe (given the `uint16_t` and `codeCache` size), I'm considering that `Exec(1)` may expect a single-cycle execution, while the JIT runs for `maxCycles` (1000 in this case). The segmentation fault in `Exec` suggests a deeper issue tied to this lifecycle disparity, particularly as the `push(rax)`/`pop(rax)` sequence within `OPEA_HandleJBITQ` looks sound.
+
+
+**Addressing Flag Corruption**
+
+I'm now zeroing in on the interaction of the `JBITQ` instruction and flag updates. I've re-examined the 'Not taken' path of `OPEA_HandleJBITQ`, and identified a critical flaw: `emit_AdvancePCStop` doesn't save `rflags` to memory before jumping to `dispatcherLoopLabel_`. This leads to the corrupted flag values from memory when the `dispatcherLoopLabel_` loads the flags. This is likely the root of the error. I'm now verifying the impact on the subsequent instruction behavior.
+
+
+**Examining Register Usage**
+
+I'm now investigating register usage in `emit_ReadByte` to verify that `rScratch16` (di) is safely handled, even if it is used internally. It seems that the `movzx(r9d, addrReg)` instruction safely copies the value of `rScratch16` (which may be `rdi`) to `r9d`, avoiding any register conflicts. However, I'm now verifying the usage of `rScratch8` (r11b) within the context of `OPEA_HandleJBITQ`, to confirm the register's usage.
+
+
+**Fixing PC and Flag Consistency**
+
+I'm now focusing on a critical bug within `emit_AdvancePCStop`: it fails to synchronize the program counter (PC) and flags with the execution context before jumping to `dispatcherLoopLabel_`. The `advancePCStop` function correctly handles this synchronization, but `emit_AdvancePCStop` does not. This lack of synchronization leads to loading outdated flags from memory upon returning to `dispatcherLoopLabel_`, which is likely causing incorrect flag states. These incorrect flags subsequently lead to erroneous conditional branches, resulting in either infinite loops, stack overflows, or segmentation faults. I'm now proposing a fix: replace `emit_AdvancePCStop` with `advancePCStop` in the "Not Taken" path of `OPEA_HandleJBITQ`, to ensure PC and flag consistency. Alternatively, I am considering modifying `emit_AdvancePCStop` to achieve this synchronization.
+
+
+**Evaluating Helper Usage**
+
+I'm now weighing the best approach for flag and PC consistency. While modifying `emit_AdvancePCStop` directly to include flag saving is an option, using `advancePCStop` in `OPEA_HandleJBITQ`'s "Not Taken" path seems safer for this particular use case. However, I've realized that `emit_AdvancePCStop` generates code to add to the PC register at runtime, which `advancePCStop` doesn't do since it only updates the compile-time PC.
+
+\n\n
+
+In the "Not Taken" path, we need to advance the PC at runtime because we didn't branch. The "Taken" path already calculates and updates the PC register during the jump. `emit_AdvancePCStop`'s intent is to advance the PC by `len` at runtime and terminate the block, which is what is needed for the "Not Taken" path. Upon checking the implementation of `emit_AdvancePCStop`, it increments `rpc`, updates the PC, sets `stopBlock_` to true and jumps to the dispatcher loop. It increments `rpc` but does not save the PC to memory or save flags, which leads to the issue.
+
+
+**Refining PC and Flag Synchronization**
+
+I'm now focusing on addressing the flag corruption, which I've determined stems from `emit_AdvancePCStop` failing to save `rflags` to memory. The updated PC is stored in `rpc` which is later loaded to the context by `dispatcherMaxCyclesExit_`. The problem is that the flags aren't updated. The code in the loop header reloads flags, which is fine, but the intermediate jump uses the old flags. I'm prioritizing either modifying `emit_AdvancePCStop` to include flag synchronization, or adopting an alternative fix.
+
+
+**Synchronizing PC and Flags**
+
+I'm now investigating how `emit_AdvancePCStop` interacts with flag and PC updates in other instructions like `emit_OTIR`, as it seems to be a widespread issue. I've found multiple instances where flags are set before the `emit_AdvancePCStop` call, but these flags might be lost during jumps. This requires a broad fix for multiple operations, not just `JBITQ`. I'm now exploring the implications of modifying or replacing `emit_AdvancePCStop` across the codebase to ensure consistent behavior.
+
+
+**Fixing Synchronization Discrepancies**
+
+I'm now zeroing in on synchronizing the program counter and flags with the execution context within `emit_AdvancePCStop`. Unlike `advancePCStop`, `emit_AdvancePCStop` doesn't save the PC and flags to the context memory. This oversight leads to incorrect flag states after jumps, particularly affecting conditional branches. I've confirmed that `advancePCStop` already performs this synchronization. Thus, the problem is consistent across multiple instructions. I'm now exploring the optimal method for synchronizing the flags.
+
+
+**Implementing Flag Synchronization**
+
+I'm now implementing the fix for `emit_AdvancePCStop` to synchronize the program counter and flags with the execution context. I'll add code to save the PC and flags to memory to ensure consistent behavior across jumps. I'm prioritizing this as a widespread fix for other instructions. I'm also going to check if any unreachable code exists in `OPEA_HandleJBITQ` as a cleanup.
+
+
+**Implementing Flag Synchronization**
+
+I'm now implementing the flag synchronization fix within `emit_AdvancePCStop`. I'm integrating the flag and PC saving logic, mirroring `advancePCStop`'s behavior to ensure context consistency. I'm focusing on preserving the runtime PC increment, as it is needed to advance the PC at runtime, which is a key requirement of `emit_AdvancePCStop` which is not present in `advancePCStop`. I'm now proceeding with the synchronization implementation.
+
+
+**Implementing Synchronization in `emit_AdvancePCStop`**
+
+I've now integrated the necessary PC and flag synchronization logic directly into `emit_AdvancePCStop` to address the consistency issue. I've added code to save the updated PC and flags to the context memory, ensuring correct behavior during jumps and preserving the runtime PC increment. The updated implementation now addresses flag corruption issues, and I am now ready to test.
+
+
+**Verifying Synchronization Fix**
+
+I'm now focusing on validating the updated `emit_AdvancePCStop` implementation, and verifying the `OPEA_HandleJBITQ` conditional branch. I'm confirming correct PC and flag updates in both `Taken` and `Not Taken` paths. I'll test the logic to confirm accurate execution cycles. I also need to verify that code in the loop header reloads the flags and not the intermediate jump. I'll analyze the updated code to determine if there is any dead or unnecessary code within the loop.
+
+
+**Addressing Flag Corruption**
+
+I've determined that the root cause of the segmentation fault is flag corruption within the JIT, specifically when the "Not Taken" path is taken. Because `emit_AdvancePCStop` doesn't save the program counter (PC) or the flags before the jump back to the dispatcher loop, these values are lost. This leads to the dispatcher reloading old, incorrect flag values from memory which ultimately leads to erroneous conditional branches.
+
+
+**Implementing Flag Synchronization**
+
+I've determined that the root cause of the segmentation fault is the inconsistency in PC and flag handling within `emit_AdvancePCStop` compared to `advancePCStop`. I'm now implementing the required changes to `emit_AdvancePCStop`. Specifically, I am adding PC and flag saving code to ensure flag consistency. This should provide a complete fix to the current problem, while also ensuring the correct jump behavior of the intermediate jump instruction.
+
+
+**Verifying JIT Execution Cycles**
+
+I'm now investigating the interaction between execution cycles specified in `t_.Exec(1)` and the JIT's handling of `hwCtx.maxCycles`. The `t_.Exec(1)` call, intended to execute for a single cycle, seems to be clashing with `hwCtx.maxCycles = 1000` in the JIT environment, as `hwJit_->Exec` executes for potentially multiple cycles. The `Exec` method of the JIT likely runs until `hwCtx.cycles` meets `hwCtx.maxCycles`. This discrepancy is a potential source of the segmentation fault.
+
+=== FINAL CONTENT ===
+Hardwire JITのコードを分析した結果、`emit_AdvancePCStop` の実装に重大な欠陥が見つかりました。これが `JBITQ` の Not Taken（分岐しない）ケースや、`OTIR`/`INDR` 等の完了時に、CPUの状態（PCとフラグ）をメモリ上のコンテキストと同期させずにディスパッチャへ戻してしまう原因となっています。
+
+### 原因の特定
+
+1.  **`emit_AdvancePCStop` の実装不備 (`src/hardwire/LC701AJit.cpp`)**
+    現在の `emit_AdvancePCStop` は、`rpc` (PCレジスタ) を加算してディスパッチャループの先頭 (`dispatcherLoopLabel_`) へジャンプするだけの実装になっています。
+    ```cpp
+    void LC701AJit::emit_AdvancePCStop(int len) {
+        this->add(rpc, len);
+        this->advancePC(len);
+        this->stopBlock_ = true;
+        jmp(*dispatcherLoopLabel_, JMP_TYPE); // <--- ここで問題発生
+    }
+    ```
+    ディスパッチャループの先頭では、`rflags` をメモリ (`ctx->flag64` または `cpuCtx->flag_`) から**再ロード**します。`emit_AdvancePCStop` が直前の命令（`JBITQ`など）で更新されたフラグをメモリに書き戻していないため、**フラグが命令実行前の古い状態に巻き戻ってしまいます**。
+    また、`PC` もメモリに書き戻されていないため、コンテキストスイッチやデバッグ時に不整合が生じます。
+
+2.  **`JBITQ` での発生機序**
+    `2100.yaml` の `JBITQ` 命令において、条件が成立せず分岐しない（Not Taken）パスを通る場合、`emit_AdvancePCStop(4)` が呼ばれます。
+    ```cpp
+    // OPEA_HandleJBITQ in LC701AJit_OPEA.cpp
+    // Not taken
+    emit_AddCycles(5);
+    emit_AdvancePCStop(4); // <--- ここを通るとフラグとPCが保存されない
+    ```
+    これにより、`JBITQ` で更新されたはずのフラグ（Z/TZなど）が失われ、後続の命令実行で不正な状態（ループ脱出条件の誤判定など）を引き起こし、最終的にクラッシュにつながっている可能性があります。
+
+### 修正案
+
+以下の2つの修正を適用してください。
+
+#### 1. `src/hardwire/LC701AJit.cpp` の修正
+
+`emit_AdvancePCStop` を `advancePCStop` と同様に、状態をメモリに同期するように修正します。
+
+```cpp
+// src/hardwire/LC701AJit.cpp
+
+void LC701AJit::emit_AdvancePCStop(int len) {
+    this->add(rpc, len);
+    this->advancePC(len);
+    this->stopBlock_ = true;
+
+    if (this->dispatcherLoopEntry_ == nullptr) {
+        genExit(true);
+    } else {
+        if (tailChainEnabled_) {
+            emit_CheckCycleBudget(*dispatcherExitLabel_);
+            movzx(r11d, rpc);
+            jmp(ptr[r9 + r11 * 8], JMP_TYPE);
+        } else {
+#if LC701A_HARDWIRE_DIRECT_CPUCTX
+            mov(word[rCpu + offsetof(LC701ACpuContextLayout, regPC_)], rpc);
+            mov(qword[rCpu + offsetof(LC701ACpuContextLayout, flag_) + offsetof(LC701ACpuContextLayout::Flag, ull_)], rflags);
+#else
+            mov(word[rContext + offsetof(LC701AContext, PC)], rpc);
+            mov(qword[rContext + offsetof(LC701AContext, flag64)], rflags);
+#endif
+            jmp(*dispatcherLoopLabel_, JMP_TYPE);
+        }
+    }
+}
+```
+
+#### 2. `src/hardwire/LC701AJit_OPEA.cpp` の修正（推奨）
+
+`OPEA_HandleJBITQ` 内の到達不能コードを削除し、ロジックを整理します。
+
+```cpp
+// src/hardwire/LC701AJit_OPEA.cpp
+
+bool LC701AJit::OPEA_HandleJBITQ(uint8_t sub) {
+    // ... (前半はそのまま) ...
+    // Update flags
+    ror(rflags, 32); mov(getLowReg8(rflags), 1); rol(rflags, 32);    // H
+    ror(rflags, 8);  mov(getLowReg8(rflags), 0); rol(rflags, 8);     // N
+    ror(rflags, 16); mov(getLowReg8(rflags), 0); rol(rflags, 16);    // PV
+    ror(rflags, 48); mov(getLowReg8(rflags), rScratch8); rol(rflags, 48); // Z
+    ror(rflags, 40); mov(getLowReg8(rflags), rScratch8); rol(rflags, 40); // TZ
+    ror(rflags, 56); mov(getLowReg8(rflags), 0); rol(rflags, 56);    // S
+
+    Label L_Taken, L_End; // L_End は不要になりますが、ラベル定義だけなら残しても無害
+    if (condZ) {
+        test(rScratch8, rScratch8);
+        jnz(L_Taken, JMP_TYPE);
+    } else {
+        test(rScratch8, rScratch8);
+        jz(L_Taken, JMP_TYPE);
+    }
+
+    // Not taken
+    emit_AddCycles(5);
+    emit_AdvancePCStop(4); 
+    // jmp(L_End, JMP_TYPE); <--- 削除（emit_AdvancePCStopは戻ってこないため到達不能）
+
+    L(L_Taken);
+    // Taken: jump relative to START of instruction + 4
+    add(rpc, (int16_t)4 + (int16_t)disp);
+    and_(rpc_full, 0xFFFF);
+    emit_AddCycles(6);
+    this->advancePCStop(4);
+
+    // L(L_End); <--- 削除
+    return true;
+}
+```
+
+この修正により、`emit_AdvancePCStop` を使用するすべての命令（`JBITQ`, `OTIR`, `INDR`, `INIR`, `OTDR` 等）で、フラグとPCが正しく同期されるようになります。

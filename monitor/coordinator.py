@@ -127,7 +127,7 @@ class InstanceTracker:
         # Mapping between usage keys and internal keys
         mapping = {
             "input": ["input_tokens", "inputTokens", "prompt_tokens", "promptTokens"],
-            "output": ["output_tokens", "outputTokens", "candidates_tokens", "candidatesTokens"],
+            "output": ["output_tokens", "outputTokens", "candidates_tokens", "candidatesTokens", "thoughts_token_count", "thoughtsTokenCount"],
             "cache_read": ["cache_read_input_tokens", "cacheReadInputTokens", "cached_tokens", "cachedTokens", "cached"],
             "cache_creation": ["cache_creation_input_tokens", "cacheCreationInputTokens"]
         }
@@ -156,6 +156,89 @@ class InstanceTracker:
         
         if updated:
             logger.debug(f"Tokens updated for {self.instance_id}: input={self.input_tokens}, output={self.output_tokens}, cached={self.cache_read_tokens}")
+
+    def _beautify_json_event(self, data: dict) -> Optional[str]:
+        """Convert known AI CLI JSON events into human-readable strings."""
+        msg_type = data.get("type")
+        
+        # 1. Gemini/General Message Events
+        if msg_type == "message":
+            role = data.get("role")
+            content = data.get("content") or data.get("thought")
+            if role == "assistant" and content:
+                # Truncate long thinking chunks for live logs
+                display_content = (content[:100] + "...") if len(content) > 100 else content
+                return f"🧠 Thinking: {display_content}"
+            elif role == "user" and content:
+                return f"👤 User: {content[:50]}..."
+
+        # 2. Tool Events
+        elif msg_type == "tool_use":
+            name = data.get("tool_name") or data.get("name")
+            return f"🛠️ Calling: {name or 'tool'}"
+        
+        elif msg_type == "tool_result":
+            tool_id = data.get("tool_id")
+            name = self._tool_name_cache.get(tool_id) if tool_id else None
+            status = data.get("status", "success")
+            icon = "✅" if status == "success" else "❌"
+            return f"{icon} Result from: {name or 'tool'}"
+
+        # 3. Claude-specific Stream Events
+        elif msg_type == "stream_event":
+            event = data.get("event", {})
+            etype = event.get("type")
+            if etype == "content_block_delta":
+                delta = event.get("delta", {})
+                dtype = delta.get("type")
+                if dtype == "thinking_delta":
+                    thought = delta.get("thinking", "")
+                    return f"🧠 Thinking: {thought[:100]}..."
+                elif dtype == "text_delta":
+                    text = delta.get("text", "")
+                    if "<thinking" in text: return "🧠 Thinking..."
+                    return None # Usually too noisy for logs
+
+        # 4. System/Lifecycle Events
+        elif msg_type == "init":
+            model = data.get("model")
+            return f"🚀 Initialized (Model: {model or 'unknown'})"
+        
+        elif msg_type == "result":
+            status = data.get("status", "success")
+            stats = data.get("stats") or {}
+            tokens = stats.get("total_tokens") or stats.get("totalTokens")
+            duration = stats.get("duration_ms")
+            
+            info = []
+            if tokens: info.append(f"{tokens} tokens")
+            if duration: info.append(f"{duration/1000:.1f}s")
+            
+            suffix = f" ({', '.join(info)})" if info else ""
+            return f"{'✅' if status == 'success' else '⚠️'} Finished{suffix}"
+
+        elif msg_type == "error":
+            err_msg = data.get("message")
+            if not err_msg and isinstance(data.get("error"), dict):
+                err_msg = data["error"].get("message")
+            return f"❌ Error: {err_msg or 'Unknown error'}"
+
+        # 5. Codex-specific Events
+        elif msg_type == "item.started":
+            item = data.get("item", {})
+            itype = item.get("type")
+            if itype == "command_execution":
+                return f"🛠️ Executing: {item.get('command')}"
+            elif itype == "reasoning":
+                return "🧠 Thinking..."
+        
+        elif msg_type == "item.completed":
+            item = data.get("item", {})
+            status = item.get("status")
+            icon = "✅" if status != "failed" else "❌"
+            return f"{icon} Completed: {item.get('command', 'item')}"
+
+        return None
 
     def start_tool(self, tool_name: str, tool_input: Optional[str] = None):
         """Record tool execution start."""
@@ -198,8 +281,11 @@ class InstanceTracker:
     def log_activity(self, tool_name: str, log_data: Optional[str] = None, original_event: Optional[ToolEvent] = None):
         """Update activity status based on log event."""
         now = utc_now()
-        # Use wall-clock timestamp for all calculations to be compatible with log timestamps
-        now_ts = time.time()
+        # Use event timestamp if available for more accurate interval calculation
+        if original_event and original_event.timestamp:
+            now_ts = original_event.timestamp.astimezone(timezone.utc).timestamp()
+        else:
+            now_ts = time.time()
         
         # Store log in buffer if event provided
         if original_event:
@@ -246,6 +332,7 @@ class InstanceTracker:
         
         if log_data:
             is_json_log = False
+            beautified_msgs = []
             try:
                 # Handle potential multiple JSON objects in one log chunk, including concatenated ones like }{
                 raw_lines = log_data.strip().split("\n")
@@ -266,16 +353,22 @@ class InstanceTracker:
                         continue
 
                     is_json_log = True
+                    
+                    # Attempt to beautify this JSON part
+                    pretty = self._beautify_json_event(data)
+                    if pretty:
+                        beautified_msgs.append(pretty)
+
                     msg_type = data.get("type")
                     
                     # Determine high-precision event time
                     # Prioritize internal JSON timestamp if available
-                    event_time_ts = now_ts
+                    current_event_time = now_ts
                     if "timestamp" in data:
                         try:
                             # Handle ISO format: 2026-01-20T11:26:13.055Z
                             ts_str = data["timestamp"].replace("Z", "+00:00")
-                            event_time_ts = datetime.fromisoformat(ts_str).timestamp()
+                            current_event_time = datetime.fromisoformat(ts_str).timestamp()
                         except Exception:
                             pass
 
@@ -286,12 +379,13 @@ class InstanceTracker:
                         (msg_type == "content_block_delta" and data.get("delta", {}).get("type") == "thinking_delta")
                     )
                     
-                    if is_reasoning and self._last_activity_time:
-                        delta_ms = int((event_time_ts - self._last_activity_time) * 1000)
+                    if self._last_activity_time:
+                        delta_ms = int((current_event_time - self._last_activity_time) * 1000)
                         if 0 < delta_ms < 30000: # Ignore gaps > 30s as potential idling
-                            self.thinking_ms += delta_ms
+                            if is_reasoning:
+                                self.thinking_ms += delta_ms
                     
-                    self._last_activity_time = event_time_ts
+                    self._last_activity_time = current_event_time
 
                     # Capture session_id from log if available - REMOVED: frequently overwrites with wrong internal IDs
                     # if "session_id" in data:
@@ -375,7 +469,7 @@ class InstanceTracker:
                             tool_id = content_block.get("id")
                             if tool_id:
                                 self._tool_name_cache[tool_id] = name
-                                self._tool_start_times[tool_id] = event_time_ts
+                                self._tool_start_times[tool_id] = current_event_time
                             self.last_status = f"Calling {name}"
                             self.active_tool = name
                             self.tool_start_time = utc_now()
@@ -397,7 +491,7 @@ class InstanceTracker:
                                         self._tool_name_cache[tool_id] = name
                                         # Use event time as start time since we received the whole block
                                         if tool_id not in self._tool_start_times:
-                                            self._tool_start_times[tool_id] = event_time_ts
+                                            self._tool_start_times[tool_id] = current_event_time
                                     self.last_status = f"Calling {name}"
                                     self.active_tool = name
                                     self.tool_start_time = utc_now()
@@ -409,7 +503,7 @@ class InstanceTracker:
                         if tool_id:
                             self._tool_name_cache[tool_id] = name
                             # Store start time as high-precision float timestamp
-                            self._tool_start_times[tool_id] = event_time_ts
+                            self._tool_start_times[tool_id] = current_event_time
                         self.last_status = f"Calling {name}"
                         self.active_tool = name
                         self.tool_start_time = utc_now()
@@ -442,7 +536,7 @@ class InstanceTracker:
                             # Support both float timestamps and datetime objects for test compatibility
                             if isinstance(start_t_val, datetime):
                                 start_t_val = start_t_val.timestamp()
-                            duration_ms = int((event_time_ts - start_t_val) * 1000)
+                            duration_ms = int((current_event_time - start_t_val) * 1000)
                             # Accumulate into session execution time
                             if duration_ms > 0:
                                 self.execution_ms += duration_ms
@@ -494,7 +588,7 @@ class InstanceTracker:
                                     duration_ms = 0
                                     if tool_id and tool_id in self._tool_start_times:
                                         start_t_ts = self._tool_start_times.pop(tool_id)
-                                        duration_ms = int((event_time_ts - start_t_ts) * 1000)
+                                        duration_ms = int((current_event_time - start_t_ts) * 1000)
 
                                     if is_error:
                                         self.total_errors += 1
@@ -545,7 +639,7 @@ class InstanceTracker:
                         item = data.get("item", {})
                         item_id = item.get("id")
                         if item_id:
-                            self._tool_start_times[item_id] = event_time_ts
+                            self._tool_start_times[item_id] = current_event_time
 
                         if item.get("type") == "command_execution":
                             self.last_status = f"Executing {item.get('command', 'cmd')}"
@@ -563,7 +657,7 @@ class InstanceTracker:
                             # Support both float and datetime
                             if isinstance(start_t, datetime):
                                 start_t = start_t.timestamp()
-                            duration_ms = int((event_time_ts - start_t) * 1000)
+                            duration_ms = int((current_event_time - start_t) * 1000)
 
                         cmd = item.get("command")
                         if cmd or item.get("type") == "command_execution":
@@ -581,8 +675,8 @@ class InstanceTracker:
                                 timestamp=utc_now(),
                             )
                             self.recent_calls.appendleft(call)
-                            self._calls_1m.append((event_time_ts, is_err))
-                            self._durations_1m.append((event_time_ts, duration_ms))
+                            self._calls_1m.append((current_event_time, is_err))
+                            self._durations_1m.append((current_event_time, duration_ms))
                             self.last_status = f"{'Error in' if is_err else 'Result from'} {cmd or 'cmd'}"
 
                     elif msg_type == "error":
@@ -603,6 +697,9 @@ class InstanceTracker:
                         self.last_status = f"Rate Limited{delay_info}"
             except Exception:
                 pass
+
+            # No longer overwriting original_event.log_data here to preserve raw JSON for agent analysis.
+            # The dashboard will handle pretty-printing for human users.
 
             if not is_json_log or self.last_status == f"Starting {tool_name}...":
                 log_lower = log_data.lower()

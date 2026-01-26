@@ -7,6 +7,7 @@ import logging
 import os
 import shlex
 import shutil
+import signal
 import tempfile
 import time
 from collections.abc import Sequence
@@ -119,9 +120,39 @@ class BaseCLIAgent:
                 cwd=cwd,
                 limit=limit,
                 env=env,
+                start_new_session=True, # Run in a new process group to allow killing descendants
             )
         except FileNotFoundError as exc:
             raise CLIAgentError(f"Executable not found for CLI '{self.client.name}': {exc}") from exc
+
+        async def _kill_process_group(proc: asyncio.subprocess.Process):
+            """Kill the entire process group to ensure no orphaned children are left behind."""
+            if proc.returncode is not None:
+                return
+            try:
+                import signal
+                pgid = os.getpgid(proc.pid)
+                # First, try to terminate gracefully with SIGTERM
+                os.killpg(pgid, signal.SIGTERM)
+                self._logger.debug(f"Sent SIGTERM to process group {proc.pid}")
+                
+                # Give it a very short window to cleanup and flush final JSON
+                # but don't block for too long as this is often in an exception handler
+                for _ in range(5):
+                    if proc.returncode is not None: break
+                    await asyncio.sleep(0.05)
+
+                if proc.returncode is None:
+                    os.killpg(pgid, signal.SIGKILL)
+                    self._logger.debug(f"Killed process group {proc.pid} with SIGKILL")
+            except ProcessLookupError:
+                pass
+            except Exception as e:
+                self._logger.warning(f"Failed to kill process group {proc.pid}: {e}")
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
 
         # Write prompt to stdin
         if process.stdin:
@@ -166,7 +197,7 @@ class BaseCLIAgent:
                 if publisher.is_interrupted():
                     self._logger.warning(f"Interruption requested. Killing process {process.pid}")
                     try:
-                        process.kill()
+                        await _kill_process_group(process)
                     except ProcessLookupError:
                         pass
                     raise InterruptedError("Task interrupted by user via monitor dashboard")
@@ -190,8 +221,6 @@ class BaseCLIAgent:
                                 stderr="".join(stderr_buffer) + decoded_line,
                             )
 
-                # Emit real-time log entry for tests and callers (format eagerly so mocks capture text)
-                self._logger.debug("[CLI OUTPUT] %s", decoded_line.rstrip("\n"))
                 # Invoke output callback if provided (supports sync and async)
                 if output_callback:
                     try:
@@ -222,7 +251,7 @@ class BaseCLIAgent:
                     )
                     if process.returncode is None:  # Guard against already terminated process
                         try:
-                            process.kill()
+                            await _kill_process_group(process)
                         except ProcessLookupError:
                             pass
                     # Raise an exception to break the gather early
@@ -247,7 +276,7 @@ class BaseCLIAgent:
                         self._logger.warning(f"Interruption signal received via monitor. Killing process {process.pid}")
                         try:
                             if process.returncode is None:
-                                process.kill()
+                                await _kill_process_group(process)
                         except Exception as e:
                             self._logger.debug(f"Failed to kill process: {e}")
                         raise InterruptedError("Task interrupted by user via monitor dashboard")
@@ -337,7 +366,7 @@ class BaseCLIAgent:
             # Total timeout occurred for the entire operation
             if process.returncode is None:
                 try:
-                    process.kill()
+                    await _kill_process_group(process)
                 except ProcessLookupError:
                     pass
             
@@ -360,7 +389,7 @@ class BaseCLIAgent:
             # External cancellation
             if process.returncode is None:
                 try:
-                    process.kill()
+                    await _kill_process_group(process)
                 except ProcessLookupError:
                     pass
             raise
@@ -368,7 +397,7 @@ class BaseCLIAgent:
             # Any other error (including our new idle timeout CLIAgentError)
             if process.returncode is None:
                 try:
-                    process.kill()
+                    await _kill_process_group(process)
                 except ProcessLookupError:
                     pass
             raise
@@ -388,7 +417,7 @@ class BaseCLIAgent:
             # Final check to ensure process is truly dead
             if process.returncode is None:
                 try:
-                    process.kill()
+                    await _kill_process_group(process)
                     # Final non-blocking wait
                     await asyncio.wait_for(process.wait(), timeout=0.1)
                 except Exception:

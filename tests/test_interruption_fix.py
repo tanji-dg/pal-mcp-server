@@ -84,11 +84,11 @@ async def test_clink_tool_sends_interruption_log():
     # Mock role.prompt_path.read_text
     mock_role.prompt_path.read_text.return_value = "system prompt content"
     
-    with patch('tools.clink.create_agent', return_value=mock_agent),
+    with (patch('tools.clink.create_agent', return_value=mock_agent),
          patch('tools.clink.get_publisher', return_value=mock_publisher),
          patch('utils.conversation_memory.create_thread', return_value="thread-123"), 
          patch('utils.conversation_memory.add_turn'), 
-         patch('utils.conversation_memory.update_current_turn'):
+         patch('utils.conversation_memory.update_current_turn')):
         
         # Mock handle_prompt_file_with_fallback
         tool.handle_prompt_file_with_fallback = MagicMock(return_value="user prompt")
