@@ -173,92 +173,7 @@ class InstanceTracker:
         if updated and not is_first_init:
             logger.debug(f"Tokens updated for {self.instance_id}: input={self.input_tokens}, output={self.output_tokens}, cached={self.cache_read_tokens}")
 
-    def _beautify_json_event(self, data: dict) -> Optional[str]:
-        """Convert known AI CLI JSON events into human-readable strings."""
-        msg_type = data.get("type")
-        
-        # 1. Gemini/General Message Events
-        if msg_type == "message":
-            role = data.get("role")
-            content = data.get("content") or data.get("thought")
-            if role == "assistant" and content:
-                # Truncate long thinking chunks for live logs
-                display_content = (content[:100] + "...") if len(content) > 100 else content
-                return f"🧠 Thinking: {display_content}"
-            elif role == "user" and content:
-                return f"👤 User: {content[:50]}..."
-
-        # 2. Tool Events
-        elif msg_type == "tool_use":
-            name = data.get("tool_name") or data.get("name")
-            return f"🛠️ Calling: {name or 'tool'}"
-        
-        elif msg_type == "tool_result":
-            tool_id = data.get("tool_id")
-            name = self._tool_name_cache.get(tool_id) if tool_id else None
-            status = data.get("status", "success")
-            icon = "✅" if status == "success" else "❌"
-            return f"{icon} Result from: {name or 'tool'}"
-
-        # 3. Claude-specific Stream Events
-        elif msg_type == "stream_event":
-            event = data.get("event", {})
-            etype = event.get("type")
-            if etype == "content_block_delta":
-                delta = event.get("delta", {})
-                dtype = delta.get("type")
-                if dtype == "thinking_delta":
-                    thought = delta.get("thinking", "")
-                    return f"🧠 Thinking: {thought[:100]}..."
-                elif dtype == "text_delta":
-                    text = delta.get("text", "")
-                    if "<thinking" in text: return "🧠 Thinking..."
-                    return None # Usually too noisy for logs
-
-        # 4. System/Lifecycle Events
-        elif msg_type == "init":
-            model = data.get("model")
-            return f"🚀 Initialized (Model: {model or 'unknown'})"
-        
-        elif msg_type == "result":
-            status = data.get("status", "success")
-            stats = data.get("stats") or {}
-            tokens = stats.get("total_tokens") or stats.get("totalTokens")
-            duration = stats.get("duration_ms")
-            
-            info = []
-            if tokens: info.append(f"{tokens} tokens")
-            if duration: info.append(f"{duration/1000:.1f}s")
-            
-            suffix = f" ({', '.join(info)})" if info else ""
-            return f"{'✅' if status == 'success' else '⚠️'} Finished{suffix}"
-
-        elif msg_type == "error":
-            err_msg = data.get("message")
-            if not err_msg and isinstance(data.get("error"), dict):
-                err_msg = data["error"].get("message")
-            return f"❌ Error: {err_msg or 'Unknown error'}"
-
-        # 5. Codex-specific Events
-        elif msg_type == "item.started":
-            item = data.get("item", {})
-            itype = item.get("type")
-            if itype == "command_execution":
-                return f"🛠️ Executing: {item.get('command')}"
-            elif itype == "reasoning":
-                return "🧠 Thinking..."
-        
-        elif msg_type == "item.completed":
-            item = data.get("item", {})
-            status = item.get("status")
-            icon = "✅" if status != "failed" else "❌"
-            return f"{icon} Completed: {item.get('command', 'item')}"
-
-        return None
-
     def start_tool(self, tool_name: str, tool_input: Optional[str] = None, is_primary: bool = False):
-        """Record tool execution start."""
-        print(f"DEBUG TRACKER: start_tool({tool_name}, is_primary={is_primary}) for {self.instance_id}")
         self.interrupted = False # Reset interruption state
         now = utc_now()
         now_ts = time.time()
@@ -366,7 +281,6 @@ class InstanceTracker:
                 return
 
             is_json_log = False
-            beautified_msgs = []
             try:
                 # Handle potential multiple JSON objects in one log chunk, including concatenated ones like }{
                 raw_lines = log_data.strip().split("\n")
@@ -387,12 +301,6 @@ class InstanceTracker:
                         continue
 
                     is_json_log = True
-                    
-                    # Attempt to beautify this JSON part
-                    pretty = self._beautify_json_event(data)
-                    if pretty:
-                        beautified_msgs.append(pretty)
-
                     msg_type = data.get("type")
                     
                     # Determine high-precision event time

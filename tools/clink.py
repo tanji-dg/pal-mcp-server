@@ -606,12 +606,15 @@ class CLinkTool(SimpleTool):
                     
                     if not is_interrupted:
                         salvaged_content += f"\n\nError Details:\n{exc}"
-
-                    # Notify monitor with the detailed salvaged content so it appears in Live Logs
+ 
+                    # Notify monitor with a CONCISE error message instead of the full salvaged_content
+                    # to avoid duplication with the already streamed logs.
                     if publisher:
-                        await publisher.tool_log(self.get_name(), salvaged_content, session_id=effective_session_id)
+                        concise_err = f"{header}: {str(exc).splitlines()[0]}"
+                        await publisher.tool_log(self.get_name(), concise_err, session_id=effective_session_id)
 
                     # Record this salvaged turn so it's in the history for next time
+                    # We keep the full salvaged_content here for the AI to have context in the next turn.
                     model_info = {
                         "provider": client_config.name, 
                         "model_name": model_used,
