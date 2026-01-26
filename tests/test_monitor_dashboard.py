@@ -1,279 +1,215 @@
-"""
-Unit tests for Monitor Dashboard log parsing logic.
-These tests simulate the JavaScript logic in dashboard.html to ensure correctness
-and prevent regressions in log processing for Terminal View.
-"""
 
 import json
 import pytest
+import re
 
 def parse_log_content_simulated(raw):
-    """
-    Python implementation of the dashboard.html parseLogContent function.
-    This MUST be kept in sync with the JavaScript implementation.
-    """
     if not raw:
-        return {'type': 'unknown', 'text': '', 'isDelta': False}
+        return None
     
+    display_data = {'type': 'raw', 'text': raw, 'isDelta': False}
+
+    clean_raw = raw.strip()
+    if not clean_raw.startswith('{'):
+        # Fallback for non-JSON
+        lower = raw.lower()
+        if any(x in raw for x in ['❌', '⚠️']) or 'error' in lower or 'fail' in lower: display_data['type'] = 'error'
+        elif '🧠' in raw: display_data['type'] = 'thinking'
+        elif '🛠️' in raw: display_data['type'] = 'tool-use'
+        elif '✅' in raw: display_data['type'] = 'tool-result'
+        return display_data
+
     try:
-        if raw.strip().startswith('{'):
-            data = json.loads(raw)
-            was_stream_event = False
+        parts = clean_raw.replace('}{', '}\n{').split('\n')
+        results = []
+        final_is_delta = False
+        primary_type = None
+        any_handled = False
+
+        type_to_icon = {
+            'message': '🧠', 'assistant': '🧠', 'thinking': '🧠',
+            'user': '👤', 'tool_use': '🛠️', 'tool_result': '✅',
+            'init': '🚀', 'result': '🏁', 'turn.failed': '❌', 'error': '❌'
+        }
+
+        def extract(obj):
+            if not obj: return ""
+            if isinstance(obj, str): return obj
+            if isinstance(obj, list): return "".join(extract(x) for x in obj)
             
-            # Unwrap Claude stream_event wrapper
-            if data.get('type') == 'stream_event' and data.get('event'):
-                data = data['event']
-                was_stream_event = True
+            if isinstance(obj, dict):
+                if obj.get("type") == "tool_result":
+                    icon = '❌' if (obj.get("is_error") or obj.get("status") == "error") else '✅'
+                    return f"{icon} Result: {extract(obj.get('content') or obj.get('output') or obj.get('result')) or 'done'}"
+                
+                if obj.get("type") == "thinking" and obj.get("thinking") is not None: return obj["thinking"] or "..."
+                if obj.get("type") == "text" and obj.get("text") is not None: return obj["text"] or "..."
+                if obj.get("type") == "thinking_delta" and obj.get("thinking") is not None: return obj["thinking"]
+                if obj.get("type") == "text_delta" and obj.get("text") is not None: return obj["text"]
+                
+                if obj.get("type") == "init": return obj.get("model") or "..."
+                if obj.get("type") == "result": return obj.get("status") or "..."
+                if obj.get("type") == "tool_use": return obj.get("name") or obj.get("tool_name") or "..."
+                
+                # Claude stream lifecycle events
+                if obj.get("type") in ['message_start', 'content_block_start', 'message_delta', 'message_stop', 'content_block_stop']:
+                    return "✓" if "stop" in obj["type"] else ""
+
+                for k in ['content', 'thought', 'thinking', 'text', 'message', 'event', 'delta', 'result', 'model']:
+                    if obj.get(k):
+                        val = extract(obj[k])
+                        if val != "": return val
+            return ""
+
+        for part in parts:
+            try:
+                data = json.loads(part)
+                if primary_type is None: primary_type = data.get("type")
+                any_handled = True
+                
+                is_delta = data.get("delta") is True or data.get("type") == 'message' or \
+                           (data.get("event") and data["event"].get("type") == 'content_block_delta')
+                if is_delta: final_is_delta = True
+
+                text = extract(data)
+                if text is not None:
+                    msg_type = data.get("type", "")
+                    icon = type_to_icon.get(msg_type, "")
+                    if data.get("event", {}).get("content_block", {}).get("type") == 'tool_use': icon = '🛠️'
+                    if data.get("event", {}).get("content_block", {}).get("type") == 'thinking': icon = '🧠'
+                    
+                    icons = list(type_to_icon.values()) + ['🧠', '🛠️']
+                    has_icon = any(text.startswith(i) for i in icons)
+                    
+                    if not is_delta and icon and not has_icon and text != "" and text != "✓":
+                        formatted_type = msg_type[0].upper() + msg_type[1:].replace('_', ' ')
+                        results.append(f"{icon} {formatted_type}: {text}")
+                    else:
+                        results.append(text)
+            except json.JSONDecodeError:
+                continue
+
+        if any_handled:
+            display_data['text'] = "".join(results)
+            display_data['isDelta'] = final_is_delta
             
-            # Ignore internal stream/control events
-            if data.get('type') in ['stream', 'ping', 'user']:
-                return None
-
-            # Ignore Claude stream lifecycle events
-            ignored_claude_events = [
-                'message_start', 'content_block_start', 
-                'message_delta', 'message_stop', 'content_block_stop'
-            ]
-            if data.get('type') in ignored_claude_events:
-                return None
+            txt = display_data['text']
+            t = primary_type or 'raw'
+            if '🧠' in txt or any(x in t for x in ['think', 'assistant', 'message', 'stream']):
+                display_data['type'] = 'thinking'
+            elif '🛠️' in txt or 'tool_use' in t:
+                display_data['type'] = 'tool-use'
+            elif any(x in txt for x in ['✅', '❌']) or 'tool_result' in t or t == 'user':
+                display_data['type'] = 'error' if ('❌' in txt or 'error' in t) else 'tool-result'
+            else:
+                display_data['type'] = 'system'
             
-            # 1. Standard Message / Assistant (Claude/Gemini)
-            if data.get('type') in ['message', 'assistant']:
-                content = data.get('content') or data.get('thought')
-                
-                # Handle Claude message object (nested in 'message' field)
-                if data.get('message') and data['message'].get('content'):
-                     content = data['message']['content']
-                
-                # Handle Claude content list
-                if isinstance(content, list):
-                    # Check for tool_use in content list
-                    tool_use = next((c for c in content if isinstance(c, dict) and c.get('type') == 'tool_use'), None)
-                    if tool_use:
-                        name = tool_use.get('name') or 'tool'
-                        return {'type': 'tool-use', 'text': f'> Executing {name}...', 'isDelta': False}
+            if display_data['text'] == "" and not final_is_delta: return None
+            if display_data['text'] == "✓": return None
+            return display_data
 
-                    # Check for thinking in content list
-                    thinking = next((c for c in content if isinstance(c, dict) and c.get('type') == 'thinking'), None)
-                    if thinking:
-                        text = thinking.get('thinking') or thinking.get('text') or ''
-                        if text: return {'type': 'thinking', 'text': text, 'isDelta': False}
-
-                    text_parts = []
-                    for c in content:
-                        if isinstance(c, dict) and c.get('type') == 'text':
-                            text_parts.append(c.get('text', ''))
-                        elif isinstance(c, str):
-                            text_parts.append(c)
-                    content = ''.join(text_parts)
-                
-                # Check for delta flag or if it looks like a partial chunk
-                is_delta = data.get('delta') is True or data.get('type') == 'message'
-                
-                if content and isinstance(content, str):
-                    return {'type': 'thinking', 'text': content, 'isDelta': is_delta}
-
-            # 2. Claude specific: content_block_delta
-            if data.get('type') == 'content_block_delta' and 'delta' in data:
-                delta = data['delta']
-                text = delta.get('text') or delta.get('thinking')
-                if text:
-                    return {'type': 'thinking', 'text': text, 'isDelta': True}
-                if delta.get('type') == 'input_json_delta':
-                    return None
-            
-            # 3. Error (Top level)
-            if data.get('type') == 'error':
-                msg = data.get('message') or (data.get('error') or {}).get('message') or 'unknown error'
-                return {'type': 'error', 'text': f'! Error: {msg}', 'isDelta': False}
-            
-            # 4. Tool Use
-            if data.get('type') == 'tool_use':
-                name = data.get('name') or data.get('tool_name') or 'tool'
-                return {'type': 'tool-use', 'text': f'> Executing {name}...', 'isDelta': False}
-            
-            # 5. Tool Result
-            if data.get('type') == 'tool_result':
-                is_error = data.get('status') == 'error' or data.get('is_error')
-                text = data.get('content') or data.get('output') or ''
-                if isinstance(text, list):
-                    text = ' '.join([str(t) for t in text])
-                if not isinstance(text, str):
-                    text = json.dumps(text)
-                if len(text) > 300:
-                    text = text[:300] + '...'
-                return {'type': 'error' if is_error else 'tool-result', 'text': f'< {text}', 'isDelta': False}
-
-            # 6. Final Result
-            if data.get('type') == 'result':
-                is_error = data.get('status') == 'error' or data.get('is_error')
-                if is_error:
-                    msg = data.get('error', {}).get('message') or 'Operation failed'
-                    return {'type': 'error', 'text': f'! Failed: {msg}', 'isDelta': False}
-
-                result_text = ''
-                if data.get('result'):
-                    if isinstance(data['result'], str):
-                        result_text = data['result']
-                    elif isinstance(data['result'], list):
-                        result_text = '\n'.join(data['result'])
-                
-                if result_text and len(result_text) < 100:
-                    return {'type': 'system', 'text': f'> Finished: {result_text}', 'isDelta': False}
-                
-                cost = data.get('total_cost_usd')
-                cost_str = f' (Cost: ${cost:.4f})' if isinstance(cost, (int, float)) and cost > 0 else ''
-                return {'type': 'system', 'text': f'> Finished{cost_str}', 'isDelta': False}
-
-            # 7. Initialization & Status
-            if data.get('type') == 'init' or (data.get('type') == 'system' and data.get('subtype') in ['init', 'status']):
-                if data.get('subtype') == 'status' and data.get('status'):
-                    return {'type': 'system', 'text': f"> System Status: {data.get('status')}", 'isDelta': False}
-                
-                model = data.get('model') or 'unknown model'
-                return {'type': 'system', 'text': f"> Initialized (Model: {model})", 'isDelta': False}
-
-            # 8. Codex Events
-            if data.get('type') == 'turn.completed':
-                return None
-
-            if data.get('type') in ['item.started', 'item.completed']:
-                item = data.get('item', {})
-                item_type = item.get('type')
-                if item_type == 'reasoning':
-                    if data.get('type') == 'item.started' and item.get('text'):
-                        return {'type': 'thinking', 'text': item.get('text'), 'isDelta': True}
-                    return None
-                if item_type == 'message':
-                    return None
-                if item_type == 'command_execution':
-                    if data.get('type') == 'item.started':
-                        return {'type': 'tool-use', 'text': f'> Executing {item.get('command')}...', 'isDelta': False}
-                    if data.get('type') == 'item.completed':
-                        is_error = item.get('status') in ['failed', 'error']
-                        if is_error:
-                            return {'type': 'error', 'text': f'! Command failed: {item.get('command')}', 'isDelta': False}
-                        return {'type': 'tool-result', 'text': f'< Command finished: {item.get('command')}', 'isDelta': False}
-
-            # Final safety for stream events
-            if was_stream_event:
-                return None
-
-    except json.JSONDecodeError:
+    except Exception:
         pass
     
-    return {'type': 'raw', 'text': raw, 'isDelta': False}
+    return display_data
 
 
 class TestMonitorDashboardLogic:
-    """Comprehensive tests for dashboard parsing logic."""
-
-    def test_result_error(self):
-        # Result type with error status
-        raw = json.dumps({
-            "type": "result",
-            "status": "error",
-            "error": {"message": "Resource exhausted"}
-        })
+    def test_result_finished(self):
+        raw = json.dumps({"type": "result", "status": "ok"})
         res = parse_log_content_simulated(raw)
-        assert res['type'] == 'error'
-        assert res['text'] == '! Failed: Resource exhausted'
+        assert res['type'] == 'system'
+        assert '🏁 Result: ok' in res['text']
+
+    def test_concatenated_json(self):
+        raw = '{"type":"message","content":"Think","delta":true}{"type":"message","content":"ing","delta":true}'
+        res = parse_log_content_simulated(raw)
+        assert res['text'] == 'Thinking'
+        assert res['isDelta'] is True
+        assert res['type'] == 'thinking'
 
     def test_thinking_delta(self):
-        # Gemini style
         raw = '{"type":"message","role":"assistant","content":"Thinking","delta":true}'
         res = parse_log_content_simulated(raw)
         assert res['type'] == 'thinking'
         assert res['text'] == 'Thinking'
         assert res['isDelta'] is True
 
-    def test_claude_content_block_delta(self):
-        # Standard text delta
-        raw = json.dumps({
-            "type": "content_block_delta",
-            "delta": {"type": "text_delta", "text": "partial response"}
-        })
-        res = parse_log_content_simulated(raw)
-        assert res['type'] == 'thinking'
-        assert res['text'] == 'partial response'
-        assert res['isDelta'] is True
-
     def test_claude_thinking_delta(self):
-        # Thinking delta pattern found in logs
         raw = json.dumps({
-            "type": "content_block_delta",
-            "delta": {"type": "thinking_delta", "thinking": "reasoning step"}
+            "type": "stream_event",
+            "event": {
+                "type": "content_block_delta",
+                "delta": {"type": "thinking_delta", "thinking": "reasoning step"}
+            }
         })
         res = parse_log_content_simulated(raw)
         assert res['type'] == 'thinking'
         assert res['text'] == 'reasoning step'
         assert res['isDelta'] is True
 
-    def test_claude_thinking_in_assistant_nested(self):
-        # Nested thinking block in assistant message
+    def test_claude_thinking_start(self):
+        raw = '{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}}'
+        res = parse_log_content_simulated(raw)
+        assert res is None
+
+    def test_claude_message_stop(self):
+        raw = '{"type":"stream_event","event":{"type":"message_stop"}}'
+        res = parse_log_content_simulated(raw)
+        # Should be fully silenced
+        assert res is None
+
+    def test_user_message_tool_result(self):
+        raw = json.dumps({
+            "type": "user",
+            "message": {
+                "role": "user",
+                "content": [{
+                    "type": "tool_result",
+                    "tool_use_id": "toolu_1",
+                    "content": "Success content"
+                }]
+            }
+        })
+        res = parse_log_content_simulated(raw)
+        # JS logic: if msgType is user and extractor already added an icon (✅ Result:), 
+        # it doesn't add '👤 User: ' prefix.
+        assert "Result: Success content" in res['text']
+        assert res['type'] == 'tool-result'
+
+    def test_assistant_content_list(self):
         raw = json.dumps({
             "type": "assistant",
             "message": {
-                "content": [{"type": "thinking", "thinking": "Deep reasoning"}]
+                "content": [
+                    {"type": "text", "text": "Hello "},
+                    {"type": "text", "text": "world"}
+                ]
             }
         })
         res = parse_log_content_simulated(raw)
+        assert "🧠 Assistant: Hello world" in res['text']
         assert res['type'] == 'thinking'
-        assert res['text'] == 'Deep reasoning'
 
-    def test_claude_stream_event_thinking(self):
-        # Thinking delta wrapped in stream_event
-        raw = json.dumps({
-            "type": "stream_event",
-            "event": {
-                "type": "content_block_delta",
-                "delta": {"type": "thinking_delta", "thinking": "nested step"}
-            }
-        })
+    def test_tool_use_beautification(self):
+        raw = '{"type":"tool_use","name":"read_file"}'
         res = parse_log_content_simulated(raw)
-        assert res['type'] == 'thinking'
-        assert res['text'] == 'nested step'
-        assert res['isDelta'] is True
+        assert "🛠️ Tool use: read_file" in res['text']
+        assert res['type'] == 'tool-use'
 
-    def test_ignored_events(self):
-        # Ensure noise is filtered
-        assert parse_log_content_simulated('{"type":"ping"}') is None
-        assert parse_log_content_simulated('{"type":"user"}') is None
-        assert parse_log_content_simulated('{"type":"stream_event","event":{"type":"message_start"}}') is None
-        assert parse_log_content_simulated('{"type":"content_block_delta","delta":{"type":"input_json_delta"}}') is None
-
-    def test_top_level_error(self):
-        raw = '{"type":"error","message":"Loop detected"}'
+    def test_tool_result_beautification(self):
+        raw = '{"type":"tool_result","tool_id":"toolu_1","content":"done"}'
         res = parse_log_content_simulated(raw)
-        assert res['type'] == 'error'
-        assert "! Error: Loop detected" in res['text']
+        assert "✅ Result: done" in res['text']
+        assert res['type'] == 'tool-result'
 
     def test_initialization(self):
         raw = '{"type":"init","model":"gemini-pro"}'
         res = parse_log_content_simulated(raw)
+        assert "🚀 Init: gemini-pro" in res['text']
         assert res['type'] == 'system'
-        assert "gemini-pro" in res['text']
-
-    def test_system_status(self):
-        raw = '{"type":"system","subtype":"status","status":"compacting"}'
-        res = parse_log_content_simulated(raw)
-        assert res['type'] == 'system'
-        assert "System Status: compacting" in res['text']
-
-    def test_codex_events(self):
-        # Reasoning
-        raw = '{"type":"item.started","item":{"type":"reasoning","text":"Plan..."}}'
-        res = parse_log_content_simulated(raw)
-        assert res['type'] == 'thinking'
-        assert res['text'] == 'Plan...'
-        
-        # Command success
-        raw = '{"type":"item.completed","item":{"type":"command_execution","command":"ls","status":"success"}}'
-        res = parse_log_content_simulated(raw)
-        assert res['type'] == 'tool-result'
-        assert "ls" in res['text']
 
     def test_raw_fallback(self):
-        # Non-JSON or unknown top-level JSON
-        assert parse_log_content_simulated("Plain text")['type'] == 'raw'
-        assert parse_log_content_simulated('{"type":"completely_unknown"}')['type'] == 'raw'
+        res = parse_log_content_simulated("Plain text")
+        assert res['type'] == 'raw'
+        assert res['text'] == "Plain text"

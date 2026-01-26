@@ -6,9 +6,9 @@ Specifically targets Claude nested events and Codex events.
 import json
 import time
 import pytest
-from datetime import timedelta
+from datetime import timedelta, datetime, timezone
 from monitor.coordinator import InstanceTracker
-from monitor.models import utc_now
+from monitor.models import utc_now, ToolEvent, ToolEventType
 
 class TestMonitorDurationReliability:
 
@@ -98,3 +98,78 @@ class TestMonitorDurationReliability:
         ]
         
         assert tracker.get_avg_execution_time_1m() == 1500.0
+
+    def test_claude_streaming_sequence_duration(self, tracker):
+        """Verify duration calculation for a full Claude streaming tool sequence."""
+        # 1. Content block start (Streaming start)
+        t1 = datetime(2026, 1, 26, 12, 0, 0, tzinfo=timezone.utc)
+        ev1 = ToolEvent(
+            event_type=ToolEventType.TOOL_LOG,
+            instance_id="test_instance",
+            timestamp=t1,
+            log_data=json.dumps({
+                "type": "stream_event",
+                "event": {
+                    "type": "content_block_start",
+                    "index": 1,
+                    "content_block": {
+                        "type": "tool_use",
+                        "id": "toolu_123",
+                        "name": "test_tool"
+                    }
+                }
+            })
+        )
+        tracker.log_activity("clink", ev1.log_data, original_event=ev1)
+        
+        assert "toolu_123" in tracker._tool_start_times
+        assert tracker._tool_start_times["toolu_123"] == t1.timestamp()
+        
+        # 2. Assistant message (Final block) - Should NOT overwrite start time
+        t2 = datetime(2026, 1, 26, 12, 0, 1, tzinfo=timezone.utc) # 1s later
+        ev2 = ToolEvent(
+            event_type=ToolEventType.TOOL_LOG,
+            instance_id="test_instance",
+            timestamp=t2,
+            log_data=json.dumps({
+                "type": "assistant",
+                "message": {
+                    "content": [{
+                        "type": "tool_use",
+                        "id": "toolu_123",
+                        "name": "test_tool"
+                    }]
+                }
+            })
+        )
+        tracker.log_activity("clink", ev2.log_data, original_event=ev2)
+        
+        # Crucial: Start time should still be t1, not t2
+        assert tracker._tool_start_times["toolu_123"] == t1.timestamp()
+        
+        # 3. User message (Tool result)
+        t3 = datetime(2026, 1, 26, 12, 0, 3, tzinfo=timezone.utc) # 3s after t1
+        ev3 = ToolEvent(
+            event_type=ToolEventType.TOOL_LOG,
+            instance_id="test_instance",
+            timestamp=t3,
+            log_data=json.dumps({
+                "type": "user",
+                "message": {
+                    "role": "user",
+                    "content": [{
+                        "type": "tool_result",
+                        "tool_use_id": "toolu_123",
+                        "content": "success"
+                    }]
+                }
+            })
+        )
+        tracker.log_activity("clink", ev3.log_data, original_event=ev3)
+        
+        # Duration should be t3 - t1 = 3 seconds = 3000ms
+        assert len(tracker.recent_calls) == 1
+        call = tracker.recent_calls[0]
+        assert call.duration_ms == 3000
+        assert tracker.execution_ms == 3000
+        assert "toolu_123" not in tracker._tool_start_times

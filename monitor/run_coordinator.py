@@ -87,7 +87,6 @@ async def run_dual_mode(host: str, port: int, socket_path: str, log_level: str):
         uds=socket_path,
         log_level=log_level,
     )
-
     # Create server instances
     http_server = uvicorn.Server(http_config)
     unix_server = uvicorn.Server(unix_config)

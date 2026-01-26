@@ -1,7 +1,7 @@
 #!/bin/bash
 # PAL MCP Monitor Control Script
 #
-# Usage: ./scripts/monitor_ctrl.sh [start|stop|restart|status]
+# Usage: ./scripts/monitor_ctrl.sh {start|stop|restart|status|logs|fg}
 
 set -e
 
@@ -10,11 +10,20 @@ PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$PROJECT_ROOT"
 
 PID_FILE="/tmp/pal-monitor.pid"
-LOG_FILE="/tmp/pal-monitor.log"
+LOG_FILE="logs/monitor.log" # Use logs directory in project root
 SOCKET_FILE="/tmp/pal-monitor.sock"
 
+# Ensure logs directory exists
+mkdir -p logs
+
 function usage() {
-    echo "Usage: $0 {start|stop|restart|status}"
+    echo "Usage: $0 {start|stop|restart|status|logs|fg}"
+    echo "  start   : Start monitor in background"
+    echo "  stop    : Stop monitor"
+    echo "  restart : Restart monitor"
+    echo "  status  : Check monitor status"
+    echo "  logs    : Tail monitor logs"
+    echo "  fg      : Start monitor in foreground"
     exit 1
 }
 
@@ -33,39 +42,48 @@ function is_running() {
     fi
 }
 
-function start() {
-    if is_running; then
-        echo "Monitor is already running (PID: $(get_pid))"
-        return 0
-    fi
-
-    echo "Starting monitor..."
-    
+function setup_env() {
+    # Check for virtual environment
     if [ -d ".pal_venv" ]; then
         source .pal_venv/bin/activate
     elif [ -d "venv" ]; then
         source venv/bin/activate
     fi
     
+    # Load environment variables if .env exists
     if [ -f ".env" ]; then
-        # Load env vars safely
         set -a
-        [ -f .env ] && . .env
+        source .env
         set +a
     fi
     
-    MONITOR_TRANSPORT=${MONITOR_TRANSPORT:-unix}
-    MONITOR_SOCKET_PATH=${MONITOR_SOCKET_PATH:-/tmp/pal-monitor.sock}
-    MONITOR_WS_PORT=${MONITOR_WS_PORT:-9876}
+    # Set PYTHONPATH to project root
+    export PYTHONPATH=$PYTHONPATH:$PROJECT_ROOT
+}
+
+function get_coord_args() {
+    local transport=${MONITOR_TRANSPORT:-unix}
+    local socket_path=${MONITOR_SOCKET_PATH:-/tmp/pal-monitor.sock}
+    local ws_port=${MONITOR_WS_PORT:-9876}
     
-    COORD_ARGS=""
-    if [[ "$MONITOR_TRANSPORT" == "unix" || "$MONITOR_TRANSPORT" == "dual" ]]; then
-        COORD_ARGS="--dual --socket $MONITOR_SOCKET_PATH"
-    elif [[ "$MONITOR_TRANSPORT" == "http" ]]; then
-        COORD_ARGS="--transport http --port $MONITOR_WS_PORT"
+    if [[ "$transport" == "unix" || "$transport" == "dual" ]]; then
+        echo "--dual --socket $socket_path"
+    elif [[ "$transport" == "http" ]]; then
+        echo "--transport http --port $ws_port"
     fi
+}
+
+function start() {
+    if is_running; then
+        echo "Monitor is already running (PID: $(get_pid))"
+        return 0
+    fi
+
+    setup_env
+    local args=$(get_coord_args)
     
-    nohup python monitor/run_coordinator.py $COORD_ARGS > "$LOG_FILE" 2>&1 &
+    echo "Starting PAL MCP Monitor in background..."
+    nohup python monitor/run_coordinator.py $args > "$LOG_FILE" 2>&1 &
     PID=$!
     echo $PID > "$PID_FILE"
     
@@ -73,38 +91,52 @@ function start() {
     echo "Logs: $LOG_FILE"
 }
 
+function start_fg() {
+    if is_running; then
+        echo "Monitor is already running in background (PID: $(get_pid))"
+        exit 1
+    fi
+
+    setup_env
+    local args=$(get_coord_args)
+    
+    echo "Starting PAL MCP Monitor in foreground..."
+    python monitor/run_coordinator.py $args
+}
+
 function stop() {
     local pid=$(get_pid)
     
-    # If no PID file, try to find process by port
     if [ -z "$pid" ]; then
-        pid=$(ss -tulnp | grep ":9876" | grep -oP "pid=\K[0-9]+")
+        # Try to find by port 9876 if PID file is missing
+        pid=$(lsof -t -i:9876 2>/dev/null || true)
     fi
 
     if [ -z "$pid" ] || ! ps -p "$pid" > /dev/null 2>&1; then
         echo "Monitor is not running"
         [ -f "$PID_FILE" ] && rm "$PID_FILE"
-        [ -S "$SOCKET_FILE" ] && rm "$SOCKET_FILE"
         return 0
     fi
 
     echo "Stopping monitor (PID: $pid)..."
-    kill "$pid"
+    kill "$pid" 2>/dev/null || true
     
     # Wait for it to stop
-    local timeout=10
+    local timeout=5
     while ps -p "$pid" > /dev/null 2>&1 && [ $timeout -gt 0 ]; do
         sleep 1
         timeout=$((timeout - 1))
     done
     
     if ps -p "$pid" > /dev/null 2>&1; then
-        echo "Monitor did not stop gracefully, killing forcefully..."
-        kill -9 "$pid"
-        # Also kill any other processes on the same port just in case
-        fuser -k 9876/tcp > /dev/null 2>&1 || true
+        echo "Forcing stop..."
+        kill -9 "$pid" 2>/dev/null || true
     fi
     
+    # Final cleanup of any remaining processes on the port
+    fuser -k 9876/tcp 2>/dev/null || true
+    
+    # Cleanup
     rm -f "$PID_FILE"
     [ -S "$SOCKET_FILE" ] && rm "$SOCKET_FILE"
     
@@ -113,14 +145,20 @@ function stop() {
 
 function status() {
     if is_running; then
-        echo "Monitor is RUNNING (PID: $(get_pid))"
-        echo "Log tail:"
-        tail -n 5 "$LOG_FILE"
+        local pid=$(get_pid)
+        echo "Monitor is RUNNING (PID: $pid)"
+        local port=${MONITOR_WS_PORT:-9876}
+        echo "Dashboard: http://localhost:$port"
     else
         echo "Monitor is STOPPED"
-        if [ -f "$PID_FILE" ]; then
-            echo "Warning: PID file exists but process is dead"
-        fi
+    fi
+}
+
+function logs() {
+    if [ -f "$LOG_FILE" ]; then
+        tail -f "$LOG_FILE"
+    else
+        echo "Log file not found: $LOG_FILE"
     fi
 }
 
@@ -133,6 +171,9 @@ case "$1" in
     start)
         start
         ;;
+    fg)
+        start_fg
+        ;;
     stop)
         stop
         ;;
@@ -143,6 +184,9 @@ case "$1" in
         ;;
     status)
         status
+        ;;
+    logs)
+        logs
         ;;
     *)
         usage

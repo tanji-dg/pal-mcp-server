@@ -271,32 +271,38 @@
         }
         function escapeHtml(t) { if(!t) return ''; return String(t).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
 
-        function formatTerminalText(text) {
+        function formatTerminalText(text, type) {
             if (!text) return '';
-            let escaped = escapeHtml(text);
-            
-            const thinkingRegex = /&lt;thinking&gt;([\s\S]*?)&lt;\/thinking&gt;/gi;
-            escaped = escaped.replace(thinkingRegex, (m, p1) => {
-                let clean = p1.replace(/^&gt;\s*🧠\s*\*\*Thinking:\*\*\s*\n?&gt;\s*/i, "").replace(/^&gt;\s*/gm, "").trim();
-                return `<div class="term-thinking-block">${clean}</div>`;
-            });
-
+            if (type === 'thinking') {
+                let clean = text.replace(/^🧠 Thinking:\s*/i, "").trim();
+                if (clean) return `<div class="term-thinking-block">${escapeHtml(clean)}</div>`;
+                return '';
+            }
+            if (text.includes('<thinking>') || text.includes('&lt;thinking&gt;')) {
+                let escaped = escapeHtml(text);
+                const thinkingRegex = /&lt;thinking&gt;([\s\S]*?)&lt;\/thinking&gt;/gi;
+                escaped = escaped.replace(thinkingRegex, (m, p1) => {
+                    let clean = p1.replace(/^&gt;\s*🧠\s*\*\*Thinking:\*\*\s*\n?&gt;\s*/i, "").replace(/^&gt;\s*/gm, "").trim();
+                    return `<div class="term-thinking-block">${clean}</div>`;
+                });
+                text = escaped;
+            } else {
+                text = escapeHtml(text);
+            }
             const summaryRegex = /&lt;SUMMARY&gt;([\s\S]*?)&lt;\/SUMMARY&gt;/gi;
-            escaped = escaped.replace(summaryRegex, (m, p1) => {
+            text = text.replace(summaryRegex, (m, p1) => {
                 return `<div class="term-summary-block"><div style="font-size:10px;font-weight:bold;text-transform:uppercase;margin-bottom:6px;opacity:0.8;">📋 Summary</div>${p1.trim()}</div>`;
             });
-
             const timelineRegex = /### 🔄 Progress Timeline\n([\s\S]*?)(?=\n\n|$)/g;
-            escaped = escaped.replace(timelineRegex, (m, p1) => {
+            text = text.replace(timelineRegex, (m, p1) => {
                 const lines = p1.trim().split('\n').map(l => {
                     const color = l.includes('✅') ? '#2ed573' : (l.includes('❌') ? '#ff4757' : '#ffa502');
                     return `<div style="color:${color};font-size:11px;font-family:monospace;margin-bottom:2px;">${l}</div>`;
                 }).join('');
                 return `<div style="margin:12px 0;padding:12px;background:rgba(0,212,255,0.05);border:1px solid rgba(0,212,255,0.2);border-radius:6px;"><div style="color:#00d4ff;font-weight:bold;font-size:10px;text-transform:uppercase;margin-bottom:8px;">🔄 Progress Timeline</div>${lines}</div>`;
             });
-
             const codeRegex = /```[a-z]*\n?([\s\S]*?)\n?```/g;
-            return escaped.replace(codeRegex, (m, p1) => `<div class="term-code-block">${p1.trim()}</div>`);
+            return text.replace(codeRegex, (m, p1) => `<div class="term-code-block">${p1.trim()}</div>`);
         }
 
         function getShortId(sessionId, instanceId) {
@@ -311,52 +317,43 @@
             if (!data) return;
             lastData = data;
             const allInstances = data.instances || [];
-            
-            // Helper to get value with snake_case and camelCase support
             const get = (obj, key) => {
                 if (!obj) return 0;
                 const camelKey = key.replace(/_([a-z])/g, (g) => g[1].toUpperCase());
                 return obj[key] || obj[camelKey] || 0;
             };
-
-            // Global Stats
             document.getElementById('totalInstances').textContent = allInstances.length;
             document.getElementById('busyInstances').textContent = allInstances.filter(i => i.state === 'busy').length;
-            
             document.getElementById('totalCalls').textContent = get(data, 'total_calls');
             document.getElementById('totalErrors').textContent = get(data, 'total_errors');
-            
             document.getElementById('totalInputTokens').textContent = formatNumber(get(data, 'total_input_tokens'));
             document.getElementById('totalOutputTokens').textContent = formatNumber(get(data, 'total_output_tokens'));
-            
             document.getElementById('totalThinking').textContent = formatDuration(get(data, 'total_thinking_ms'));
             document.getElementById('totalExecution').textContent = formatDuration(get(data, 'total_execution_ms'));
-            
             const withMetrics = allInstances.filter(i => (get(i, 'total_calls')) > 0);
             document.getElementById('avgExecTime').textContent = withMetrics.length ? formatDuration(withMetrics.reduce((sum, i) => sum + (get(i, 'avg_execution_time_1m')), 0) / withMetrics.length) : '0ms';
             document.getElementById('errorRate').textContent = withMetrics.length ? (withMetrics.reduce((sum, i) => sum + (get(i, 'error_rate_1m')), 0) / withMetrics.length * 100).toFixed(1) + '%' : '0%';
-
             let instances = allInstances;
             if (hideOffline) instances = instances.filter(i => i.state !== 'offline');
             if (hideIdle) instances = instances.filter(i => i.state !== 'idle');
-
             const container = document.getElementById('instances');
             if (instances.length === 0) {
                 container.innerHTML = '<div style="text-align:center; padding: 40px; color: #666;">📡 No instances to show</div>';
                 return;
             }
-
             container.innerHTML = instances.map(inst => {
                 const shortId = getShortId(inst.session_id, inst.instance_id);
+                const activeToolName = inst.primary_tool || inst.active_tool || 'idle';
                 return `
                     <div class="instance-card ${inst.state}">
                         <div class="instance-header">
                             <div class="instance-id-container">
                                 <span class="instance-id">${inst.instance_id}</span> 
-                                ${inst.session_id ? `<span class="session-tag" title="Session: ${inst.session_id}">[${shortId}]</span>` : ''}
+                                ${inst.session_id ? `<span class="session-tag" title="Session: ${inst.session_id}" style="background:rgba(255,165,2,0.05);color:var(--warning-color);border-color:rgba(255,165,2,0.1);">ID:${shortId}</span>` : ''}
                             </div>
                             <div class="instance-meta">
                                 <div class="instance-meta-row">
+                                    <span class="session-tag" style="background:rgba(0,212,255,0.1);color:var(--accent-color);border-color:rgba(0,212,255,0.2);">${activeToolName}</span>
                                     ${inst.model_name ? `<span class="model-tag">${inst.model_name}</span>` : ''}
                                     ${inst.active_role ? `<span class="role-tag">${inst.active_role}</span>` : ''}
                                     ${inst.last_status && inst.state === 'busy' ? `<span class="instance-phase">${inst.last_status}</span>` : ''}
@@ -387,124 +384,112 @@
         function appendLog(event, buffer = true) {
             if (buffer) { allLogs.push(event); if (allLogs.length > MAX_LOGS) allLogs.shift(); }
             const container = document.getElementById('logsContainer');
-            
             const timeStr = new Date(event.timestamp).toLocaleTimeString(undefined, { hour12: false });
             const session = getShortId(event.session_id, event.instance_id);
-            const tool = event.tool_name || 'system';
+            const tool = event.primary_tool || event.tool_name || 'system';
+            const model = event.model_name || '';
+            const metadataStr = model ? `${tool}:${model}` : tool;
             const parsed = parseLogContent(event.log_data);
             if (!parsed) return;
-
             if (terminalView) {
                 const canMerge = lastLogEntryRef && lastLogEntryRef.id === session && lastLogEntryRef.type === parsed.type && parsed.isDelta;
                 if (canMerge) {
                     const contentEl = lastLogEntryRef.element.querySelector('.term-content');
                     lastLogEntryRef.rawText += parsed.text;
-                    contentEl.innerHTML = formatTerminalText(lastLogEntryRef.rawText);
+                    contentEl.innerHTML = formatTerminalText(lastLogEntryRef.rawText, parsed.type);
                 } else {
                     const entry = document.createElement('div');
                     entry.className = 'log-entry terminal';
-                    entry.innerHTML = `<div class="term-line"><span class="term-meta">[${timeStr}] [${session}] [${tool}]</span><div class="term-content ${parsed.type}">${formatTerminalText(parsed.text)}</div></div>`;
+                    entry.innerHTML = `<div class="term-line"><span class="term-meta">[${timeStr}] [${metadataStr}]</span><div class="term-content ${parsed.type}">${formatTerminalText(parsed.text, parsed.type)}</div></div>`;
                     container.appendChild(entry);
                     lastLogEntryRef = { id: session, type: parsed.type, element: entry, rawText: parsed.text };
                 }
             } else {
                 const entry = document.createElement('div');
                 entry.className = 'log-entry';
-                entry.innerHTML = `<div class="term-line"><span class="term-meta">[${timeStr}] [${session}]</span><span class="term-content ${parsed.type}">${escapeHtml(parsed.text)}</span></div>`;
+                entry.innerHTML = `<div class="term-line"><span class="term-meta">[${timeStr}] [${session}] [${metadataStr}]</span><span class="term-content ${parsed.type}">${escapeHtml(parsed.text)}</span></div>`;
                 container.appendChild(entry);
                 lastLogEntryRef = null;
             }
             if (autoScroll) container.scrollTop = container.scrollHeight;
         }
 
-        function reRenderLogs() {
-            document.getElementById('logsContainer').innerHTML = '';
-            lastLogEntryRef = null;
-            allLogs.forEach(l => appendLog(l, false));
-        }
+        function reRenderLogs() { document.getElementById('logsContainer').innerHTML = ''; lastLogEntryRef = null; allLogs.forEach(l => appendLog(l, false)); }
 
         function parseLogContent(raw) {
             if (!raw) return null;
-            
+            if (raw.includes('Reading prompt from stdin...')) return null;
             let displayData = { type: 'raw', text: raw, isDelta: false };
-
-            // Handle potential multiple JSON objects in one line (}{)
             const cleanRaw = raw.trim();
-            if (cleanRaw.startsWith('{')) {
-                try {
-                    // Try to extract and beautify if it's JSON
-                    // Handle concatenated JSON like }{
-                    const parts = cleanRaw.replace(/}{/g, "}\n{").split("\n");
-                    let beautified = [];
-                    let lastType = null;
-                    let isDelta = false;
-
-                    for (const part of parts) {
-                        try {
-                            const data = JSON.parse(part);
-                            
-                            // Beautify logic moved from server to client
-                            let pretty = null;
-                            const msgType = data.type;
-
-                            if (msgType === 'message' || msgType === 'assistant') {
-                                const content = data.content || data.thought || (data.message && data.message.content);
-                                if (content) {
-                                    pretty = `🧠 Thinking: ${content}`;
-                                    isDelta = data.delta === true || msgType === 'message';
-                                }
-                            } else if (msgType === 'tool_use') {
-                                pretty = `🛠️ Calling: ${data.name || data.tool_name || 'tool'}`;
-                            } else if (msgType === 'tool_result') {
-                                const icon = (data.status === 'error' || data.is_error) ? '❌' : '✅';
-                                pretty = `${icon} Result from: ${data.tool_id || 'tool'}`;
-                            } else if (msgType === 'init') {
-                                pretty = `🚀 Initialized (Model: ${data.model || 'unknown'})`;
-                            } else if (msgType === 'result') {
-                                const icon = (data.status === 'error' || data.is_error) ? '⚠️' : '🏁';
-                                pretty = `${icon} Finished`;
-                            } else if (msgType === 'error' || msgType === 'turn.failed') {
-                                const err = data.error || data;
-                                pretty = `❌ Error: ${err.message || 'unknown'}`;
-                            } else if (msgType === 'stream_event') {
-                                const evt = data.event || {};
-                                if (evt.type === 'content_block_delta' && evt.delta) {
-                                    const text = evt.delta.text || evt.delta.thinking;
-                                    if (text) { pretty = `🧠 Thinking: ${text}`; isDelta = true; }
-                                }
-                            }
-
-                            if (pretty) {
-                                beautified.push(pretty);
-                                lastType = msgType;
-                            }
-                        } catch (e) {}
-                    }
-
-                    if (beautified.length > 0) {
-                        displayData.text = beautified.join("\n");
-                        displayData.isDelta = isDelta;
-                        
-                        // Map type for styling
-                        const t = beautified[0];
-                        if (t.includes('🧠')) displayData.type = 'thinking';
-                        else if (t.includes('🛠️')) displayData.type = 'tool-use';
-                        else if (t.includes('✅') || t.includes('❌')) displayData.type = t.includes('❌') ? 'error' : 'tool-result';
-                        else if (t.includes('🚀') || t.includes('🏁')) displayData.type = 'system';
-                        
-                        return displayData;
-                    }
-                } catch (e) {}
+            if (!cleanRaw.startsWith('{')) {
+                const lower = raw.toLowerCase();
+                if (raw.includes('❌') || raw.includes('⚠️') || lower.includes('error') || lower.includes('fail')) displayData.type = 'error';
+                else if (raw.includes('🧠')) displayData.type = 'thinking';
+                else if (raw.includes('🛠️')) displayData.type = 'tool-use';
+                else if (raw.includes('✅')) displayData.type = 'tool-result';
+                return displayData;
             }
-            
-            // Fallback for non-JSON or unparseable JSON
-            const lower = raw.toLowerCase();
-            if (raw.includes('❌') || raw.includes('⚠️') || lower.includes('error') || lower.includes('fail')) displayData.type = 'error';
-            else if (raw.includes('🧠')) displayData.type = 'thinking';
-            else if (raw.includes('🛠️')) displayData.type = 'tool-use';
-            else if (raw.includes('✅')) displayData.type = 'tool-result';
-            else if (raw.includes('🚀') || raw.includes('🏁') || raw.includes('📋')) displayData.type = 'system';
-            
+            try {
+                const parts = cleanRaw.replace(/}{/g, "}\n{").split("\n");
+                let results = [];
+                let finalIsDelta = false;
+                let primaryType = null;
+                let anyHandled = false;
+                const typeToIcon = { 'message': '🧠', 'assistant': '🧠', 'thinking': '🧠', 'user': '👤', 'tool_use': '🛠️', 'tool_result': '✅', 'init': '🚀', 'result': '🏁', 'turn.failed': '❌', 'error': '❌' };
+                const extract = (obj) => {
+                    if (!obj) return "";
+                    if (typeof obj === 'string') return obj;
+                    if (Array.isArray(obj)) return obj.map(extract).join("");
+                    if (typeof obj === 'object') {
+                        if (obj.type === 'tool_result') {
+                            const icon = (obj.is_error || obj.status === 'error') ? '❌' : '✅';
+                            return `${icon} Result: ${extract(obj.content || obj.output || obj.result) || 'done'}`;
+                        }
+                        if (obj.type === 'thinking' && obj.thinking !== undefined) return obj.thinking || "...";
+                        if (obj.type === 'text' && obj.text !== undefined) return obj.text || "...";
+                        if (obj.type === 'thinking_delta' && obj.thinking !== undefined) return obj.thinking;
+                        if (obj.type === 'text_delta' && obj.text !== undefined) return obj.text;
+                        if (obj.type === 'init') return obj.model || "...";
+                        if (obj.type === 'result') return obj.status || "...";
+                        if (obj.type === 'tool_use') return obj.name || obj.tool_name || "...";
+                        if (['message_start', 'content_block_start', 'message_delta', 'message_stop', 'content_block_stop'].includes(obj.type)) return obj.type.includes('stop') ? "✓" : "";
+                        const keys = ['content', 'thought', 'thinking', 'text', 'message', 'event', 'delta', 'result', 'model'];
+                        for (const k of keys) { if (obj[k]) { const val = extract(obj[k]); if (val !== "") return val; } }
+                    }
+                    return "";
+                };
+                for (const part of parts) {
+                    try {
+                        const data = JSON.parse(part);
+                        if (!primaryType) primaryType = data.type;
+                        anyHandled = true;
+                        const isDelta = data.delta === true || data.type === 'message' || (data.event && data.event.type === 'content_block_delta');
+                        if (isDelta) finalIsDelta = true;
+                        const text = extract(data);
+                        let msgType = data.type;
+                        let icon = typeToIcon[msgType] || '';
+                        if (data.event?.content_block?.type === 'tool_use') icon = '🛠️';
+                        if (data.event?.content_block?.type === 'thinking') icon = '🧠';
+                        const icons = Object.values(typeToIcon);
+                        const hasIcon = icons.some(i => text.startsWith(i));
+                        const prefix = (!isDelta && icon && !hasIcon && text !== "" && text !== "✓") ? `${icon} ${msgType.charAt(0).toUpperCase() + msgType.slice(1).replace('_',' ')}: ` : '';
+                        if (text !== "" || prefix !== "") results.push(prefix + text);
+                    } catch (e) {}
+                }
+                if (anyHandled) {
+                    displayData.text = results.join("");
+                    displayData.isDelta = finalIsDelta;
+                    const t = primaryType || 'raw';
+                    const fullText = displayData.text;
+                    if (fullText.includes('🧠') || t.includes('think') || t.includes('assistant') || t.includes('message') || t.includes('stream')) displayData.type = 'thinking';
+                    else if (fullText.includes('🛠️') || t.includes('tool_use')) displayData.type = 'tool-use';
+                    else if (fullText.includes('✅') || fullText.includes('❌') || t.includes('tool_result') || t === 'user') displayData.type = (fullText.includes('❌') || t.includes('error')) ? 'error' : 'tool-result';
+                    else displayData.type = 'system';
+                    if (displayData.text === "" && !finalIsDelta) return null;
+                    if (displayData.text === "✓") return null;
+                    return displayData;
+                }
+            } catch (e) {}
             return displayData;
         }
 
@@ -518,7 +503,6 @@
 
         async function interruptInstance(id) { await fetch(`/api/instances/${id}/interrupt`, { method: 'POST' }); }
         async function killInstance(id) { if (confirm('Kill instance?')) await fetch(`/api/instances/${id}/kill`, { method: 'POST' }); }
-
         window.onload = () => { initControls(); connect(); };
     </script>
 </body>

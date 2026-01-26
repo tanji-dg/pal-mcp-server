@@ -75,11 +75,14 @@ class InstanceTracker:
         self._tool_name_cache: dict[str, str] = {} # Map tool_id -> name
         
         self.active_tool: Optional[str] = None # Primary/most recent tool
+        self.primary_tool: Optional[str] = None # Top-level tool (clink, chat)
         self.active_tool_input: Optional[str] = None
         self.session_id: Optional[str] = None
         self.model_name: Optional[str] = None
         self.active_role: Optional[str] = None
         self.tool_start_time: Optional[datetime] = None
+        self.primary_tool_start_time: Optional[datetime] = None
+        self._primary_locked: bool = False # Whether primary_tool was set by is_primary flag
         self.recent_calls: deque[ToolCall] = deque(maxlen=MAX_RECENT_CALLS)
         self.recent_logs: deque[ToolEvent] = deque(maxlen=100) # Buffer last 100 log lines
         
@@ -104,6 +107,7 @@ class InstanceTracker:
         self._last_activity_time: Optional[float] = None
 
         # Internal tracking for deltas (per tool execution)
+        self._tokens_initialized = False # NEW: Track if we have a baseline yet
         self._last_request_tokens = {
             "input": 0,
             "output": 0,
@@ -132,6 +136,10 @@ class InstanceTracker:
             "cache_creation": ["cache_creation_input_tokens", "cacheCreationInputTokens"]
         }
         
+        # If this is the very first report for this instance (monitor restart case),
+        # capture the current state as baseline but don't increment lifetime totals yet.
+        is_first_init = not self._tokens_initialized
+        
         updated = False
         for key, possible_keys in mapping.items():
             val = 0
@@ -141,20 +149,28 @@ class InstanceTracker:
                     break
             
             if val > 0:
-                # If the new value is greater than what we last saw for THIS request,
-                # add the difference to the LIFETIME total.
-                last_val = self._last_request_tokens[key]
-                if val > last_val:
-                    delta = val - last_val
-                    if key == "input": self.input_tokens += delta
-                    elif key == "output": self.output_tokens += delta
-                    elif key == "cache_read": self.cache_read_tokens += delta
-                    elif key == "cache_creation": self.cache_creation_tokens += delta
-                    
+                if is_first_init:
+                    # Capture baseline
                     self._last_request_tokens[key] = val
                     updated = True
+                else:
+                    # Normal incremental update
+                    last_val = self._last_request_tokens[key]
+                    if val > last_val:
+                        delta = val - last_val
+                        if key == "input": self.input_tokens += delta
+                        elif key == "output": self.output_tokens += delta
+                        elif key == "cache_read": self.cache_read_tokens += delta
+                        elif key == "cache_creation": self.cache_creation_tokens += delta
+                        
+                        self._last_request_tokens[key] = val
+                        updated = True
         
-        if updated:
+        if is_first_init and updated:
+            self._tokens_initialized = True
+            logger.info(f"Initialized token baseline for {self.instance_id}")
+        
+        if updated and not is_first_init:
             logger.debug(f"Tokens updated for {self.instance_id}: input={self.input_tokens}, output={self.output_tokens}, cached={self.cache_read_tokens}")
 
     def _beautify_json_event(self, data: dict) -> Optional[str]:
@@ -240,8 +256,9 @@ class InstanceTracker:
 
         return None
 
-    def start_tool(self, tool_name: str, tool_input: Optional[str] = None):
+    def start_tool(self, tool_name: str, tool_input: Optional[str] = None, is_primary: bool = False):
         """Record tool execution start."""
+        print(f"DEBUG TRACKER: start_tool({tool_name}, is_primary={is_primary}) for {self.instance_id}")
         self.interrupted = False # Reset interruption state
         now = utc_now()
         now_ts = time.time()
@@ -250,7 +267,7 @@ class InstanceTracker:
         self.active_tool_inputs[tool_name] = tool_input
         
         # Reset session metrics for new primary tool execution
-        if tool_name == "clink":
+        if is_primary or tool_name == "clink":
             self.thinking_ms = 0
             self.execution_ms = 0
             self._last_thinking_start = now_ts
@@ -258,6 +275,18 @@ class InstanceTracker:
 
         # Update primary display info
         self.active_tool = tool_name
+        
+        # Primary tool logic: 
+        # Use explicit is_primary flag to lock the session root.
+        # If this is a primary tool, it ALWAYS takes precedence (Promotion).
+        # If no primary tool is set yet, the first tool (any tool) becomes the temporary root.
+        if is_primary or not self.primary_tool:
+            old_p = self.primary_tool
+            self.primary_tool = tool_name
+            self.primary_tool_start_time = now
+            self._primary_locked = is_primary
+            logger.info(f"Set Primary Tool: {old_p} -> {tool_name} (is_primary={is_primary})")
+            
         self.active_tool_input = tool_input
         self.tool_start_time = now
         self.last_heartbeat = now
@@ -316,7 +345,8 @@ class InstanceTracker:
                 # Still record heartbeat and update status if it's short, but stay idle
                 self.last_heartbeat = now
                 if log_data and not log_data.startswith("{") and len(log_data) < 30:
-                    self.last_status = log_data.strip()
+                    if "Reading prompt from stdin..." not in log_data:
+                        self.last_status = log_data.strip()
                 return
 
         self.state = "busy"
@@ -331,6 +361,10 @@ class InstanceTracker:
         self.last_heartbeat = now
         
         if log_data:
+            # Noise filter for initial CLI banners
+            if "Reading prompt from stdin..." in log_data:
+                return
+
             is_json_log = False
             beautified_msgs = []
             try:
@@ -390,6 +424,10 @@ class InstanceTracker:
                     # Capture session_id from log if available - REMOVED: frequently overwrites with wrong internal IDs
                     # if "session_id" in data:
                     #     self.session_id = data["session_id"]
+
+                    # Log-based promotion heuristic: if JSON says it is primary, believe it.
+                    if data.get("is_primary") is True and msg_type == "tool_use":
+                        self.start_tool(tool_name or data.get("name"), is_primary=True)
 
                     # Unwrap Claude stream_event wrapper
                     if msg_type == "stream_event" and "event" in data and isinstance(data["event"], dict):
@@ -469,7 +507,8 @@ class InstanceTracker:
                             tool_id = content_block.get("id")
                             if tool_id:
                                 self._tool_name_cache[tool_id] = name
-                                self._tool_start_times[tool_id] = current_event_time
+                                if tool_id not in self._tool_start_times:
+                                    self._tool_start_times[tool_id] = current_event_time
                             self.last_status = f"Calling {name}"
                             self.active_tool = name
                             self.tool_start_time = utc_now()
@@ -503,7 +542,8 @@ class InstanceTracker:
                         if tool_id:
                             self._tool_name_cache[tool_id] = name
                             # Store start time as high-precision float timestamp
-                            self._tool_start_times[tool_id] = current_event_time
+                            if tool_id not in self._tool_start_times:
+                                self._tool_start_times[tool_id] = current_event_time
                         self.last_status = f"Calling {name}"
                         self.active_tool = name
                         self.tool_start_time = utc_now()
@@ -588,7 +628,13 @@ class InstanceTracker:
                                     duration_ms = 0
                                     if tool_id and tool_id in self._tool_start_times:
                                         start_t_ts = self._tool_start_times.pop(tool_id)
+                                        # Support both float and datetime
+                                        if isinstance(start_t_ts, datetime):
+                                            start_t_ts = start_t_ts.timestamp()
                                         duration_ms = int((current_event_time - start_t_ts) * 1000)
+                                        # Accumulate into session execution time
+                                        if duration_ms > 0:
+                                            self.execution_ms += duration_ms
 
                                     if is_error:
                                         self.total_errors += 1
@@ -817,18 +863,33 @@ class InstanceTracker:
                 del self.active_tool_inputs[target_tool]
 
         # Update state based on remaining tools
-        is_primary_completion = (target_tool and target_tool == self.active_tool)
+        is_primary_completion = (target_tool and target_tool == self.primary_tool)
         is_clink_completion = (target_tool == "clink")
+        
+        logger.debug(f"end_tool({target_tool}) for {self.instance_id}: is_primary={is_primary_completion}, is_clink={is_clink_completion}, active_tools={list(self.active_tools.keys())}, primary={self.primary_tool}")
 
         if not self.active_tools or is_primary_completion or is_clink_completion:
             self.state = "idle"
-            if status == "interrupted":
+            # Determine success status string
+            completion_status = "error" if is_error else "success"
+            
+            if self.interrupted:
                 self.last_status = "Interrupted by user"
                 self.interrupted = False # Reset flag after handling
             else:
-                self.last_status = f"Completed {target_tool} ({status})" if target_tool else "Idle"
+                self.last_status = f"Completed {target_tool} ({completion_status})" if target_tool else "Idle"
             
+            # Log metrics for root tool
+            if self.primary_tool and self.primary_tool_start_time:
+                duration_sec = (utc_now() - self.primary_tool_start_time).total_seconds()
+                logger.info(f"[Metrics] Root tool '{self.primary_tool}' finished in {duration_sec:.2f}s")
+            else:
+                logger.debug(f"Skipping metrics: primary={self.primary_tool}, start_time={self.primary_tool_start_time}")
+
             self.active_tool = None
+            self.primary_tool = None
+            self.primary_tool_start_time = None
+            self._primary_locked = False
             self.active_tool_input = None
             self.model_name = None
             self.session_id = None
@@ -885,6 +946,7 @@ class InstanceTracker:
             state=state,
             last_heartbeat=self.last_heartbeat,
             active_tool=self.active_tool if state == "busy" else None,
+            primary_tool=self.primary_tool if state == "busy" else None,
             session_id=self.session_id,
             model_name=self.model_name if state == "busy" else None,
             active_role=self.active_role if state == "busy" else None,
@@ -913,6 +975,7 @@ class MonitorCoordinator:
         self._lock = asyncio.Lock()
         self._broadcast_task: Optional[asyncio.Task] = None
         self._running = False
+        self.stats_reset_at: float = 0.0
 
     async def start(self):
         """Start the coordinator background tasks."""
@@ -935,34 +998,79 @@ class MonitorCoordinator:
                 pass
         logger.info("Monitor coordinator stopped")
 
+    async def broadcast_state(self, state: AggregatedState):
+        """Broadcast state to all connected clients."""
+        if not self.websocket_clients:
+            return
+        message = state.to_json()
+        disconnected = set()
+        for client in self.websocket_clients:
+            try:
+                # Use a timeout to avoid hanging on stale connections
+                await asyncio.wait_for(client.send_text(message), timeout=0.5)
+            except Exception:
+                disconnected.add(client)
+        
+        if disconnected:
+            # Atomic set modification is safe in asyncio
+            for client in disconnected:
+                self.websocket_clients.discard(client)
+
     async def process_event(self, event: Union[ToolEvent, dict]) -> EventResponse:
         """Process an incoming event from an MCP server instance."""
+        print(f"DEBUG EVENT RAW: {event}")
+        logger.info(f"TRACE V5: Enter process_event. Lock status: {self._lock.locked()}")
         broadcast_log_event = None
         interrupted = False
 
         # Robust extraction regardless of object type
         def get_val(obj, key):
+            if obj is None:
+                return None
             if isinstance(obj, dict):
-                return obj.get(key)
+                # Try exact match first
+                if key in obj: return obj[key]
+                # Try lowercase
+                key_l = key.lower()
+                for k, v in obj.items():
+                    if k.lower() == key_l: return v
+                return None
+            
+            # Try attribute access
             val = getattr(obj, key, None)
-            if val is None and hasattr(obj, "model_dump"):
-                return obj.model_dump().get(key)
-            return val
+            if val is not None:
+                return val
+            
+            # Try dict conversion if it is a model
+            if hasattr(obj, "model_dump"):
+                try:
+                    d = obj.model_dump()
+                    if key in d: return d[key]
+                    key_l = key.lower()
+                    for k, v in d.items():
+                        if k.lower() == key_l: return v
+                except Exception:
+                    pass
+            return None
 
         instance_id = get_val(event, "instance_id")
         event_type = get_val(event, "event_type")
+        if isinstance(event_type, str):
+            event_type = event_type.lower()
 
         if not instance_id:
             logger.error(f"Event missing instance_id. Type: {type(event)}")
             return EventResponse(status="error", message="Missing instance_id")
 
+        logger.info(f"TRACE: Acquiring lock for {instance_id}, {event_type}")
         async with self._lock:
+            logger.info(f"TRACE: Lock acquired for {instance_id}")
             if event_type == ToolEventType.REGISTER:
                 uptime = get_val(event, 'uptime_seconds') or 0.0
                 self.instances[instance_id] = InstanceTracker(instance_id, uptime)
                 logger.info(f"Instance registered: {instance_id}")
-                return EventResponse(status="ok")
-
+                # Don't return early, let it fall through to get the tracker
+            
             elif event_type == ToolEventType.UNREGISTER:
                 if instance_id in self.instances:
                     del self.instances[instance_id]
@@ -976,6 +1084,7 @@ class MonitorCoordinator:
                 logger.info(f"Instance auto-registered: {instance_id}")
 
             tracker = self.instances[instance_id]
+            logger.info(f"TRACE: Tracker obtained for {instance_id}")
             
             # Update thinking metrics based on elapsed time since last event
             now_ts = time.time()
@@ -996,17 +1105,35 @@ class MonitorCoordinator:
             elif event_type == ToolEventType.TOOL_START:
                 tool_name = get_val(event, 'tool_name')
                 tool_input = get_val(event, 'tool_input')
+                
+                # Robust boolean extraction for is_primary
+                is_primary = False
+                if isinstance(event, ToolEvent):
+                    is_primary = event.is_primary
+                else:
+                    raw_val = get_val(event, 'is_primary')
+                    is_primary = (raw_val is True or str(raw_val).lower() == 'true')
+                
                 if tool_name:
-                    tracker.start_tool(tool_name, tool_input)
-                    logger.debug(f"Tool started: {tool_name} on {instance_id}")
+                    tracker.start_tool(tool_name, tool_input, is_primary=is_primary)
+                    logger.debug(f"Tool started: {tool_name} (is_primary={is_primary}) on {instance_id}")
 
             elif event_type == ToolEventType.TOOL_END:
                 tool_name = get_val(event, 'tool_name')
                 duration_ms = get_val(event, 'duration_ms')
                 tool_output = get_val(event, 'tool_output')
                 model_name = get_val(event, 'model_name')
-                tracker.end_tool(tool_name, duration_ms or 0, is_error=False, tool_output=tool_output, model_name=model_name)
-                logger.debug(f"Tool completed: {tool_name} on {instance_id}")
+                
+                # Check for is_error in TOOL_END event too
+                is_error = False
+                if isinstance(event, ToolEvent):
+                    is_error = event.is_error
+                else:
+                    raw_err = get_val(event, 'is_error')
+                    is_error = (raw_err is True or str(raw_err).lower() == 'true')
+
+                tracker.end_tool(tool_name, duration_ms or 0, is_error=is_error, tool_output=tool_output, model_name=model_name)
+                logger.debug(f"Tool completed: {tool_name} (error={is_error}) on {instance_id}")
 
             elif event_type == ToolEventType.TOOL_ERROR:
                 tool_name = get_val(event, 'tool_name')
@@ -1035,15 +1162,36 @@ class MonitorCoordinator:
                 if tool_name:
                     # Log activity needs the event object for storage
                     tracker.log_activity(tool_name, log_data, original_event=broadcast_log_event)
+
+            # --- Unified Enrichment and Broadcasting ---
+            # If we don't have a broadcast_log_event yet (non-LOG events), create one if needed
+            if not broadcast_log_event and event_type in [ToolEventType.TOOL_START, ToolEventType.TOOL_END, ToolEventType.TOOL_ERROR]:
+                if isinstance(event, dict):
+                    try:
+                        broadcast_log_event = ToolEvent(**event)
+                    except Exception:
+                        pass
+                else:
+                    broadcast_log_event = event
+
+            if broadcast_log_event:
+                # Fill missing session context
+                if not broadcast_log_event.session_id and tracker.session_id:
+                    broadcast_log_event.session_id = tracker.session_id
                 
-                if broadcast_log_event:
-                    if not broadcast_log_event.session_id and tracker.session_id:
-                        broadcast_log_event.session_id = tracker.session_id
+                if not broadcast_log_event.model_name and tracker.model_name:
+                    broadcast_log_event.model_name = tracker.model_name
+                
+                if tracker.primary_tool:
+                    broadcast_log_event.primary_tool = tracker.primary_tool
+            logger.info(f"TRACE: Exiting lock for {instance_id}")
 
-
+        # --- OUTSIDE the lock to avoid deadlock ---
         if broadcast_log_event:
+            logger.info(f"TRACE: Broadcasting log event for {instance_id}")
             await self.broadcast_log(broadcast_log_event)
             
+        logger.info(f"TRACE: process_event done for {instance_id}")
         return EventResponse(status="ok", interrupted=interrupted)
 
     async def interrupt_instance(self, instance_id: str):
@@ -1062,15 +1210,17 @@ class MonitorCoordinator:
         if not self.websocket_clients:
             return
         message = event.to_json()
-        async with self._lock:
-            disconnected = set()
-            for client in self.websocket_clients:
-                try:
-                    await client.send_text(message)
-                except Exception:
-                    disconnected.add(client)
-            for client in disconnected:
-                self.websocket_clients.discard(client)
+        disconnected = set()
+        for client in self.websocket_clients:
+            try:
+                await client.send_text(message)
+            except Exception:
+                disconnected.add(client)
+        
+        if disconnected:
+            async with self._lock:
+                for client in disconnected:
+                    self.websocket_clients.discard(client)
 
     async def add_websocket_client(self, websocket: WebSocket):
         """Add a new WebSocket client connection."""
@@ -1103,8 +1253,20 @@ class MonitorCoordinator:
     async def get_aggregated_state(self) -> AggregatedState:
         """Get current aggregated state of all instances."""
         async with self._lock:
-            instances = [tracker.to_status() for tracker in self.instances.values()]
-            return AggregatedState.from_instances(instances)
+            statuses = [tracker.to_status() for tracker in self.instances.values()]
+            
+            return AggregatedState(
+                instances=statuses,
+                total_calls=sum((i.total_calls or 0) for i in statuses),
+                total_errors=sum((i.total_errors or 0) for i in statuses),
+                total_input_tokens=sum((i.input_tokens or 0) for i in statuses),
+                total_output_tokens=sum((i.output_tokens or 0) for i in statuses),
+                total_cache_read_tokens=sum((i.cache_read_tokens or 0) for i in statuses),
+                total_cache_creation_tokens=sum((i.cache_creation_tokens or 0) for i in statuses),
+                total_thinking_ms=sum((i.thinking_ms or 0) for i in statuses),
+                total_execution_ms=sum((i.execution_ms or 0) for i in statuses),
+                stats_reset_at=self.stats_reset_at
+            )
 
     async def _broadcast_loop(self):
         """Periodically broadcast state to all connected WebSocket clients."""
@@ -1267,7 +1429,8 @@ def create_app() -> FastAPI:
     async def get_status():
         coordinator = get_coordinator()
         state = await coordinator.get_aggregated_state()
-        return {"type": state.type, "timestamp": state.timestamp.isoformat(), "instances": [inst.to_dict() for inst in state.instances]}
+        # Return the full state as a dictionary, including global totals
+        return state.model_dump(mode="json")
 
     @app.post("/event")
     async def receive_event(event: dict):

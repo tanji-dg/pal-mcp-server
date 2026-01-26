@@ -305,11 +305,14 @@ The PAL MCP Server includes a real-time monitoring system that allows you to vie
 
 #### Start the Monitor Coordinator
 ```bash
-# Start in the foreground
-./scripts/start_monitor.sh
-
 # Start in the background
-./scripts/start_monitor.sh bg
+./scripts/monitor_ctrl.sh start
+
+# Start in the foreground
+./scripts/monitor_ctrl.sh fg
+
+# Other commands: stop, restart, status, logs
+./scripts/monitor_ctrl.sh status
 ```
 
 This will start:

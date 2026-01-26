@@ -296,7 +296,7 @@ class CLinkTool(SimpleTool):
                 monitor_args = {"raw_args": str(arguments)}
                 
             monitor_args["continuation_id"] = effective_session_id # Use normalized ID
-            await publisher.tool_start(self.get_name(), monitor_args, session_id=effective_session_id)
+            await publisher.tool_start(self.get_name(), monitor_args, session_id=effective_session_id, is_primary=True)
 
         # Track last notification to avoid spamming the UI
         state = {"last_msg": "", "last_time": 0.0}
@@ -412,32 +412,16 @@ class CLinkTool(SimpleTool):
                                 if msg_type == "init":
                                     model = data.get("model")
                                     logger.debug(f"CLI INIT EVENT: [{client_config.name}] model={model}")
-                                    content = f"🚀 Initialized (Model: {model or 'unknown'})"
-                                    # No db_update needed for init
+                                    content = current_json_str # Raw JSON
                                 
                                 elif msg_type == "error":
-                                    err_msg = data.get("message")
-                                    if not err_msg and isinstance(data.get("error"), dict):
-                                        err_msg = data["error"].get("message")
-                                    content = f"❌ Error: {err_msg or 'Unknown CLI error'}"
+                                    content = current_json_str # Raw JSON
                                     state["accumulated_logs"].append(content)
                                     db_updated_needed = True
 
                                 elif msg_type == "result":
-                                    status = data.get("status", "success")
-                                    stats = data.get("stats") or {}
-                                    tokens = stats.get("total_tokens") or stats.get("totalTokens")
-                                    duration = stats.get("duration_ms")
-                                    
-                                    stat_str = ""
-                                    if tokens: stat_str += f"{tokens} tokens"
-                                    if duration: stat_str += f", {duration/1000:.1f}s"
-                                    
-                                    suffix = f" ({stat_str})" if stat_str else ""
-                                    content = f"{'✅' if status == 'success' else '⚠️'} Finished{suffix}"
-                                    logger.debug(f"CLI RESULT EVENT: [{client_config.name}] {content}")
-                                    # We don't necessarily need to show this in the UI if it's too noisy, 
-                                    # but for transparency it's better to show it.
+                                    content = current_json_str # Raw JSON
+                                    logger.debug(f"CLI RESULT EVENT: [{client_config.name}]")
                                     db_updated_needed = True
 
                                 elif msg_type == "message":
@@ -445,13 +429,11 @@ class CLinkTool(SimpleTool):
                                     payload_content = data.get("content") or data.get("thought")
                                     if role == "assistant" and payload_content:
                                         if data.get("delta") is True:
-                                            summary_msg = handle_summary_extraction(payload_content)
-                                            if summary_msg:
-                                                content = summary_msg
-                                            else:
-                                                state["accumulated_thinking"].append(payload_content)
-                                                if not state["in_summary"]:
-                                                    content = f"🧠 Thinking: {payload_content}"
+                                            # Still parse for summary but keep content raw for machine
+                                            handle_summary_extraction(payload_content)
+                                            state["accumulated_thinking"].append(payload_content)
+                                        
+                                        content = current_json_str # Raw JSON chunk
                                 
                                 # Claude stream-json events
                                 elif msg_type == "stream_event":
@@ -463,62 +445,45 @@ class CLinkTool(SimpleTool):
                                         if dtype == "thinking_delta":
                                             thought = delta.get("thinking")
                                             if thought:
-                                                summary_msg = handle_summary_extraction(thought)
-                                                if summary_msg:
-                                                    content = summary_msg
-                                                else:
-                                                    state["accumulated_thinking"].append(thought)
-                                                    if not state["in_summary"]:
-                                                        content = f"🧠 Thinking: {thought}"
+                                                handle_summary_extraction(thought)
+                                                state["accumulated_thinking"].append(thought)
                                         elif dtype == "text_delta":
                                             text = delta.get("text")
-                                            if text:
-                                                summary_msg = handle_summary_extraction(text)
-                                                if summary_msg: content = summary_msg
+                                            if text: handle_summary_extraction(text)
+                                    
+                                    content = current_json_str # Raw JSON chunk
                                     
                                 elif msg_type == "tool_use":
                                     name = data.get("tool_name") or data.get("name")
                                     tool_id = data.get("tool_id")
                                     if tool_id and name: tool_names[tool_id] = name
-                                    log_entry = f"🛠️ Executing: {name or 'tool'}"
-                                    content = log_entry
-                                    state["accumulated_logs"].append(log_entry)
+                                    content = current_json_str
+                                    state["accumulated_logs"].append(content)
                                     db_updated_needed = True 
                                     
                                 elif msg_type == "tool_result":
                                     tool_id = data.get("tool_id")
-                                    status = data.get("status")
-                                    name = tool_names.get(tool_id) if tool_id else None
-                                    log_entry = f"{'✅ Executed' if status == 'success' else '❌ Error in'}: {name or 'tool'}"
-                                    content = log_entry
-                                    state["accumulated_logs"].append(log_entry)
+                                    content = current_json_str
+                                    state["accumulated_logs"].append(content)
                                     db_updated_needed = True
 
                                 elif msg_type == "tool_call":
-                                    status = data.get("status")
-                                    name = data.get("name")
-                                    content = f"{'🛠️ Executing' if status == 'Executing' else '✅ Executed'}: {name}"
+                                    content = current_json_str
                                     state["accumulated_logs"].append(content)
                                     db_updated_needed = True
 
                                 elif msg_type == "turn.failed":
-                                    err_obj = data.get("error", {})
-                                    err_msg = err_obj.get("message") if isinstance(err_obj, dict) else str(err_obj)
-                                    content = f"❌ Error: {err_msg}"
+                                    content = current_json_str
                                     state["accumulated_logs"].append(content)
                                     db_updated_needed = True
 
                                 elif msg_type in ["item.started", "item.completed"]:
-                                    item = data.get("item", {})
-                                    label = item.get("type")
-                                    if label == "command_execution":
-                                        content = f"{'🛠️ Executing' if msg_type == 'item.started' else '✅ Executed'}: {item.get('command')}"
-                                    elif label == "reasoning":
-                                        content = f"{'🧠 Thinking' if msg_type == 'item.started' else '🧠 Thought'}: {item.get('text')}"
-                                    if content: state["accumulated_logs"].append(content)
+                                    content = current_json_str
+                                    state["accumulated_logs"].append(content)
                                 
                                 elif msg_type == "system":
                                     logger.debug(f"CLI SYSTEM EVENT: {part}")
+                                    content = current_json_str
                                     continue
                             except json.JSONDecodeError:
                                 logger.debug(f"CLINK NOTIFICATION RAW LINE (JSON fail): {part}")
@@ -526,14 +491,11 @@ class CLinkTool(SimpleTool):
                             # UI Notification (inside JSON loop to catch all events)
                             if content:
                                 now = time.monotonic()
-                                clean_content = ansi_escape.sub("", content)
-                                session_label = f"[{effective_session_id[:8]}] " if effective_session_id != "standalone" else ""
-                                display_content = f"{session_label}{clean_content}"
-
-                                if display_content != state["last_msg"] or (now - state["last_time"]) > MIN_INTERVAL:
-                                    state["last_msg"] = display_content
+                                # No longer prepending icon/session label here to preserve raw JSON
+                                if content != state["last_msg"] or (now - state["last_time"]) > MIN_INTERVAL:
+                                    state["last_msg"] = content
                                     state["last_time"] = now
-                                    await request_context.session.send_log_message(level="info", data=f"[{client_config.name}] {display_content}")
+                                    await request_context.session.send_log_message(level="info", data=content)
                                 content = None # Reset for next JSON part
                         else:
                             # Not JSON, or no braces found

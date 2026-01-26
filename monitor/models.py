@@ -68,6 +68,7 @@ class InstanceStatus(BaseModel):
         description="Timestamp of last communication",
     )
     active_tool: Optional[str] = Field(default=None, description="Currently executing tool name, null if idle")
+    primary_tool: Optional[str] = Field(default=None, description="The top-level PAL tool that started the current session (e.g. clink, chat)")
     session_id: Optional[str] = Field(default=None, description="Current session/conversation ID")
     model_name: Optional[str] = Field(default=None, description="AI model name currently in use")
     active_role: Optional[str] = Field(default=None, description="Active role name (e.g. for clink tool)")
@@ -132,6 +133,8 @@ class ToolEvent(BaseModel):
     error_message: Optional[str] = Field(default=None, description="Error message for TOOL_ERROR events")
     log_data: Optional[str] = Field(default=None, description="Log content for TOOL_LOG events")
     model_name: Optional[str] = Field(default=None, description="Model name for TOOL_END events")
+    primary_tool: Optional[str] = Field(default=None, description="The top-level PAL tool that started the session")
+    is_primary: bool = Field(default=False, description="Whether this tool should be treated as the root tool for duration tracking")
     uptime_seconds: Optional[float] = Field(default=None, description="Uptime for HEARTBEAT/REGISTER events")
 
     def to_json(self) -> str:
@@ -173,6 +176,8 @@ class AggregatedState(BaseModel):
     # Global time breakdown
     total_thinking_ms: int = 0
     total_execution_ms: int = 0
+    
+    stats_reset_at: float = 0.0 # Snapshot of when stats were last reset
 
     def to_json(self) -> str:
         """Serialize to JSON for WebSocket transmission."""
@@ -187,13 +192,14 @@ class AggregatedState(BaseModel):
             "total_cache_read_tokens": self.total_cache_read_tokens,
             "total_thinking_ms": self.total_thinking_ms,
             "total_execution_ms": self.total_execution_ms,
+            "stats_reset_at": self.stats_reset_at,
         }
         import json
 
         return json.dumps(data)
 
     @classmethod
-    def from_instances(cls, instances: List[InstanceStatus]) -> "AggregatedState":
+    def from_instances(cls, instances: List[InstanceStatus], stats_reset_at: float = 0.0) -> "AggregatedState":
         """Create aggregated state from list of instance statuses."""
         return cls(
             instances=instances,
@@ -204,6 +210,7 @@ class AggregatedState(BaseModel):
             total_cache_read_tokens=sum((i.cache_read_tokens or 0) for i in instances),
             total_thinking_ms=sum((i.thinking_ms or 0) for i in instances),
             total_execution_ms=sum((i.execution_ms or 0) for i in instances),
+            stats_reset_at=stats_reset_at,
         )
 
 

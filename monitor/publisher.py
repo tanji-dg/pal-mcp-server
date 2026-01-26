@@ -227,7 +227,7 @@ class MonitorPublisher:
 
         logger.info("Monitor publisher stopped")
 
-    async def tool_start(self, tool_name: str, arguments: Optional[Any] = None, model_name: Optional[str] = None, session_id: Optional[str] = None):
+    async def tool_start(self, tool_name: str, arguments: Optional[Any] = None, model_name: Optional[str] = None, session_id: Optional[str] = None, is_primary: bool = False):
         """Record that a tool has started execution."""
         if not self.enabled:
             return
@@ -265,6 +265,7 @@ class MonitorPublisher:
             tool_input=tool_input,
             model_name=model_name,
             session_id=session_id,
+            is_primary=is_primary,
             uptime_seconds=self.uptime_seconds,
         )
         await self._publish_event(event)
@@ -477,7 +478,7 @@ class MonitorPublisher:
                             logger.warning(
                                 f"Failed to connect to monitor coordinator: {e}. "
                                 "Monitoring events will be queued and retried silently. "
-                                "Check if monitor service is running (./scripts/start_monitor.sh)."
+                                "Check if monitor service is running (./scripts/monitor_ctrl.sh start)."
                             )
                             self._connection_error_logged = True
 

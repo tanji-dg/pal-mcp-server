@@ -77,11 +77,10 @@ async def test_clink_robust_json_parsing(tmp_path):
             # Check notifications
             notification_data = [call.kwargs["data"] for call in mock_session.send_log_message.call_args_list]
 
-            # Should have handled the message delta after splitting }{
-            assert any("🧠 Thinking: Thinking..." in d for d in notification_data)
+            # Should have handled the message delta and sent it RAW
+            assert any('{"type":"message"' in d for d in notification_data)
+            assert any('"content":"Thinking..."' in d for d in notification_data)
             
-            # init event should be converted to human readable form
-            assert any("🚀" in d and "gemini-test" in d for d in notification_data)
-            
-            # Raw JSON should NOT be in notifications
-            assert not any('{"type":' in d for d in notification_data)
+            # init event should be sent RAW
+            assert any('{"type":"init"' in d for d in notification_data)
+            assert any('"model":"gemini-test"' in d for d in notification_data)
