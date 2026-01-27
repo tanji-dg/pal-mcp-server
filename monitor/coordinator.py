@@ -328,135 +328,237 @@ class InstanceTracker:
                     is_json_log = True
                     msg_type = data.get("type")
                     
-                    # Define recursive processor for deep token/metadata extraction
-                    def process_obj(obj, current_sid=None):
-                        if not isinstance(obj, dict):
-                            return
-                        
-                        # Extract session context if available in this level
-                        sid = obj.get("session_id") or obj.get("continuation_id") or current_sid
-                        
-                        # 1. Aggregate modelUsage if present (Higher precision, multiple models)
-                        mu = obj.get("modelUsage")
-                        has_usage = False
-                        if isinstance(mu, dict):
-                            totals = {"input_tokens": 0, "output_tokens": 0, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}
-                            for m_stats in mu.values():
-                                if not isinstance(m_stats, dict): continue
-                                totals["input_tokens"] += m_stats.get("input_tokens") or m_stats.get("inputTokens") or m_stats.get("prompt_tokens") or m_stats.get("promptTokens") or 0
-                                totals["output_tokens"] += m_stats.get("output_tokens") or m_stats.get("outputTokens") or m_stats.get("candidates_tokens") or m_stats.get("candidatesTokens") or m_stats.get("thoughts_token_count") or m_stats.get("thoughtsTokenCount") or 0
-                                totals["cache_read_input_tokens"] += m_stats.get("cache_read_input_tokens") or m_stats.get("cacheReadInputTokens") or m_stats.get("cached_tokens") or m_stats.get("cachedTokens") or m_stats.get("cached") or 0
-                                totals["cache_creation_input_tokens"] += m_stats.get("cache_creation_input_tokens") or m_stats.get("cacheCreationInputTokens") or 0
-                            self._update_tokens_incremental(totals, force_add=True, session_id=sid)
-                            has_usage = True
-                            
-                        # 2. Extract Token Usage from single 'usage' field if modelUsage wasn't found
-                        if not has_usage:
-                            u = obj.get("usage") or obj.get("stats")
-                            if not u and isinstance(obj.get("message"), dict):
-                                u = obj["message"].get("usage")
-                            
-                            if isinstance(u, dict):
-                                self._update_tokens_incremental(u, force_add=True, session_id=sid)
-
-                        # 3. Recursively search, but skip known usage fields to avoid double counting
-                        skip_keys = {"usage", "modelUsage", "stats", "metadata"}
-                        for key, val in obj.items():
-                            if key in skip_keys:
-                                continue
-                            if isinstance(val, list):
-                                for item in val:
-                                    if isinstance(item, dict):
-                                        process_obj(item, current_sid=sid)
-                            elif isinstance(val, dict):
-                                process_obj(val, current_sid=sid)
-                            elif isinstance(val, str) and val.strip().startswith("{") and val.strip().endswith("}"):
-                                # Deep JSON string extraction (Recursive clink output scenario)
-                                try:
-                                    inner = json.loads(val)
-                                    process_obj(inner, current_sid=sid)
-                                except Exception:
-                                    pass
-
-                    # Start deep inspection (handles all usage updates for this log line)
-                    process_obj(data)
-
-                    # Determine high-precision event time
-                    # Prioritize internal JSON timestamp if available
-                    current_event_time = now_ts
-                    if "timestamp" in data:
-                        try:
-                            # Handle ISO format: 2026-01-20T11:26:13.055Z
-                            ts_str = data["timestamp"].replace("Z", "+00:00")
-                            current_event_time = datetime.fromisoformat(ts_str).timestamp()
-                        except Exception:
-                            pass
-
-                    # Accumulate thinking time if this event is model reasoning
-                    # OR if we were already in a Thinking state (capturing the gap until this event)
-                    is_reasoning = (
-                        msg_type in ["message", "assistant"] or
-                        "thought" in data or "thinking" in data or
-                        (msg_type == "content_block_delta" and data.get("delta", {}).get("type") == "thinking_delta") or
-                        (msg_type == "item.started" and data.get("item", {}).get("type") == "reasoning")
-                    )
+                                                            # Define recursive processor for deep token/metadata extraction
                     
-                    if self._last_activity_time:
-                        delta_ms = int((current_event_time - self._last_activity_time) * 1000)
-                        if 0 < delta_ms < 30000: # Ignore gaps > 30s as potential idling
-                            if is_reasoning or self.last_status == "Thinking":
-                                self.thinking_ms += delta_ms
-                                self.lifetime_thinking_ms += delta_ms
+                                                            def process_obj(obj, current_sid=None):
                     
-                    self._last_activity_time = current_event_time
-
-                    # Capture session_id from log if available - REMOVED: frequently overwrites with wrong internal IDs
-                    # if "session_id" in data:
-                    #     self.session_id = data["session_id"]
-
-                    # Log-based promotion heuristic: if JSON says it is primary, believe it.
-                    # Also promote if it is a known agent root tool and we don't have a primary yet.
-                    is_agent_root = (tool_name in ["clink", "chat", "consensus", "debug", "testgen", "precommit"])
-                    if (data.get("is_primary") is True and msg_type == "tool_use") or (is_agent_root and not self.primary_tool):
-                        self.start_tool(tool_name or data.get("name"), is_primary=True)
-
-                    # Unwrap Claude stream_event wrapper
-                    if msg_type == "stream_event" and "event" in data and isinstance(data["event"], dict):
-                        data = data["event"]
-                        msg_type = data.get("type")
-
-                    # Note: Token usage is now handled by process_obj(data) above recursively.
-                    # Redundant extraction here is removed to prevent double counting.
-
-                    # Update model name if found in log metadata
-                    new_model = None
-                    if "model" in data:
-                        new_model = data["model"]
-                    elif "message" in data and isinstance(data["message"], dict) and "model" in data["message"]:
-                        new_model = data["message"]["model"]
-                    elif "model_used" in data:
-                        new_model = data["model_used"]
-                    elif "metadata" in data and isinstance(data["metadata"], dict):
-                        new_model = data["metadata"].get("model_used") or data["metadata"].get("model_name")
-                    elif "modelUsage" in data and isinstance(data["modelUsage"], dict):
-                        models = list(data["modelUsage"].keys())
-                        if models:
-                            new_model = models[0]
-
-                    if new_model:
-                        # Guard: Don't let low-level model names (like gemini-3-flash)
-                        # overwrite high-level CLI identifiers (like claude) or complex names
-                        is_low_level = any(m in new_model.lower() for m in ["gemini-3-flash", "gemini-2.0-flash-lite"])
-
-                        # High level names include CLI names or already resolved model strings
-                        high_level_identifiers = ["claude", "codex", "gemini", "sonnet", "haiku", "opus", "gpt-4", "o1", "o3"]
-                        is_high_level = self.model_name and (
-                            "(" in self.model_name or
-                            any(h in self.model_name.lower() for h in high_level_identifiers)
-                        )
-
-                        if not (is_low_level and is_high_level):
-                            self.model_name = new_model
+                                                                if not isinstance(obj, dict):
+                    
+                                                                    return
+                    
+                                                                
+                    
+                                                                # Extract session context if available in this level
+                    
+                                                                sid = obj.get("session_id") or obj.get("continuation_id") or current_sid
+                    
+                                                                
+                    
+                                                                # 1. Aggregate modelUsage if present (Higher precision, multiple models)
+                    
+                                                                mu = obj.get("modelUsage")
+                    
+                                                                has_usage = False
+                    
+                                                                if isinstance(mu, dict):
+                    
+                                                                    totals = {"input_tokens": 0, "output_tokens": 0, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}
+                    
+                                                                    for m_stats in mu.values():
+                    
+                                                                        if not isinstance(m_stats, dict): continue
+                    
+                                                                        totals["input_tokens"] += m_stats.get("input_tokens") or m_stats.get("inputTokens") or m_stats.get("prompt_tokens") or m_stats.get("promptTokens") or 0
+                    
+                                                                        totals["output_tokens"] += m_stats.get("output_tokens") or m_stats.get("outputTokens") or m_stats.get("candidates_tokens") or m_stats.get("candidatesTokens") or m_stats.get("thoughts_token_count") or m_stats.get("thoughtsTokenCount") or 0
+                    
+                                                                        totals["cache_read_input_tokens"] += m_stats.get("cache_read_input_tokens") or m_stats.get("cacheReadInputTokens") or m_stats.get("cached_tokens") or m_stats.get("cachedTokens") or m_stats.get("cached") or 0
+                    
+                                                                        totals["cache_creation_input_tokens"] += m_stats.get("cache_creation_input_tokens") or m_stats.get("cacheCreationInputTokens") or 0
+                    
+                                                                    self._update_tokens_incremental(totals, force_add=True, session_id=sid)
+                    
+                                                                    has_usage = True
+                    
+                                                                    
+                    
+                                                                # 2. Extract Token Usage from single 'usage' field if modelUsage wasn't found
+                    
+                                                                if not has_usage:
+                    
+                                                                    u = obj.get("usage") or obj.get("stats")
+                    
+                                                                    if not u and isinstance(obj.get("message"), dict):
+                    
+                                                                        u = obj["message"].get("usage")
+                    
+                                                                    
+                    
+                                                                    if isinstance(u, dict):
+                    
+                                                                        self._update_tokens_incremental(u, force_add=True, session_id=sid)
+                    
+                                        
+                    
+                                                                # 3. Extract Model Name
+                    
+                                                                new_model = None
+                    
+                                                                if "model_used" in obj:
+                    
+                                                                    new_model = obj["model_used"]
+                    
+                                                                elif "model" in obj:
+                    
+                                                                    new_model = obj["model"]
+                    
+                                                                elif "metadata" in obj and isinstance(obj["metadata"], dict):
+                    
+                                                                    new_model = obj["metadata"].get("model_used") or obj["metadata"].get("model_name")
+                    
+                                                                elif "message" in obj and isinstance(obj["message"], dict) and "model" in obj["message"]:
+                    
+                                                                    new_model = obj["message"]["model"]
+                    
+                                                                
+                    
+                                                                if new_model and isinstance(new_model, str):
+                    
+                                                                    # Guard: Only update if it provides more detail or we don't have one
+                    
+                                                                    high_level_identifiers = ["claude", "codex", "gemini", "sonnet", "haiku", "opus", "gpt-4", "o1", "o3"]
+                    
+                                                                    is_current_generic = not self.model_name or any(self.model_name.lower() == h for h in high_level_identifiers)
+                    
+                                                                    is_new_detailed = "(" in new_model or "-" in new_model
+                    
+                                                                    
+                    
+                                                                    if is_current_generic or (is_new_detailed and self.model_name != new_model):
+                    
+                                                                        if self.model_name != new_model:
+                    
+                                                                            logger.info(f"Model Name Update: {self.model_name} -> {new_model}")
+                    
+                                                                            self.model_name = new_model
+                    
+                                        
+                    
+                                                                # 4. Recursively search, but skip known usage fields to avoid double counting
+                    
+                                                                skip_keys = {"usage", "modelUsage", "stats", "metadata"}
+                    
+                                                                for key, val in obj.items():
+                    
+                                                                    if key in skip_keys:
+                    
+                                                                        continue
+                    
+                                                                    if isinstance(val, list):
+                    
+                                                                        for item in val:
+                    
+                                                                            if isinstance(item, dict):
+                    
+                                                                                process_obj(item, current_sid=sid)
+                    
+                                                                    elif isinstance(val, dict):
+                    
+                                                                        process_obj(val, current_sid=sid)
+                    
+                                                                    elif isinstance(val, str) and val.strip().startswith("{") and val.strip().endswith("}"):
+                    
+                                                                        # Deep JSON string extraction (Recursive clink output scenario)
+                    
+                                                                        try:
+                    
+                                                                            inner = json.loads(val)
+                    
+                                                                            process_obj(inner, current_sid=sid)
+                    
+                                                                        except Exception:
+                    
+                                                                            pass
+                    
+                                        
+                    
+                                                            # Start deep inspection (handles all usage and metadata updates for this log line)
+                    
+                                                            process_obj(data)
+                    
+                                        
+                    
+                                                            # Determine high-precision event time
+                    
+                                                            # Prioritize internal JSON timestamp if available
+                    
+                                                            current_event_time = now_ts
+                    
+                                                            if "timestamp" in data:
+                    
+                                                                try:
+                    
+                                                                    # Handle ISO format: 2026-01-20T11:26:13.055Z
+                    
+                                                                    ts_str = data["timestamp"].replace("Z", "+00:00")
+                    
+                                                                    current_event_time = datetime.fromisoformat(ts_str).timestamp()
+                    
+                                                                except Exception:
+                    
+                                                                    pass
+                    
+                                        
+                    
+                                                            # Accumulate thinking time if this event is model reasoning
+                    
+                                                            # OR if we were already in a Thinking state (capturing the gap until this event)
+                    
+                                                            is_reasoning = (
+                    
+                                                                msg_type in ["message", "assistant"] or
+                    
+                                                                "thought" in data or "thinking" in data or
+                    
+                                                                (msg_type == "content_block_delta" and data.get("delta", {}).get("type") == "thinking_delta") or
+                    
+                                                                (msg_type == "item.started" and data.get("item", {}).get("type") == "reasoning")
+                    
+                                                            )
+                    
+                                                            
+                    
+                                                            if self._last_activity_time:
+                    
+                                                                delta_ms = int((current_event_time - self._last_activity_time) * 1000)
+                    
+                                                                if 0 < delta_ms < 30000: # Ignore gaps > 30s as potential idling
+                    
+                                                                    if is_reasoning or self.last_status == "Thinking":
+                    
+                                                                        self.thinking_ms += delta_ms
+                    
+                                                                        self.lifetime_thinking_ms += delta_ms
+                    
+                                                            
+                    
+                                                            self._last_activity_time = current_event_time
+                    
+                                        
+                    
+                                                            # Log-based promotion heuristic: if JSON says it is primary, believe it.
+                    
+                                                            # Also promote if it is a known agent root tool and we don't have a primary yet.
+                    
+                                                            is_agent_root = (tool_name in ["clink", "chat", "consensus", "debug", "testgen", "precommit"])
+                    
+                                                            if (data.get("is_primary") is True and msg_type == "tool_use") or (is_agent_root and not self.primary_tool):
+                    
+                                                                self.start_tool(tool_name or data.get("name"), is_primary=True)
+                    
+                                        
+                    
+                                                            # Unwrap Claude stream_event wrapper
+                    
+                                                            if msg_type == "stream_event" and "event" in data and isinstance(data["event"], dict):
+                    
+                                                                data = data["event"]
+                    
+                                                                msg_type = data.get("type")
+                    
+                                        
+                    
+                    
 
                     elif msg_type == "modelUsage" or "modelUsage" in data:
                         # Aggregate across all models if present

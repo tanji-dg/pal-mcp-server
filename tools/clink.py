@@ -1160,7 +1160,12 @@ class CLinkTool(SimpleTool):
                         model_provider = provider.get_provider_type().value
                     except AttributeError:
                         model_provider = str(provider)
+            
+            # Prefer model_name from info, but fallback to current_model_name if generic or missing
             model_name = model_info.get("model_name")
+            if not model_name or model_name == "loading...":
+                model_name = getattr(self, "_current_model_name", None)
+                
             model_response = model_info.get("model_response")
             if model_response:
                 model_metadata = {"usage": model_response.usage, "metadata": model_response.metadata}
