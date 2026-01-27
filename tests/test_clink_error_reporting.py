@@ -77,9 +77,14 @@ async def test_clink_tool_handles_parsed_error():
                 "continuation_id": "test-thread"
             }
             
-            # This should now raise ToolExecutionError because metadata has is_error=True
-            with pytest.raises(ToolExecutionError) as exc:
-                await tool.execute(args)
+            # CLinkTool now returns a soft error instead of raising ToolExecutionError
+            result = await tool.execute(args)
+            assert isinstance(result, list)
+            assert len(result) == 1
             
-            assert "Resource exhausted" in str(exc.value)
-            print("CLinkTool correctly raised ToolExecutionError for parsed error payload.")
+            output_json = result[0].text
+            output_data = json.loads(output_json)
+            
+            assert output_data["status"] == "error"
+            assert "Resource exhausted" in output_data["content"]
+            print("CLinkTool correctly returned ToolOutput with error status for parsed error payload.")

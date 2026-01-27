@@ -66,9 +66,15 @@ async def test_clink_salvages_thinking_on_timeout():
             "_request_context": MagicMock()
         }
         
-        # Execute tool - it will raise ToolExecutionError but should have recorded salvaged thinking first
-        with pytest.raises(Exception):
-            await tool.execute(arguments)
+        # Execute tool - it will return ToolOutput with error status (soft error)
+        result = await tool.execute(arguments)
+        
+        # Verify the returned content
+        content = result[0].text
+        data = json.loads(content)
+        assert data["status"] == "error"
+        assert "<thinking>I am thinking deeply... about JIT cycles.</thinking>" in data["content"]
+        assert "CLI 'claude' total timed out" in data["content"]
             
         # Verify the final recorded turn content contains the thinking
         # The last update_current_turn call should have the salvaged thinking
@@ -137,5 +143,6 @@ async def test_clink_salvages_thinking_and_logs_on_interruption():
         
         assert "<thinking>Thinking chunk</thinking>" in salvaged_text
         assert "### 🔄 Progress Timeline" in salvaged_text
-        assert "🛠️ Executing: read_file" in salvaged_text
+        assert '"type":"tool_use"' in salvaged_text
+        assert '"tool_name":"read_file"' in salvaged_text
         assert "⚠️ **Task Interrupted**" in salvaged_text

@@ -675,10 +675,15 @@ class CLinkTool(SimpleTool):
 
             if isinstance(exc, CLIAgentError):
                 metadata = self._build_error_metadata(client_config, exc)
-                self._raise_tool_error(
-                    f"CLI '{client_config.name}' execution failed: {exc}",
+                # Soft error: return ToolOutput with error status instead of raising exception.
+                # This allows the AI to see the error and context to decide what to do next.
+                soft_error_output = ToolOutput(
+                    status="error",
+                    content=salvaged_content if 'salvaged_content' in locals() else f"CLI '{client_config.name}' execution failed: {exc}",
+                    content_type="text",
                     metadata=metadata,
                 )
+                return [TextContent(type="text", text=soft_error_output.model_dump_json())]
             else:
                 self._raise_tool_error(str(exc))
 
@@ -735,8 +740,9 @@ class CLinkTool(SimpleTool):
                     session_id=effective_session_id
                 )
             
-            # (Already recorded to DB above, but let's re-record with error status if needed)
-            self._raise_tool_error(content, metadata=metadata)
+            # Soft error: return ToolOutput with error status instead of raising exception.
+            soft_error_output = ToolOutput(status="error", content=content, content_type="text", metadata=metadata)
+            return [TextContent(type="text", text=soft_error_output.model_dump_json())]
 
         # Apply output size limits (truncation/summarization/FILE OFFLOAD)
         # We now pass everything to check for total response size
