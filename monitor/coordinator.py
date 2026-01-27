@@ -326,7 +326,8 @@ class InstanceTracker:
                     is_reasoning = (
                         msg_type in ["message", "assistant"] or
                         "thought" in data or "thinking" in data or
-                        (msg_type == "content_block_delta" and data.get("delta", {}).get("type") == "thinking_delta")
+                        (msg_type == "content_block_delta" and data.get("delta", {}).get("type") == "thinking_delta") or
+                        (msg_type == "item.started" and data.get("item", {}).get("type") == "reasoning")
                     )
                     
                     if self._last_activity_time:
@@ -633,6 +634,11 @@ class InstanceTracker:
                             # Standardize tool name to first word of command for metrics compatibility
                             tool_name_short = cmd.split()[0] if cmd else "cmd"
                             
+                            # Accumulate into execution times
+                            if duration_ms > 0:
+                                self.execution_ms += duration_ms
+                                self.lifetime_execution_ms += duration_ms
+
                             call = ToolCall(
                                 tool=tool_name_short,
                                 status="error" if is_err else "success",

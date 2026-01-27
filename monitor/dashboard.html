@@ -260,7 +260,11 @@
         function toggleTerminalView() { terminalView = document.getElementById('terminalView').checked; localStorage.setItem('monitor_terminal_view', terminalView); reRenderLogs(); }
         function toggleAutoScroll() { autoScroll = document.getElementById('autoScroll').checked; localStorage.setItem('monitor_auto_scroll', autoScroll); }
 
-        function formatNumber(n) { return n >= 1000 ? (n/1000).toFixed(1) + 'k' : n; }
+        function formatNumber(n) { 
+            if (n >= 1000000) return (n/1000000).toFixed(1) + 'M';
+            if (n >= 1000) return (n/1000).toFixed(1) + 'k';
+            return n;
+        }
         function formatUptime(s) { 
             if (s < 60) return Math.round(s) + 's';
             if (s < 3600) return Math.floor(s/60) + 'm ' + Math.round(s%60) + 's';
@@ -470,8 +474,12 @@
                         if (obj.type === 'init') return obj.model || "...";
                         if (obj.type === 'result') return obj.status || "...";
                         if (obj.type === 'tool_use') return obj.name || obj.tool_name || "...";
+                        if (obj.type === 'item.started' || obj.type === 'item.completed') {
+                            if (obj.item && obj.item.command) return obj.item.command;
+                            return "...";
+                        }
                         if (['message_start', 'content_block_start', 'message_delta', 'message_stop', 'content_block_stop'].includes(obj.type)) return obj.type.includes('stop') ? "✓" : "";
-                        const keys = ['content', 'thought', 'thinking', 'text', 'message', 'event', 'delta', 'result', 'model'];
+                        const keys = ['content', 'thought', 'thinking', 'text', 'message', 'event', 'delta', 'result', 'model', 'item'];
                         for (const k of keys) { if (obj[k]) { const val = extract(obj[k]); if (val !== "") return val; } }
                     }
                     return "";
@@ -499,6 +507,14 @@
                         let icon = typeToIcon[msgType] || '';
                         if (data.event?.content_block?.type === 'tool_use') icon = '🛠️';
                         if (data.event?.content_block?.type === 'thinking') icon = '🧠';
+                        
+                        // Codex-specific event handling
+                        if (msgType === 'item.started' || msgType === 'item.completed') {
+                            const itemType = data.item?.type;
+                            if (itemType === 'reasoning') icon = '🧠';
+                            else if (itemType === 'command_execution') icon = (msgType === 'item.completed') ? '✅' : '🛠️';
+                        }
+
                         const icons = Object.values(typeToIcon);
                         const hasIcon = icons.some(i => text.startsWith(i));
                         const trimmedText = text.trim();
