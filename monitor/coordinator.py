@@ -120,6 +120,7 @@ class InstanceTracker:
             "cache_read": 0,
             "cache_creation": 0
         }
+        self._session_tokens: dict[str, dict[str, int]] = {} # session_id -> last_seen_tokens
 
         # Metrics for last window (1 hour)
         self._calls_1m: list[tuple[float, bool]] = []  # (timestamp, is_error)
@@ -132,13 +133,14 @@ class InstanceTracker:
             self.uptime_at_register = uptime_seconds
             self.start_time = time.time()
 
-    def _update_tokens_incremental(self, usage: dict, force_add: bool = False):
+    def _update_tokens_incremental(self, usage: dict, force_add: bool = False, session_id: Optional[str] = None):
         """Update instance totals using deltas from reported cumulative request tokens.
         
         Args:
             usage: Dictionary containing token usage information.
-            force_add: If True, add values directly instead of calculating delta from baseline.
+            force_add: If True, add values directly (or use session-based delta if session_id provided).
                       Used for nested tool results in logs.
+            session_id: Unique identifier for the session to track deltas correctly.
         """
         # Mapping between usage keys and internal keys
         mapping = {
@@ -148,9 +150,17 @@ class InstanceTracker:
             "cache_creation": ["cache_creation_input_tokens", "cacheCreationInputTokens"]
         }
         
-        # If this is the very first report for this instance (monitor restart case),
-        # capture the current state as baseline but don't increment lifetime totals yet.
-        is_first_init = not self._tokens_initialized and not force_add
+        # Determine baseline storage: 
+        # For nested tools with session_id, use _session_tokens.
+        # Otherwise use _last_request_tokens (instance root tool).
+        if session_id:
+            if session_id not in self._session_tokens:
+                self._session_tokens[session_id] = {"input": 0, "output": 0, "cache_read": 0, "cache_creation": 0}
+            baseline = self._session_tokens[session_id]
+            is_first_init = False # For nested sessions, we always want deltas, starting from 0
+        else:
+            baseline = self._last_request_tokens
+            is_first_init = not self._tokens_initialized and not force_add
         
         updated = False
         for key, possible_keys in mapping.items():
@@ -161,36 +171,31 @@ class InstanceTracker:
                     break
             
             if val > 0:
-                if force_add:
-                    # Add directly (Nested tools)
+                last_val = baseline.get(key, 0)
+                if val > last_val:
+                    delta = val - last_val
+                    if key == "input": self.input_tokens += delta
+                    elif key == "output": self.output_tokens += delta
+                    elif key == "cache_read": self.cache_read_tokens += delta
+                    elif key == "cache_creation": self.cache_creation_tokens += delta
+                    
+                    baseline[key] = val
+                    updated = True
+                elif force_add and not session_id:
+                    # Fallback for force_add without session_id (Legacy or anonymous usage)
+                    # This case IS prone to double counting if repeated.
                     if key == "input": self.input_tokens += val
                     elif key == "output": self.output_tokens += val
                     elif key == "cache_read": self.cache_read_tokens += val
                     elif key == "cache_creation": self.cache_creation_tokens += val
                     updated = True
-                elif is_first_init:
-                    # Capture baseline (Instance root tools)
-                    self._last_request_tokens[key] = val
-                    updated = True
-                else:
-                    # Normal incremental update (Instance root tools)
-                    last_val = self._last_request_tokens[key]
-                    if val > last_val:
-                        delta = val - last_val
-                        if key == "input": self.input_tokens += delta
-                        elif key == "output": self.output_tokens += delta
-                        elif key == "cache_read": self.cache_read_tokens += delta
-                        elif key == "cache_creation": self.cache_creation_tokens += delta
-                        
-                        self._last_request_tokens[key] = val
-                        updated = True
         
-        if is_first_init and updated:
+        if not session_id and is_first_init and updated:
             self._tokens_initialized = True
             logger.info(f"Initialized token baseline for {self.instance_id}")
         
         if updated and not is_first_init:
-            logger.debug(f"Tokens updated for {self.instance_id}: input={self.input_tokens}, output={self.output_tokens}, cached={self.cache_read_tokens}")
+            logger.debug(f"Tokens updated for {self.instance_id}: input={self.input_tokens}, output={self.output_tokens}, cached={self.cache_read_tokens} (sid={session_id})")
 
     def start_tool(self, tool_name: str, tool_input: Optional[str] = None, is_primary: bool = False):
         self.interrupted = False # Reset interruption state
@@ -324,9 +329,12 @@ class InstanceTracker:
                     msg_type = data.get("type")
                     
                     # Define recursive processor for deep token/metadata extraction
-                    def process_obj(obj):
+                    def process_obj(obj, current_sid=None):
                         if not isinstance(obj, dict):
                             return
+                        
+                        # Extract session context if available in this level
+                        sid = obj.get("session_id") or obj.get("continuation_id") or current_sid
                         
                         # 1. Aggregate modelUsage if present (Higher precision, multiple models)
                         mu = obj.get("modelUsage")
@@ -339,7 +347,7 @@ class InstanceTracker:
                                 totals["output_tokens"] += m_stats.get("output_tokens") or m_stats.get("outputTokens") or m_stats.get("candidates_tokens") or m_stats.get("candidatesTokens") or m_stats.get("thoughts_token_count") or m_stats.get("thoughtsTokenCount") or 0
                                 totals["cache_read_input_tokens"] += m_stats.get("cache_read_input_tokens") or m_stats.get("cacheReadInputTokens") or m_stats.get("cached_tokens") or m_stats.get("cachedTokens") or m_stats.get("cached") or 0
                                 totals["cache_creation_input_tokens"] += m_stats.get("cache_creation_input_tokens") or m_stats.get("cacheCreationInputTokens") or 0
-                            self._update_tokens_incremental(totals, force_add=True)
+                            self._update_tokens_incremental(totals, force_add=True, session_id=sid)
                             has_usage = True
                             
                         # 2. Extract Token Usage from single 'usage' field if modelUsage wasn't found
@@ -349,7 +357,7 @@ class InstanceTracker:
                                 u = obj["message"].get("usage")
                             
                             if isinstance(u, dict):
-                                self._update_tokens_incremental(u, force_add=True)
+                                self._update_tokens_incremental(u, force_add=True, session_id=sid)
 
                         # 3. Recursively search, but skip known usage fields to avoid double counting
                         skip_keys = {"usage", "modelUsage", "stats", "metadata"}
@@ -359,18 +367,18 @@ class InstanceTracker:
                             if isinstance(val, list):
                                 for item in val:
                                     if isinstance(item, dict):
-                                        process_obj(item)
+                                        process_obj(item, current_sid=sid)
                             elif isinstance(val, dict):
-                                process_obj(val)
+                                process_obj(val, current_sid=sid)
                             elif isinstance(val, str) and val.strip().startswith("{") and val.strip().endswith("}"):
                                 # Deep JSON string extraction (Recursive clink output scenario)
                                 try:
                                     inner = json.loads(val)
-                                    process_obj(inner)
+                                    process_obj(inner, current_sid=sid)
                                 except Exception:
                                     pass
 
-                    # Start deep inspection
+                    # Start deep inspection (handles all usage updates for this log line)
                     process_obj(data)
 
                     # Determine high-precision event time
@@ -417,16 +425,8 @@ class InstanceTracker:
                         data = data["event"]
                         msg_type = data.get("type")
 
-                    # Extract Token Usage (Post-unwrap)
-                    # Check multiple possible locations for usage/stats
-                    # Note: We now only do this once here, or in specialized blocks below
-                    u = data.get("usage") or data.get("stats")
-                    if not u and isinstance(data.get("message"), dict):
-                        u = data["message"].get("usage")
-                    
-                    # specialized msg_types will handle their own updates to avoid confusion
-                    if isinstance(u, dict) and msg_type not in ["result", "modelUsage"]:
-                        self._update_tokens_incremental(u)
+                    # Note: Token usage is now handled by process_obj(data) above recursively.
+                    # Redundant extraction here is removed to prevent double counting.
 
                     # Update model name if found in log metadata
                     new_model = None
