@@ -92,9 +92,14 @@ class InstanceStatus(BaseModel):
     total_calls: int = Field(default=0)
     total_errors: int = Field(default=0)
     
-    # Session breakdown metrics
+    # Session breakdown metrics (current or last session)
     thinking_ms: int = Field(default=0, description="Time spent by the model reasoning in the current session")
     execution_ms: int = Field(default=0, description="Time spent executing sub-tools in the current session")
+
+    # Lifetime metrics (cumulative since instance registration)
+    total_thinking_ms: int = Field(default=0, description="Total time spent reasoning across all sessions")
+    total_execution_ms: int = Field(default=0, description="Total time spent executing sub-tools across all sessions")
+    total_session_ms: int = Field(default=0, description="Total duration of all primary tool sessions")
 
     # Token usage metrics
     input_tokens: int = Field(default=0)
@@ -109,6 +114,11 @@ class InstanceStatus(BaseModel):
         if self.tool_start_time:
             data["tool_start_time"] = format_dt_iso(self.tool_start_time)
         
+        # Ensure lifetime metrics are preserved in dict (pydantic handles them, but being explicit is safer)
+        data["total_thinking_ms"] = self.total_thinking_ms
+        data["total_execution_ms"] = self.total_execution_ms
+        data["total_session_ms"] = self.total_session_ms
+
         data["recent_calls"] = [
             {
                 **call,
@@ -172,10 +182,12 @@ class AggregatedState(BaseModel):
     total_input_tokens: int = 0
     total_output_tokens: int = 0
     total_cache_read_tokens: int = 0
+    total_cache_creation_tokens: int = 0
     
-    # Global time breakdown
+    # Global time breakdown (Lifetime totals across all instances)
     total_thinking_ms: int = 0
     total_execution_ms: int = 0
+    total_session_ms: int = 0
     
     stats_reset_at: float = 0.0 # Snapshot of when stats were last reset
 
@@ -190,8 +202,10 @@ class AggregatedState(BaseModel):
             "total_input_tokens": self.total_input_tokens,
             "total_output_tokens": self.total_output_tokens,
             "total_cache_read_tokens": self.total_cache_read_tokens,
+            "total_cache_creation_tokens": self.total_cache_creation_tokens,
             "total_thinking_ms": self.total_thinking_ms,
             "total_execution_ms": self.total_execution_ms,
+            "total_session_ms": self.total_session_ms,
             "stats_reset_at": self.stats_reset_at,
         }
         import json
@@ -208,8 +222,10 @@ class AggregatedState(BaseModel):
             total_input_tokens=sum((i.input_tokens or 0) for i in instances),
             total_output_tokens=sum((i.output_tokens or 0) for i in instances),
             total_cache_read_tokens=sum((i.cache_read_tokens or 0) for i in instances),
-            total_thinking_ms=sum((i.thinking_ms or 0) for i in instances),
-            total_execution_ms=sum((i.execution_ms or 0) for i in instances),
+            total_cache_creation_tokens=sum((i.cache_creation_tokens or 0) for i in instances),
+            total_thinking_ms=sum((i.total_thinking_ms or 0) for i in instances),
+            total_execution_ms=sum((i.total_execution_ms or 0) for i in instances),
+            total_session_ms=sum((i.total_session_ms or 0) for i in instances),
             stats_reset_at=stats_reset_at,
         )
 

@@ -100,9 +100,15 @@ class InstanceTracker:
         self.cache_read_tokens: int = 0
         self.cache_creation_tokens: int = 0
         
-        # Session breakdown metrics
+        # Session breakdown metrics (Current or last session)
         self.thinking_ms: int = 0
         self.execution_ms: int = 0
+        
+        # Lifetime breakdown metrics (Cumulative)
+        self.lifetime_thinking_ms: int = 0
+        self.lifetime_execution_ms: int = 0
+        self.lifetime_session_ms: int = 0
+
         self._last_thinking_start: Optional[float] = None
         self._last_activity_time: Optional[float] = None
 
@@ -194,13 +200,14 @@ class InstanceTracker:
         # Primary tool logic: 
         # Use explicit is_primary flag to lock the session root.
         # If this is a primary tool, it ALWAYS takes precedence (Promotion).
-        # If no primary tool is set yet, the first tool (any tool) becomes the temporary root.
-        if is_primary or not self.primary_tool:
+        # Standard agent tools (clink, chat) are treated as primary by default.
+        is_agent_root = tool_name in ["clink", "chat", "consensus", "debug", "testgen", "precommit"]
+        if is_primary or is_agent_root or not self.primary_tool:
             old_p = self.primary_tool
             self.primary_tool = tool_name
             self.primary_tool_start_time = now
-            self._primary_locked = is_primary
-            logger.info(f"Set Primary Tool: {old_p} -> {tool_name} (is_primary={is_primary})")
+            self._primary_locked = is_primary or is_agent_root
+            logger.info(f"Set Primary Tool: {old_p} -> {tool_name} (is_primary={is_primary}, agent_root={is_agent_root})")
             
         self.active_tool_input = tool_input
         self.tool_start_time = now
@@ -315,6 +322,7 @@ class InstanceTracker:
                             pass
 
                     # Accumulate thinking time if this event is model reasoning
+                    # OR if we were already in a Thinking state (capturing the gap until this event)
                     is_reasoning = (
                         msg_type in ["message", "assistant"] or
                         "thought" in data or "thinking" in data or
@@ -324,8 +332,9 @@ class InstanceTracker:
                     if self._last_activity_time:
                         delta_ms = int((current_event_time - self._last_activity_time) * 1000)
                         if 0 < delta_ms < 30000: # Ignore gaps > 30s as potential idling
-                            if is_reasoning:
+                            if is_reasoning or self.last_status == "Thinking":
                                 self.thinking_ms += delta_ms
+                                self.lifetime_thinking_ms += delta_ms
                     
                     self._last_activity_time = current_event_time
 
@@ -334,7 +343,9 @@ class InstanceTracker:
                     #     self.session_id = data["session_id"]
 
                     # Log-based promotion heuristic: if JSON says it is primary, believe it.
-                    if data.get("is_primary") is True and msg_type == "tool_use":
+                    # Also promote if it is a known agent root tool and we don't have a primary yet.
+                    is_agent_root = (tool_name in ["clink", "chat", "consensus", "debug", "testgen", "precommit"])
+                    if (data.get("is_primary") is True and msg_type == "tool_use") or (is_agent_root and not self.primary_tool):
                         self.start_tool(tool_name or data.get("name"), is_primary=True)
 
                     # Unwrap Claude stream_event wrapper
@@ -681,16 +692,29 @@ class InstanceTracker:
         
         # Determine which tool actually ended
         target_tool = tool_name or self.active_tool
+        
+        # Determine if this is the completion of the primary session
+        is_primary_completion = (target_tool and target_tool == self.primary_tool)
 
         # Update lifetime stats
         self.total_calls += 1
         if is_error:
             self.total_errors += 1
 
+        # Logic for time accumulation:
+        # - Sub-tools (not primary): add to execution time
+        # - Primary tool (clink): duration is the TOTAL session time (already includes sub-tools)
         if duration_ms > 0:
-            self.execution_ms += duration_ms
+            if not is_primary_completion:
+                self.execution_ms += duration_ms
+                self.lifetime_execution_ms += duration_ms
+            else:
+                # Primary tool total duration
+                self.lifetime_session_ms += duration_ms
 
         if target_tool:
+            # ... (Existing token/recent_calls logic)
+            # (truncated for brevity, ensure context matches)
             # Extract tokens and status from final tool output if available
             extracted_content = None
             if tool_output:
@@ -770,13 +794,8 @@ class InstanceTracker:
             if target_tool in self.active_tool_inputs:
                 del self.active_tool_inputs[target_tool]
 
-        # Update state based on remaining tools
-        is_primary_completion = (target_tool and target_tool == self.primary_tool)
-        is_clink_completion = (target_tool == "clink")
-        
-        logger.debug(f"end_tool({target_tool}) for {self.instance_id}: is_primary={is_primary_completion}, is_clink={is_clink_completion}, active_tools={list(self.active_tools.keys())}, primary={self.primary_tool}")
-
-        if not self.active_tools or is_primary_completion or is_clink_completion:
+        # If the primary tool finished, or ALL tools finished, go to idle
+        if not self.active_tools or is_primary_completion:
             self.state = "idle"
             # Determine success status string
             completion_status = "error" if is_error else "success"
@@ -791,8 +810,6 @@ class InstanceTracker:
             if self.primary_tool and self.primary_tool_start_time:
                 duration_sec = (utc_now() - self.primary_tool_start_time).total_seconds()
                 logger.info(f"[Metrics] Root tool '{self.primary_tool}' finished in {duration_sec:.2f}s")
-            else:
-                logger.debug(f"Skipping metrics: primary={self.primary_tool}, start_time={self.primary_tool_start_time}")
 
             self.active_tool = None
             self.primary_tool = None
@@ -805,7 +822,9 @@ class InstanceTracker:
             self.active_tools.clear() 
             self.active_tool_inputs.clear()
         else:
+            # Session is still busy with other tools (e.g. root tool clink is still running)
             self.state = "busy"
+            # Fallback to the most recently started active tool
             self.active_tool = list(self.active_tools.keys())[-1]
             self.tool_start_time = self.active_tools[self.active_tool]
             self.last_status = f"Finished {target_tool}, back to {self.active_tool}"
@@ -848,6 +867,13 @@ class InstanceTracker:
     def to_status(self) -> InstanceStatus:
         """Convert to InstanceStatus model."""
         state = "offline" if self.is_timed_out() else self.state
+        
+        # Calculate real-time session duration if currently busy with a primary tool
+        current_lifetime_session_ms = self.lifetime_session_ms
+        if state == "busy" and self.primary_tool_start_time:
+            current_session_ms = int((utc_now() - self.primary_tool_start_time).total_seconds() * 1000)
+            current_lifetime_session_ms += current_session_ms
+
         return InstanceStatus(
             instance_id=self.instance_id,
             uptime_seconds=self.get_uptime(),
@@ -867,6 +893,9 @@ class InstanceTracker:
             total_errors=self.total_errors,
             thinking_ms=self.thinking_ms,
             execution_ms=self.execution_ms,
+            total_thinking_ms=self.lifetime_thinking_ms,
+            total_execution_ms=self.lifetime_execution_ms,
+            total_session_ms=current_lifetime_session_ms,
             input_tokens=self.input_tokens,
             output_tokens=self.output_tokens,
             cache_read_tokens=self.cache_read_tokens,
@@ -994,15 +1023,9 @@ class MonitorCoordinator:
             tracker = self.instances[instance_id]
             logger.info(f"TRACE: Tracker obtained for {instance_id}")
             
-            # Update thinking metrics based on elapsed time since last event
+            # Record current last_activity_time for use in handlers
+            prev_activity_time = tracker._last_activity_time
             now_ts = time.time()
-            if tracker.last_status == "Thinking" and tracker._last_activity_time:
-                delta = int((now_ts - tracker._last_activity_time) * 1000)
-                # Filter outliers (negative or > 5 mins without heartbeat)
-                if 0 < delta < 300000:
-                    tracker.thinking_ms += delta
-            
-            tracker._last_activity_time = now_ts
             
             interrupted = tracker.interrupted
 
@@ -1070,9 +1093,14 @@ class MonitorCoordinator:
                 if tool_name:
                     # Log activity needs the event object for storage
                     tracker.log_activity(tool_name, log_data, original_event=broadcast_log_event)
+                
+                # IMPORTANT: For TOOL_LOG, we DO NOT update tracker._last_activity_time here.
+                # log_activity updates it internally ONLY if it encounters JSON logs.
+                # If the log is non-JSON, we leave _last_activity_time as-is so the next 
+                # event can capture the elapsed time since the last REAL activity.
 
             # --- Unified Enrichment and Broadcasting ---
-            # If we don't have a broadcast_log_event yet (non-LOG events), create one if needed
+            # ... (Existing logic for broadcast_log_event)
             if not broadcast_log_event and event_type in [ToolEventType.TOOL_START, ToolEventType.TOOL_END, ToolEventType.TOOL_ERROR]:
                 if isinstance(event, dict):
                     try:
@@ -1092,6 +1120,19 @@ class MonitorCoordinator:
                 
                 if tracker.primary_tool:
                     broadcast_log_event.primary_tool = tracker.primary_tool
+
+            # --- Post-Processing catch-all for Thinking time ---
+            # For non-LOG events (HEARTBEAT, START, END), we catch up the thinking time
+            # accumulated since the last activity.
+            if event_type != ToolEventType.TOOL_LOG:
+                if tracker.last_status == "Thinking" and tracker._last_activity_time:
+                    delta = int((now_ts - tracker._last_activity_time) * 1000)
+                    if 0 < delta < 300000:
+                        tracker.thinking_ms += delta
+                        tracker.lifetime_thinking_ms += delta
+                
+                tracker._last_activity_time = now_ts
+            
             logger.info(f"TRACE: Exiting lock for {instance_id}")
 
         # --- OUTSIDE the lock to avoid deadlock ---
@@ -1104,13 +1145,49 @@ class MonitorCoordinator:
 
     async def interrupt_instance(self, instance_id: str):
         """Request interruption for a specific instance."""
+        broadcast_log_event = None
         async with self._lock:
             if instance_id in self.instances:
                 logger.warning(f"Interruption requested for instance: {instance_id}")
                 tracker = self.instances[instance_id]
                 tracker.interrupted = True
                 tracker.last_status = "Interrupting..."
-                return True
+
+                # Check for harmful patterns in the active tool input
+                is_harmful = False
+                harmful_reason = None
+                if tracker.active_tool_input:
+                    input_lower = tracker.active_tool_input.lower()
+                    dangerous_patterns = ["rm ", "sudo ", "mkfs", "> /dev/", "chmod ", "chown ", "| bash", "| sh"]
+                    for p in dangerous_patterns:
+                        if p in input_lower:
+                            is_harmful = True
+                            harmful_reason = f"Contains dangerous pattern: {p}"
+                            break
+
+                # Emit a log event for the interruption
+                log_msg = "✋ Interruption signal sent by user."
+                if is_harmful:
+                    log_msg += f" ⚠️ POTENTIALLY HARMFUL COMMAND DETECTED: {harmful_reason}"
+
+                broadcast_log_event = ToolEvent(
+                    event_type=ToolEventType.TOOL_LOG,
+                    instance_id=instance_id,
+                    timestamp=utc_now(),
+                    tool_name=tracker.active_tool or "system",
+                    session_id=tracker.session_id,
+                    log_data=json.dumps({
+                        "type": "system",
+                        "message": log_msg,
+                        "is_user_interruption": True,
+                        "is_harmful": is_harmful,
+                        "harmful_reason": harmful_reason
+                    })
+                )
+
+        if broadcast_log_event:
+            await self.broadcast_log(broadcast_log_event)
+            return True
         return False
 
     async def broadcast_log(self, event: ToolEvent):
@@ -1171,8 +1248,9 @@ class MonitorCoordinator:
                 total_output_tokens=sum((i.output_tokens or 0) for i in statuses),
                 total_cache_read_tokens=sum((i.cache_read_tokens or 0) for i in statuses),
                 total_cache_creation_tokens=sum((i.cache_creation_tokens or 0) for i in statuses),
-                total_thinking_ms=sum((i.thinking_ms or 0) for i in statuses),
-                total_execution_ms=sum((i.execution_ms or 0) for i in statuses),
+                total_thinking_ms=sum((i.total_thinking_ms or 0) for i in statuses),
+                total_execution_ms=sum((i.total_execution_ms or 0) for i in statuses),
+                total_session_ms=sum((i.total_session_ms or 0) for i in statuses),
                 stats_reset_at=self.stats_reset_at
             )
 

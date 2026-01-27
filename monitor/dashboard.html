@@ -108,7 +108,7 @@
         /* Instance Metrics */
         .instance-metrics {
             display: grid;
-            grid-template-columns: repeat(7, 1fr);
+            grid-template-columns: repeat(8, 1fr);
             gap: 10px;
         }
         .metric { background: #0f1525; padding: 10px; border-radius: 6px; text-align: center; border: 1px solid #ffffff05; }
@@ -207,8 +207,9 @@
         <div class="stat-card"><div class="stat-value" id="busyInstances">0</div><div class="stat-label">Busy</div></div>
         <div class="stat-card"><div class="stat-value" id="totalCalls">0</div><div class="stat-label">Total Calls</div></div>
         <div class="stat-card"><div class="stat-value text-error" id="totalErrors">0</div><div class="stat-label">Errors</div></div>
-        <div class="stat-card"><div class="stat-value" id="totalThinking">0s</div><div class="stat-label">🧠 Thinking Time</div></div>
-        <div class="stat-card"><div class="stat-value" id="totalExecution">0s</div><div class="stat-label">🛠️ Tool Execution</div></div>
+        <div class="stat-card"><div class="stat-value" id="totalThinking">0s</div><div class="stat-label">🧠 Total Thinking</div></div>
+        <div class="stat-card"><div class="stat-value" id="totalExecution">0s</div><div class="stat-label">🛠️ Total Tool Exec</div></div>
+        <div class="stat-card"><div class="stat-value" id="totalSession">0s</div><div class="stat-label">⏱️ Total Busy Time</div></div>
         <div class="stat-card"><div class="stat-value" id="totalInputTokens">0</div><div class="stat-label">Tokens Usage</div></div>
         <div class="stat-card"><div class="stat-value text-accent" id="totalOutputTokens">0</div><div class="stat-label">Total Out Tokens</div></div>
         <div class="stat-card"><div class="stat-value" id="avgExecTime">0ms</div><div class="stat-label">Avg Exec Time</div></div>
@@ -267,7 +268,11 @@
         }
         function formatDuration(ms) {
             if (ms < 1000) return Math.round(ms) + 'ms';
-            return (ms / 1000).toFixed(1) + 's';
+            const seconds = ms / 1000;
+            if (seconds < 60) return seconds.toFixed(1) + 's';
+            const minutes = Math.floor(seconds / 60);
+            const remainingSeconds = (seconds % 60).toFixed(1);
+            return `${minutes}m ${remainingSeconds}s`;
         }
         function escapeHtml(t) { if(!t) return ''; return String(t).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
 
@@ -330,6 +335,7 @@
             document.getElementById('totalOutputTokens').textContent = formatNumber(get(data, 'total_output_tokens'));
             document.getElementById('totalThinking').textContent = formatDuration(get(data, 'total_thinking_ms'));
             document.getElementById('totalExecution').textContent = formatDuration(get(data, 'total_execution_ms'));
+            document.getElementById('totalSession').textContent = formatDuration(get(data, 'total_session_ms'));
             const withMetrics = allInstances.filter(i => (get(i, 'total_calls')) > 0);
             document.getElementById('avgExecTime').textContent = withMetrics.length ? formatDuration(withMetrics.reduce((sum, i) => sum + (get(i, 'avg_execution_time_1m')), 0) / withMetrics.length) : '0ms';
             document.getElementById('errorRate').textContent = withMetrics.length ? (withMetrics.reduce((sum, i) => sum + (get(i, 'error_rate_1m')), 0) / withMetrics.length * 100).toFixed(1) + '%' : '0%';
@@ -369,6 +375,7 @@
                         </div>
                         <div class="instance-metrics">
                             <div class="metric"><div class="metric-value">${formatUptime(get(inst, 'uptime_seconds'))}</div><div class="metric-label">Uptime</div></div>
+                            <div class="metric"><div class="metric-value" style="color:var(--warning-color);">⏱️ ${formatDuration(get(inst, 'total_session_ms'))}</div><div class="metric-label">Busy Time</div></div>
                             <div class="metric"><div class="metric-value" style="color:#b2bec3;">🧠 ${formatDuration(get(inst, 'thinking_ms'))}</div><div class="metric-label">Thinking</div></div>
                             <div class="metric"><div class="metric-value" style="color:#2ed573;">🛠️ ${formatDuration(get(inst, 'execution_ms'))}</div><div class="metric-label">Execution</div></div>
                             <div class="metric"><div class="metric-value">${formatNumber(get(inst, 'input_tokens'))}</div><div class="metric-label">In Tokens</div></div>
@@ -445,9 +452,20 @@
                             const icon = (obj.is_error || obj.status === 'error') ? '❌' : '✅';
                             return `${icon} Result: ${extract(obj.content || obj.output || obj.result) || 'done'}`;
                         }
-                        if (obj.type === 'thinking' && obj.thinking !== undefined) return obj.thinking || "...";
+                        if (obj.type === 'thinking' && obj.thinking !== undefined) {
+                            const t = obj.thinking.trim();
+                            // Only filter out exact fixed placeholders from common CLI implementations
+                            const placeholders = ["Thinking...", "Thinking about plan...", "thinking"];
+                            if (placeholders.includes(t) || t === "") return "";
+                            return obj.thinking || "...";
+                        }
                         if (obj.type === 'text' && obj.text !== undefined) return obj.text || "...";
-                        if (obj.type === 'thinking_delta' && obj.thinking !== undefined) return obj.thinking;
+                        if (obj.type === 'thinking_delta' && obj.thinking !== undefined) {
+                            const t = obj.thinking.trim();
+                            const placeholders = ["Thinking...", "Thinking about plan...", "thinking"];
+                            if (placeholders.includes(t) || t === "") return "";
+                            return obj.thinking;
+                        }
                         if (obj.type === 'text_delta' && obj.text !== undefined) return obj.text;
                         if (obj.type === 'init') return obj.model || "...";
                         if (obj.type === 'result') return obj.status || "...";
@@ -463,6 +481,17 @@
                         const data = JSON.parse(part);
                         if (!primaryType) primaryType = data.type;
                         anyHandled = true;
+
+                        // Handle user interruption and harmful command alerts
+                        if (data.is_user_interruption) {
+                            let msg = data.message || "✋ Interrupted";
+                            if (data.is_harmful) {
+                                msg = `<span style="background:var(--error-color);color:white;padding:2px 6px;border-radius:4px;font-weight:bold;">⚠️ HARMFUL</span> ${msg}`;
+                            }
+                            results.push(msg);
+                            continue;
+                        }
+
                         const isDelta = data.delta === true || data.type === 'message' || (data.event && data.event.type === 'content_block_delta');
                         if (isDelta) finalIsDelta = true;
                         const text = extract(data);
@@ -472,8 +501,11 @@
                         if (data.event?.content_block?.type === 'thinking') icon = '🧠';
                         const icons = Object.values(typeToIcon);
                         const hasIcon = icons.some(i => text.startsWith(i));
-                        const prefix = (!isDelta && icon && !hasIcon && text !== "" && text !== "✓") ? `${icon} ${msgType.charAt(0).toUpperCase() + msgType.slice(1).replace('_',' ')}: ` : '';
-                        if (text !== "" || prefix !== "") results.push(prefix + text);
+                        const trimmedText = text.trim();
+                        const placeholders = ["Thinking...", "Thinking about plan...", "thinking", "..."];
+                        const isPlaceholder = placeholders.includes(trimmedText) || trimmedText === "";
+                        const prefix = (!isDelta && icon && !hasIcon && !isPlaceholder && text !== "✓") ? `${icon} ${msgType.charAt(0).toUpperCase() + msgType.slice(1).replace('_',' ')}: ` : '';
+                        if ((text !== "" && !isPlaceholder) || prefix !== "") results.push(prefix + text);
                     } catch (e) {}
                 }
                 if (anyHandled) {
