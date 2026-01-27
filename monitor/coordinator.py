@@ -132,8 +132,14 @@ class InstanceTracker:
             self.uptime_at_register = uptime_seconds
             self.start_time = time.time()
 
-    def _update_tokens_incremental(self, usage: dict):
-        """Update instance totals using deltas from reported cumulative request tokens."""
+    def _update_tokens_incremental(self, usage: dict, force_add: bool = False):
+        """Update instance totals using deltas from reported cumulative request tokens.
+        
+        Args:
+            usage: Dictionary containing token usage information.
+            force_add: If True, add values directly instead of calculating delta from baseline.
+                      Used for nested tool results in logs.
+        """
         # Mapping between usage keys and internal keys
         mapping = {
             "input": ["input_tokens", "inputTokens", "prompt_tokens", "promptTokens"],
@@ -144,7 +150,7 @@ class InstanceTracker:
         
         # If this is the very first report for this instance (monitor restart case),
         # capture the current state as baseline but don't increment lifetime totals yet.
-        is_first_init = not self._tokens_initialized
+        is_first_init = not self._tokens_initialized and not force_add
         
         updated = False
         for key, possible_keys in mapping.items():
@@ -155,12 +161,19 @@ class InstanceTracker:
                     break
             
             if val > 0:
-                if is_first_init:
-                    # Capture baseline
+                if force_add:
+                    # Add directly (Nested tools)
+                    if key == "input": self.input_tokens += val
+                    elif key == "output": self.output_tokens += val
+                    elif key == "cache_read": self.cache_read_tokens += val
+                    elif key == "cache_creation": self.cache_creation_tokens += val
+                    updated = True
+                elif is_first_init:
+                    # Capture baseline (Instance root tools)
                     self._last_request_tokens[key] = val
                     updated = True
                 else:
-                    # Normal incremental update
+                    # Normal incremental update (Instance root tools)
                     last_val = self._last_request_tokens[key]
                     if val > last_val:
                         delta = val - last_val
@@ -310,6 +323,56 @@ class InstanceTracker:
                     is_json_log = True
                     msg_type = data.get("type")
                     
+                    # Define recursive processor for deep token/metadata extraction
+                    def process_obj(obj):
+                        if not isinstance(obj, dict):
+                            return
+                        
+                        # 1. Aggregate modelUsage if present (Higher precision, multiple models)
+                        mu = obj.get("modelUsage")
+                        has_usage = False
+                        if isinstance(mu, dict):
+                            totals = {"input_tokens": 0, "output_tokens": 0, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}
+                            for m_stats in mu.values():
+                                if not isinstance(m_stats, dict): continue
+                                totals["input_tokens"] += m_stats.get("input_tokens") or m_stats.get("inputTokens") or m_stats.get("prompt_tokens") or m_stats.get("promptTokens") or 0
+                                totals["output_tokens"] += m_stats.get("output_tokens") or m_stats.get("outputTokens") or m_stats.get("candidates_tokens") or m_stats.get("candidatesTokens") or m_stats.get("thoughts_token_count") or m_stats.get("thoughtsTokenCount") or 0
+                                totals["cache_read_input_tokens"] += m_stats.get("cache_read_input_tokens") or m_stats.get("cacheReadInputTokens") or m_stats.get("cached_tokens") or m_stats.get("cachedTokens") or m_stats.get("cached") or 0
+                                totals["cache_creation_input_tokens"] += m_stats.get("cache_creation_input_tokens") or m_stats.get("cacheCreationInputTokens") or 0
+                            self._update_tokens_incremental(totals, force_add=True)
+                            has_usage = True
+                            
+                        # 2. Extract Token Usage from single 'usage' field if modelUsage wasn't found
+                        if not has_usage:
+                            u = obj.get("usage") or obj.get("stats")
+                            if not u and isinstance(obj.get("message"), dict):
+                                u = obj["message"].get("usage")
+                            
+                            if isinstance(u, dict):
+                                self._update_tokens_incremental(u, force_add=True)
+
+                        # 3. Recursively search, but skip known usage fields to avoid double counting
+                        skip_keys = {"usage", "modelUsage", "stats", "metadata"}
+                        for key, val in obj.items():
+                            if key in skip_keys:
+                                continue
+                            if isinstance(val, list):
+                                for item in val:
+                                    if isinstance(item, dict):
+                                        process_obj(item)
+                            elif isinstance(val, dict):
+                                process_obj(val)
+                            elif isinstance(val, str) and val.strip().startswith("{") and val.strip().endswith("}"):
+                                # Deep JSON string extraction (Recursive clink output scenario)
+                                try:
+                                    inner = json.loads(val)
+                                    process_obj(inner)
+                                except Exception:
+                                    pass
+
+                    # Start deep inspection
+                    process_obj(data)
+
                     # Determine high-precision event time
                     # Prioritize internal JSON timestamp if available
                     current_event_time = now_ts
