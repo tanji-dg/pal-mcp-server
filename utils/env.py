@@ -68,6 +68,9 @@ def get_env(key: str, default: str | None = None) -> str | None:
 
     If override is enabled, it first looks in the .env file. If the key is not
     found in the .env file, it falls back to system environment variables.
+
+    If override is disabled (default), it first looks in system environment
+    variables. If the key is not found there, it falls back to the .env file.
     """
 
     if env_override_enabled():
@@ -78,7 +81,18 @@ def get_env(key: str, default: str | None = None) -> str | None:
         # If not in .env or value is None, fall back to os.environ
         return os.getenv(key, default)
 
-    return os.getenv(key, default)
+    # Standard priority: OS environment first
+    val = os.getenv(key)
+    if val is not None:
+        return val
+
+    # Fallback to .env values if OS environment doesn't have it
+    if key in _DOTENV_VALUES:
+        value = _DOTENV_VALUES[key]
+        if value is not None:
+            return value
+
+    return default
 
 
 def get_env_bool(key: str, default: bool = False) -> bool:
