@@ -132,6 +132,7 @@ class BaseCLIAgent:
             try:
                 import signal
                 pgid = os.getpgid(proc.pid)
+                
                 # First, try to terminate gracefully with SIGTERM
                 os.killpg(pgid, signal.SIGTERM)
                 self._logger.debug(f"Sent SIGTERM to process group {proc.pid}")
@@ -202,7 +203,13 @@ class BaseCLIAgent:
                         pass
                     raise InterruptedError("Task interrupted by user via monitor dashboard")
 
-                line = await stream.readline()
+                try:
+                    # Use a short timeout to prevent blocking the loop when subprocess output is hung
+                    # This allows the interruption check above to run periodically.
+                    line = await asyncio.wait_for(stream.readline(), timeout=1.0)
+                except asyncio.TimeoutError:
+                    continue # Loop back and check for interruption
+
                 self._logger.debug(f"[_read_stream] Read line from {stream_name}: {line!r}")
                 if not line:
                     self._logger.debug(f"[_read_stream] EOF for stream: {stream_name}")
