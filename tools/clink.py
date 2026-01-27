@@ -952,6 +952,7 @@ class CLinkTool(SimpleTool):
             cleaned_metadata = self._prune_metadata(metadata, client, reason="offload")
             cleaned_metadata.pop("raw", None)
             cleaned_metadata.pop("raw_output_file", None)
+            cleaned_metadata.pop("logs", None) # Remove huge logs as they are in the file
             cleaned_metadata.update({
                 "output_offloaded": True,
                 "output_file_path": abs_path,
@@ -984,6 +985,7 @@ class CLinkTool(SimpleTool):
             summary_metadata = self._prune_metadata(metadata, client, reason="summary")
             summary_metadata.pop("raw", None)
             summary_metadata.pop("raw_output_file", None)
+            summary_metadata.pop("logs", None)
             
             summary_metadata.update(
                 {
@@ -1005,6 +1007,7 @@ class CLinkTool(SimpleTool):
         truncated_metadata = self._prune_metadata(metadata, client, reason="truncated")
         truncated_metadata.pop("raw", None)
         truncated_metadata.pop("raw_output_file", None)
+        truncated_metadata.pop("logs", None)
         
         truncated_metadata.update(
             {
