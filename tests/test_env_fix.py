@@ -51,6 +51,20 @@ class TestEnvFallback(unittest.TestCase):
             value = get_env("CONFLICT_VAR")
             self.assertEqual(value, "system_value")
 
+    def test_get_env_fallback_to_dotenv_when_override_disabled(self):
+        """OS環境変数が存在しない場合、オーバーライド無効でも .env にフォールバックすることを確認"""
+        if "ONLY_IN_DOTENV" in os.environ:
+            del os.environ["ONLY_IN_DOTENV"]
+        
+        mock_dotenv = {"PAL_MCP_FORCE_ENV_OVERRIDE": "false", "ONLY_IN_DOTENV": "dotenv_value"}
+
+        with patch("utils.env._read_dotenv_values", return_value=mock_dotenv):
+            reload_env()
+
+            # システム環境変数にない場合、.env から取得されるべき
+            value = get_env("ONLY_IN_DOTENV")
+            self.assertEqual(value, "dotenv_value")
+
 
 if __name__ == "__main__":
     unittest.main()
