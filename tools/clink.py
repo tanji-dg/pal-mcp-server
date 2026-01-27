@@ -452,51 +452,62 @@ class CLinkTool(SimpleTool):
                                             if text: handle_summary_extraction(text)
                                     
                                     content = current_json_str # Raw JSON chunk
+                                    display_content = "🧠 Thinking..."
                                     
                                 elif msg_type == "tool_use":
                                     name = data.get("tool_name") or data.get("name")
                                     tool_id = data.get("tool_id")
                                     if tool_id and name: tool_names[tool_id] = name
                                     content = current_json_str
+                                    display_content = f"🛠️ Calling tool: {name}" if name else "🛠️ Calling tool..."
                                     state["accumulated_logs"].append(content)
                                     db_updated_needed = True 
                                     
                                 elif msg_type == "tool_result":
                                     tool_id = data.get("tool_id")
+                                    name = tool_names.get(tool_id, "unknown")
                                     content = current_json_str
+                                    display_content = f"✅ Tool result: {name}"
                                     state["accumulated_logs"].append(content)
                                     db_updated_needed = True
 
                                 elif msg_type == "tool_call":
+                                    name = data.get("name")
                                     content = current_json_str
+                                    display_content = f"🛠️ Calling tool: {name}" if name else "🛠️ Calling tool..."
                                     state["accumulated_logs"].append(content)
                                     db_updated_needed = True
 
                                 elif msg_type == "turn.failed":
                                     content = current_json_str
+                                    display_content = "❌ Task failed"
                                     state["accumulated_logs"].append(content)
                                     db_updated_needed = True
 
                                 elif msg_type in ["item.started", "item.completed"]:
                                     content = current_json_str
+                                    display_content = f"🔄 {msg_type.replace('.', ' ')}"
                                     state["accumulated_logs"].append(content)
                                 
                                 elif msg_type == "system":
                                     logger.debug(f"CLI SYSTEM EVENT: {part}")
                                     content = current_json_str
+                                    display_content = "⚙️ System event"
                                     continue
                             except json.JSONDecodeError:
                                 logger.debug(f"CLINK NOTIFICATION RAW LINE (JSON fail): {part}")
 
                             # UI Notification (inside JSON loop to catch all events)
-                            if content:
+                            if display_content:
                                 now = time.monotonic()
-                                # No longer prepending icon/session label here to preserve raw JSON
-                                if content != state["last_msg"] or (now - state["last_time"]) > MIN_INTERVAL:
-                                    state["last_msg"] = content
+                                session_label = f"[{effective_session_id[:8]}] " if effective_session_id != "standalone" else ""
+                                full_display = f"[{client_config.name}] {session_label}{display_content}"
+                                
+                                if full_display != state["last_msg"] or (now - state["last_time"]) > MIN_INTERVAL:
+                                    state["last_msg"] = full_display
                                     state["last_time"] = now
-                                    await request_context.session.send_log_message(level="info", data=content)
-                                content = None # Reset for next JSON part
+                                    await request_context.session.send_log_message(level="info", data=full_display)
+                                display_content = None 
                         else:
                             # Not JSON, or no braces found
                             logger.debug(f"CLINK NOTIFICATION RAW LINE (text): {part}")
@@ -507,10 +518,20 @@ class CLinkTool(SimpleTool):
                         if summary_msg:
                             content = summary_msg
                         elif not state["in_summary"]:
-                            important_keywords = ["Loading extension:", "Error executing tool", "Executing tool", "Executed tool", "Tool result:"]
+                            # Keywords that indicate meaningful progress or errors
+                            important_keywords = [
+                                "Loading extension:", "Error executing tool", "Executing tool", 
+                                "Executed tool", "Tool result:", "status:", "statusText:", 
+                                "error:", "Too Many Requests", "Quota exceeded", "Unauthorized"
+                            ]
                             if any(k in msg for k in important_keywords):
-                                content = msg
                                 state["accumulated_logs"].append(msg)
+                                if "status: 429" in msg or "Too Many Requests" in msg:
+                                    warning = f"⚠️ API Rate Limit Detected (429): {msg.strip()}"
+                                    content = warning
+                                    state["accumulated_logs"].append(warning)
+                                else:
+                                    content = msg
                         
                         # Forward raw text logs to monitor if no JSON was sent
                         if publisher and not current_json_str:
