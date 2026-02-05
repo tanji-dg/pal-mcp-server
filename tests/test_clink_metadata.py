@@ -37,7 +37,9 @@ class TestClinkMetadata:
             
             metadata = {
                 "some_key": "some_value",
-                "logs": huge_logs 
+                "logs": huge_logs,
+                "raw_events": [{"event": "huge"}] * 1000,
+                "raw": {"data": "huge" * 1000}
             }
             
             # Execute offloading logic
@@ -50,7 +52,9 @@ class TestClinkMetadata:
             )
             
             assert was_offloaded is True
-            assert "logs" not in cleaned_metadata, "Logs MUST be removed from metadata on offload"
+            assert "logs" not in cleaned_metadata
+            assert "raw_events" not in cleaned_metadata
+            assert "raw" not in cleaned_metadata
             assert cleaned_metadata.get("output_offloaded") is True
             
             # Verify serialization size
@@ -93,3 +97,33 @@ class TestClinkMetadata:
             
             assert was_offloaded is False
             assert "logs" not in cleaned_metadata, "Logs MUST be removed on truncation"
+
+    @pytest.mark.asyncio
+    async def test_metadata_pruning_on_normal_response(self):
+        """
+        Verify metadata is pruned even for small successful responses.
+        """
+        tool = CLinkTool()
+        mock_client = MagicMock()
+        mock_client.name = "test_cli"
+        
+        metadata = {
+            "usage": {"input": 10},
+            "raw_events": ["event"] * 10,
+            "raw": {"key": "val"},
+            "logs": ["log"]
+        }
+        
+        content, cleaned_metadata, was_offloaded = tool._apply_output_limit(
+            mock_client,
+            "Short content",
+            metadata,
+            thinking="",
+            logs=["log"]
+        )
+        
+        assert was_offloaded is False
+        assert "usage" in cleaned_metadata
+        assert "raw_events" not in cleaned_metadata
+        assert "raw" not in cleaned_metadata
+        assert "logs" not in cleaned_metadata

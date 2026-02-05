@@ -1,95 +1,40 @@
 # ===========================================
-# STAGE 1: Build gemini-cli (Node.js)
+# STAGE 1: Dependency image (Local copy strategy)
 # ===========================================
-FROM node:20-slim AS gemini-builder
-
-ARG HTTP_PROXY
-ARG HTTPS_PROXY
-ARG NO_PROXY
-ARG http_proxy
-ARG https_proxy
-ARG no_proxy
-
-WORKDIR /app
-
-# Install build dependencies
-RUN apt-get update && apt-get install -y python3 make g++ git && rm -rf /var/lib/apt/lists/*
-
-# Clone gemini-cli from GitHub and checkout specific hash
-RUN git clone https://github.com/tanji-dg/gemini-cli.git gemini-cli && \
-    cd gemini-cli && \
-    git checkout 2d7e9a2c9cd4c5211a490dbc7bd828931e149e03
-
-WORKDIR /app/gemini-cli
-
-# Install dependencies and build
-# Since it's a fresh clone, npm install and bundle should work correctly
-RUN npm install && npm run bundle
+FROM node:20-slim AS node-runtime
 
 # ===========================================
-# STAGE 2: Build Python dependencies
-# ===========================================
-FROM python:3.11-slim AS python-builder
-
-ARG HTTP_PROXY
-ARG HTTPS_PROXY
-ARG NO_PROXY
-ARG http_proxy
-ARG https_proxy
-ARG no_proxy
-
-WORKDIR /app
-RUN apt-get update && apt-get install -y build-essential && rm -rf /var/lib/apt/lists/*
-
-COPY requirements.txt ./
-COPY requirements-monitor.txt ./
-
-RUN python -m venv /opt/venv
-ENV PATH="/opt/venv/bin:$PATH"
-RUN pip install --no-cache-dir -r requirements.txt
-RUN pip install --no-cache-dir -r requirements-monitor.txt
-
-# ===========================================
-# STAGE 3: Minimal Runtime
+# STAGE 2: Final Integrated Image
 # ===========================================
 FROM python:3.11-slim
+LABEL version="1.0.0-integrated-user1000"
 
-ARG HTTP_PROXY
-ARG HTTPS_PROXY
-ARG NO_PROXY
-ARG http_proxy
-ARG https_proxy
-ARG no_proxy
-
-LABEL maintainer="PAL MCP Server Team"
-LABEL version="1.0.0-minimal"
-
-RUN apt-get update && apt-get install -y curl ca-certificates && \
-    curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
-    apt-get install -y nodejs && rm -rf /var/lib/apt/lists/*
-
-# Install CLI Tools via npm
-RUN npm install -g @anthropic-ai/claude-code @openai/codex @google/gemini-cli
-
-# Create non-root user
-RUN groupadd -r paluser && useradd -m -r -g paluser paluser
-
-COPY --from=python-builder /opt/venv /opt/venv
-ENV PATH="/opt/venv/bin:$PATH"
-ENV HOME=/home/paluser
-
+# Create user with UID 1000 to match host
+RUN groupadd -g 1000 paluser && useradd -u 1000 -g 1000 -m -r paluser
 WORKDIR /app
-COPY --chown=paluser:paluser . .
 
-# Copy built gemini-cli bundle from Stage 1
-COPY --from=gemini-builder /app/gemini-cli/bundle /app/gemini-cli/bundle
-RUN ln -sf /app/gemini-cli/bundle/gemini.js /usr/local/bin/gemini && chmod +x /app/gemini-cli/bundle/gemini.js
+# Copy Node.js binary and modules
+COPY --from=node-runtime /usr/local/bin/node /usr/local/bin/
+COPY --from=node-runtime /usr/local/lib/node_modules /usr/local/lib/node_modules
+RUN ln -s /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm && \
+    ln -s /usr/local/lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx
 
-RUN mkdir -p logs tmp && chown -R paluser:paluser logs tmp
+# Copy source files
+COPY --chown=paluser:paluser server.py config.py requirements.txt requirements-monitor.txt ./
+COPY --chown=paluser:paluser clink/ ./clink/
+COPY --chown=paluser:paluser providers/ ./providers/
+COPY --chown=paluser:paluser tools/ ./tools/
+COPY --chown=paluser:paluser utils/ ./utils/
+COPY --chown=paluser:paluser monitor/ ./monitor/
+COPY --chown=paluser:paluser conf/ ./conf/
+COPY --chown=paluser:paluser systemprompts/ ./systemprompts/
+
+# Environment
+ENV NPM_CONFIG_PREFIX=/home/paluser/.npm-global
+ENV PATH=/home/paluser/.npm-global/bin:$PATH
+ENV PYTHONUNBUFFERED=1 PYTHONPATH=/app TZ=Asia/Tokyo
+
+RUN mkdir -p logs tmp && chown -R paluser:paluser logs tmp /home/paluser
 
 USER paluser
-ENV PYTHONUNBUFFERED=1
-ENV PYTHONPATH=/app
-ENV TZ=Asia/Tokyo
-
 CMD ["python", "server.py"]

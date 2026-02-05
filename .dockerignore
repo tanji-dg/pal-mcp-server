@@ -1,6 +1,22 @@
+# IDE & OS
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Data & Logs
+logs/
+*.log
+work/
+tmp/
+temp.md
+
 # Git
-.git
+.git/
 .gitignore
+.gitmodules
 
 # Python
 __pycache__/
@@ -12,53 +28,25 @@ env/
 venv/
 .venv/
 .pal_venv/
-ENV/
-env.bak/
-venv.bak/
 
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-
-# OS
-.DS_Store
-Thumbs.db
-
-# Logs
-logs/*.log*
-*.log
+# Node.js
+node_modules/
+gemini-cli/
+package-lock.json
 
 # Docker
 Dockerfile*
 docker-compose*
 .dockerignore
 
-# Documentation
-docs/
-README.md
-*.md
-
-# Tests
+# Tests & Docs
 tests/
+docs/
 simulator_tests/
 test_simulation_files/
-pytest.ini
-
-# Development
-.env
-.env.local
 examples/
-code_quality_checks.sh
-run_integration_tests.sh
-
-# Security - Sensitive files
-*.key
-*.pem
-*.p12
-*.pfx
-*.crt
-*.csr
-secrets/
-private/
+pytest.ini
+.ruff_cache/
+.pytest_cache/
+.coverage
+htmlcov/

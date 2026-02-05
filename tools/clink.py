@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import time
 import uuid
+import httpx
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -27,8 +29,47 @@ from utils.conversation_memory import create_thread, add_turn, get_thread, updat
 
 logger = logging.getLogger(__name__)
 
-MAX_RESPONSE_CHARS = 20_000
+MAX_RESPONSE_CHARS = 40_000
 SUMMARY_PATTERN = re.compile(r"<SUMMARY>(.*?)</SUMMARY>", re.IGNORECASE | re.DOTALL)
+SUMMARY_THRESHOLD_CHARS = 1000 # Minimum increment to trigger summarization
+
+
+async def get_thinking_summary(thinking_text: str) -> str:
+    """Summarize the reasoning log into a single concise line via API."""
+    token = os.getenv("ANTHROPIC_AUTH_TOKEN")
+    base_url = os.getenv("ANTHROPIC_BASE_URL", "https://api.anthropic.com/v1")
+    model = os.getenv("ANTHROPIC_MODEL", "claude-3-5-haiku-20241022")
+    
+    if not token or not thinking_text.strip():
+        return ""
+
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                f"{base_url.rstrip('/')}/v1/messages",
+                headers={
+                    "x-api-key": token, 
+                    "anthropic-version": "2023-06-01",
+                    "content-type": "application/json"
+                },
+                json={
+                    "model": model,
+                    "max_tokens": 100,
+                    "messages": [{
+                        "role": "user",
+                        "content": f"以下の推論ログから、エージェントの「現在の意図」を1行で短く要約してください。余計な枕詞（「エージェントは〜」など）は不要です:\n\n{thinking_text}"
+                    }]
+                },
+                timeout=5.0
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                return data["content"][0]["text"].strip()
+            else:
+                logger.debug(f"Summarizer API error: {resp.status_code} - {resp.text}")
+    except Exception as e:
+        logger.debug(f"Summarizer failed: {e}")
+    return ""
 
 
 class CLinkRequest(BaseModel):
@@ -54,6 +95,10 @@ class CLinkRequest(BaseModel):
     continuation_id: str | None = Field(
         default=None,
         description=COMMON_FIELD_DESCRIPTIONS["continuation_id"],
+    )
+    client_context_budget: int | None = Field(
+        default=None,
+        description="Optional: Hint about your remaining context window (in characters). PAL will adjust its response size and offloading threshold to fit within this budget if possible. Use this if you are running out of space to prevent being overwhelmed by large outputs.",
     )
 
 
@@ -148,6 +193,10 @@ class CLinkTool(SimpleTool):
             "absolute_file_paths": SchemaBuilder.SIMPLE_FIELD_SCHEMAS["absolute_file_paths"],
             "images": SchemaBuilder.COMMON_FIELD_SCHEMAS["images"],
             "continuation_id": SchemaBuilder.COMMON_FIELD_SCHEMAS["continuation_id"],
+            "client_context_budget": {
+                "type": "integer",
+                "description": "Optional: Hint about your remaining context window (in characters). If you are running low on space, specify your remaining budget here so PAL can automatically summarize or offload its response to prevent overwhelming you.",
+            },
         }
 
         schema = {
@@ -174,6 +223,19 @@ class CLinkTool(SimpleTool):
         else:
             effective_session_id = (arguments.get("_instance_id") if isinstance(arguments, dict) else None) or "standalone"
 
+        # --- CRITICAL: PREVENT STARTING IF ALREADY INTERRUPTED ---
+        publisher = get_publisher()
+        if publisher and await publisher.check_interruption():
+            logger.warning(f"CLinkTool.execute: Session {effective_session_id} is already interrupted. Refusing to start.")
+            # Return a soft error so the main agent knows it was stopped
+            soft_error_output = ToolOutput(
+                status="error",
+                content="Task execution was cancelled by the user.",
+                content_type="text",
+                metadata={"status": "cancelled", "interrupted": True}
+            )
+            return [TextContent(type="text", text=soft_error_output.model_dump_json())]
+
         # decicively ensure arguments is a dict
         if not isinstance(arguments, dict):
             try:
@@ -191,6 +253,15 @@ class CLinkTool(SimpleTool):
         logger.debug(f"CLinkTool.execute started with keys: {list(arguments.keys())}")
         self._current_arguments = arguments
         request = self.get_request_model()(**arguments)
+
+        # Determine dynamic limit based on client hint (if provided)
+        # We calculate it early so it can be used for error handling as well.
+        effective_limit = MAX_RESPONSE_CHARS
+        if request.client_context_budget is not None:
+            # We assume a safe budget is about 80% of what the client claims to have
+            suggested_limit = int(request.client_context_budget * 0.8)
+            effective_limit = max(5_000, min(suggested_limit, 200_000))
+            logger.debug(f"Adjusting clink response limit based on client budget: {request.client_context_budget} -> {effective_limit}")
 
         path_error = self._validate_file_paths(request)
         if path_error:
@@ -218,10 +289,12 @@ class CLinkTool(SimpleTool):
 
         # --- REASONING HISTORY RETRIEVAL START ---
         reasoning_history = []
+        native_session_id = None
         if continuation_id:
             try:
                 thread = get_thread(continuation_id)
                 if thread and thread.turns:
+                    # Collect reasoning history
                     for turn in thread.turns:
                         if turn.role == "assistant" and turn.content:
                             # Extract thinking blocks from history
@@ -230,6 +303,14 @@ class CLinkTool(SimpleTool):
                                 thought_text = t.strip()
                                 if thought_text and thought_text != "⏳ *Processing...*":
                                     reasoning_history.append(thought_text)
+                    
+                    # Extract native session ID from the LATEST assistant turn if available
+                    for turn in reversed(thread.turns):
+                        if turn.role == "assistant" and turn.model_metadata:
+                            native_session_id = turn.model_metadata.get("native_session_id")
+                            if native_session_id:
+                                logger.debug(f"Found native session ID for resumption: {native_session_id}")
+                                break
             except Exception as e:
                 logger.warning(f"Failed to retrieve reasoning history for {continuation_id}: {e}")
         # --- REASONING HISTORY RETRIEVAL END ---
@@ -331,8 +412,52 @@ class CLinkTool(SimpleTool):
             "accumulated_thinking": [],
             "accumulated_logs": [],
             "summary_buffer": [],
-            "in_summary": False
+            "in_summary": False,
+            "last_summarized_chars": 0,
+            "last_summary_enabled": False,
+            "summary_task": None
         }
+
+        async def _trigger_summary(force: bool = False):
+            """Trigger an asynchronous summarization of the accumulated thinking."""
+            if not publisher or not publisher.should_summarize():
+                return
+
+            thinking_text = "".join(state["accumulated_thinking"])
+            if not thinking_text.strip():
+                return
+
+            # OPTIMIZATION: If thinking is too large, only summarize the most recent parts
+            # to avoid huge string operations and potential API limits
+            if len(thinking_text) > 10000:
+                thinking_text = "... (truncated) ... " + thinking_text[-10000:]
+
+            # Check if we should skip this trigger
+            if not force:
+                increment = len(thinking_text) - state["last_summarized_chars"]
+                if increment < SUMMARY_THRESHOLD_CHARS:
+                    return
+
+            # Avoid concurrent summary tasks
+            if state["summary_task"] and not state["summary_task"].done():
+                return
+
+            async def _run_summarization():
+                try:
+                    summary = await get_thinking_summary(thinking_text)
+                    if summary:
+                        state["last_summarized_chars"] = len(thinking_text)
+                        # Notify monitor to update status
+                        await publisher.tool_log(
+                            self.get_name(), 
+                            f"🧠 {summary}", 
+                            session_id=effective_session_id
+                        )
+                        logger.debug(f"Summarized thinking: {summary}")
+                except Exception as e:
+                    logger.debug(f"Async summarization failed: {e}")
+
+            state["summary_task"] = asyncio.create_task(_run_summarization())
         
         # Mapping from tool_id to tool_name for Gemini stream-json events
         tool_names: dict[str, str] = {}
@@ -349,6 +474,15 @@ class CLinkTool(SimpleTool):
 
             publisher = get_publisher()
             
+            # --- SUMMARIZATION CONTROL START ---
+            if publisher:
+                summary_enabled = publisher.should_summarize()
+                # Edge trigger: OFF -> ON (Catch up with history)
+                if summary_enabled and not state.get("last_summary_enabled"):
+                    await _trigger_summary(force=True)
+                state["last_summary_enabled"] = summary_enabled
+            # --- SUMMARIZATION CONTROL END ---
+
             def handle_summary_extraction(text: str) -> Optional[str]:
                 """Stateful summary extraction across chunks."""
                 nonlocal state
@@ -387,6 +521,7 @@ class CLinkTool(SimpleTool):
                 try:
                     content = None
                     db_updated_needed = False
+                    display_content = ""
                     
                     # 1. JSON format handling
                     # Handle cases where multiple JSON objects are concatenated in one line (e.g., }{)
@@ -432,6 +567,7 @@ class CLinkTool(SimpleTool):
                                             # Still parse for summary but keep content raw for machine
                                             handle_summary_extraction(payload_content)
                                             state["accumulated_thinking"].append(payload_content)
+                                            await _trigger_summary() # Check for summary update
                                         
                                         content = current_json_str # Raw JSON chunk
                                 
@@ -447,6 +583,7 @@ class CLinkTool(SimpleTool):
                                             if thought:
                                                 handle_summary_extraction(thought)
                                                 state["accumulated_thinking"].append(thought)
+                                                await _trigger_summary() # Check for summary update
                                         elif dtype == "text_delta":
                                             text = delta.get("text")
                                             if text: handle_summary_extraction(text)
@@ -455,6 +592,7 @@ class CLinkTool(SimpleTool):
                                     display_content = "🧠 Thinking..."
                                     
                                 elif msg_type == "tool_use":
+                                    await _trigger_summary(force=True) # Final summary before tool use
                                     name = data.get("tool_name") or data.get("name")
                                     tool_id = data.get("tool_id")
                                     if tool_id and name: tool_names[tool_id] = name
@@ -472,6 +610,7 @@ class CLinkTool(SimpleTool):
                                     db_updated_needed = True
 
                                 elif msg_type == "tool_call":
+                                    await _trigger_summary(force=True) # Final summary before tool use
                                     name = data.get("name")
                                     content = current_json_str
                                     display_content = f"🛠️ Calling tool: {name}" if name else "🛠️ Calling tool..."
@@ -488,6 +627,9 @@ class CLinkTool(SimpleTool):
                                     content = current_json_str
                                     display_content = f"🔄 {msg_type.replace('.', ' ')}"
                                     state["accumulated_logs"].append(content)
+                                    # Limit log size
+                                    if len(state["accumulated_logs"]) > 500:
+                                        state["accumulated_logs"] = state["accumulated_logs"][-500:]
                                 
                                 elif msg_type == "system":
                                     logger.debug(f"CLI SYSTEM EVENT: {part}")
@@ -574,6 +716,7 @@ class CLinkTool(SimpleTool):
                 files=absolute_file_paths,
                 images=images,
                 output_callback=_notification_callback if request_context else None,
+                native_session_id=native_session_id,
             )
             logger.debug("Agent execution completed.")
         except Exception as exc:
@@ -696,8 +839,27 @@ class CLinkTool(SimpleTool):
 
             if isinstance(exc, CLIAgentError):
                 metadata = self._build_error_metadata(client_config, exc)
-                # Soft error: return ToolOutput with error status instead of raising exception.
-                # This allows the AI to see the error and context to decide what to do next.
+                
+                # Check if this error represents an intentional interruption
+                is_actually_interrupted = is_interrupted or "interrupted" in str(exc).lower()
+                logger.debug(f"Interruption check: is_interrupted={is_interrupted}, msg={str(exc)}, result={is_actually_interrupted}")
+                
+                if is_actually_interrupted:
+                    # Return success status for intentional interruption to allow main agent to continue gracefully
+                    metadata["status"] = "interrupted"
+                    metadata["interrupted"] = True
+                    metadata["partial"] = True
+                    
+                    interrupted_output = ToolOutput(
+                        status="success",
+                        content=salvaged_content if 'salvaged_content' in locals() else f"Execution was interrupted: {exc}",
+                        content_type="text",
+                        metadata=metadata,
+                    )
+                    logger.debug(f"Returning interrupted ToolOutput: status={interrupted_output.status}")
+                    return [TextContent(type="text", text=interrupted_output.model_dump_json())]
+
+                # Normal soft error: return ToolOutput with error status instead of raising exception.
                 soft_error_output = ToolOutput(
                     status="error",
                     content=salvaged_content if 'salvaged_content' in locals() else f"CLI '{client_config.name}' execution failed: {exc}",
@@ -706,7 +868,7 @@ class CLinkTool(SimpleTool):
                 )
                 return [TextContent(type="text", text=soft_error_output.model_dump_json())]
             else:
-                self._raise_tool_error(str(exc))
+                self._raise_tool_error(str(exc), limit=effective_limit)
 
         # --- CRITICAL: RECORD RAW SUCCESS IMMEDIATELY TO DB ---
         # This ensures that even if subsequent processing (like size limits or JSON encoding) fails,
@@ -721,10 +883,15 @@ class CLinkTool(SimpleTool):
         if state["accumulated_logs"]:
             db_content += "\n\n### 🔄 Progress Timeline\n" + "\n".join(state["accumulated_logs"])
 
+        # Prepare model metadata for history
+        model_metadata = {"logs": state["accumulated_logs"]}
+        if result.parsed.metadata.get("native_session_id"):
+            model_metadata["native_session_id"] = result.parsed.metadata.get("native_session_id")
+
         model_info = {
             "provider": client_config.name,
             "model_name": result.parsed.metadata.get("model_used"),
-            "model_metadata": {"logs": state["accumulated_logs"]}
+            "model_metadata": model_metadata
         }
         
         if continuation_id:
@@ -747,7 +914,8 @@ class CLinkTool(SimpleTool):
                 result.parsed.content, 
                 metadata, 
                 thinking=raw_thinking, 
-                logs=state["accumulated_logs"]
+                logs=state["accumulated_logs"],
+                client_budget=request.client_context_budget
             )
             
             # Notify monitor of failure
@@ -772,17 +940,16 @@ class CLinkTool(SimpleTool):
             raw_content, 
             metadata, 
             thinking=raw_thinking, 
-            logs=state["accumulated_logs"]
+            logs=state["accumulated_logs"],
+            client_budget=request.client_context_budget
         )
 
         # Prepare final response content for the main agent
-        if was_offloaded:
-            # If offloaded, the 'content' already contains the SUMMARY and the file path
-            # We don't want to double-append thinking or logs here because they are in the file
-            final_response_text = content
-        else:
-            # Normal small response: combine components
-            final_response_text = content
+        final_response_text = content
+        
+        # ALWAYS append thinking and timeline if they fit or are needed for context
+        # (For offloaded case, content already has the file path info)
+        if not was_offloaded:
             if raw_thinking:
                 final_response_text = f"<thinking>\n> 🧠 **Thinking:**\n> {raw_thinking}\n</thinking>\n\n{final_response_text}"
                 
@@ -791,6 +958,15 @@ class CLinkTool(SimpleTool):
                 timeline = "### 🔄 Progress Timeline\n" + "\n".join(state["accumulated_logs"])
                 if timeline not in final_response_text:
                     final_response_text += f"\n\n{timeline}"
+        else:
+            # For offloaded responses, we still want the THINKING block in the MCP response 
+            # to provide immediate context, but limited to a safe size.
+            if raw_thinking:
+                thinking_preview = raw_thinking
+                if len(thinking_preview) > 5000:
+                    thinking_preview = thinking_preview[:5000] + "\n... (Thinking truncated in preview, see offloaded file for full details)"
+                
+                final_response_text = f"<thinking>\n> 🧠 **Thinking Preview:**\n> {thinking_preview}\n</thinking>\n\n{final_response_text}"
 
         # Continuation offer logic needs updated continuation_id
         request.continuation_id = continuation_id
@@ -915,12 +1091,23 @@ class CLinkTool(SimpleTool):
         metadata: dict[str, Any],
         thinking: str = "",
         logs: list[str] | None = None,
+        client_budget: int | None = None,
     ) -> tuple[str, dict[str, Any], bool]:
         """
         Apply size limits to the output and offload to a file if necessary.
         Now considers the total size of content, thinking, and logs.
         Returns: (processed_content, updated_metadata, was_offloaded)
         """
+        # Determine dynamic limit based on client hint (if provided)
+        # We clamp it to a safe range (5K to 200K) to prevent extreme cases.
+        effective_limit = MAX_RESPONSE_CHARS
+        if client_budget is not None:
+            # We assume a safe budget is about 80% of what the client claims to have
+            # to leave room for other things and overhead.
+            suggested_limit = int(client_budget * 0.8)
+            effective_limit = max(5_000, min(suggested_limit, 200_000))
+            logger.debug(f"Adjusting clink response limit based on client budget: {client_budget} -> {effective_limit}")
+
         # Calculate total potential size
         log_text = "\n".join(logs) if logs else ""
         total_size = len(content) + len(thinking) + len(log_text)
@@ -928,8 +1115,16 @@ class CLinkTool(SimpleTool):
         # Check for loop detection or other critical errors in any part of the output
         is_loop = "Loop detected" in content or "Loop detected" in log_text or "Loop detected" in thinking
         
-        if total_size <= MAX_RESPONSE_CHARS:
-            return content, metadata, False
+        if total_size <= effective_limit:
+            # Even for small responses, we MUST prune potentially large metadata
+            # to prevent client-side issues like hangs or context filling.
+            cleaned_metadata = self._prune_metadata(metadata, client, reason="normal")
+            cleaned_metadata.pop("raw", None)
+            cleaned_metadata.pop("raw_events", None)
+            cleaned_metadata.pop("raw_output_file", None)
+            cleaned_metadata.pop("logs", None)
+            cleaned_metadata["output_limit"] = effective_limit
+            return content, cleaned_metadata, False
 
         # --- LARGE OUTPUT OFFLOADING START ---
         try:
@@ -978,12 +1173,14 @@ class CLinkTool(SimpleTool):
             # Clean up metadata - CRITICAL to remove huge raw fields
             cleaned_metadata = self._prune_metadata(metadata, client, reason="offload")
             cleaned_metadata.pop("raw", None)
+            cleaned_metadata.pop("raw_events", None)
             cleaned_metadata.pop("raw_output_file", None)
             cleaned_metadata.pop("logs", None) # Remove huge logs as they are in the file
             cleaned_metadata.update({
                 "output_offloaded": True,
                 "output_file_path": abs_path,
                 "output_original_length": total_size,
+                "output_limit": effective_limit,
                 "loop_detected": is_loop
             })
             
@@ -1000,17 +1197,18 @@ class CLinkTool(SimpleTool):
         if summary:
             # ... (truncated for brevity in thought, but must match original)
             summary_text = summary
-            if len(summary_text) > MAX_RESPONSE_CHARS:
+            if len(summary_text) > effective_limit:
                 logger.debug(
                     "Clink summary from %s exceeded %d chars; truncating summary to fit.",
                     client.name,
-                    MAX_RESPONSE_CHARS,
+                    effective_limit,
                 )
-                summary_text = summary_text[:MAX_RESPONSE_CHARS]
+                summary_text = summary_text[:effective_limit]
             
             # CRITICAL: Prune huge raw data from metadata to ensure MCP transport success
             summary_metadata = self._prune_metadata(metadata, client, reason="summary")
             summary_metadata.pop("raw", None)
+            summary_metadata.pop("raw_events", None)
             summary_metadata.pop("raw_output_file", None)
             summary_metadata.pop("logs", None)
             
@@ -1019,7 +1217,7 @@ class CLinkTool(SimpleTool):
                     "output_summarized": True,
                     "output_original_length": len(content),
                     "output_summary_length": len(summary_text),
-                    "output_limit": MAX_RESPONSE_CHARS,
+                    "output_limit": effective_limit,
                 }
             )
             logger.info(
@@ -1033,6 +1231,7 @@ class CLinkTool(SimpleTool):
         # CRITICAL: Prune huge raw data from metadata to ensure MCP transport success
         truncated_metadata = self._prune_metadata(metadata, client, reason="truncated")
         truncated_metadata.pop("raw", None)
+        truncated_metadata.pop("raw_events", None)
         truncated_metadata.pop("raw_output_file", None)
         truncated_metadata.pop("logs", None)
         
@@ -1040,11 +1239,11 @@ class CLinkTool(SimpleTool):
             {
                 "output_truncated": True,
                 "output_original_length": len(content),
-                "output_limit": MAX_RESPONSE_CHARS,
+                "output_limit": effective_limit,
             }
         )
 
-        excerpt_limit = min(4000, MAX_RESPONSE_CHARS // 2)
+        excerpt_limit = min(4000, effective_limit // 2)
         excerpt = content[:excerpt_limit]
         truncated_metadata["output_excerpt_length"] = len(excerpt)
 
@@ -1052,13 +1251,13 @@ class CLinkTool(SimpleTool):
             "Clink truncated %s output: original=%d chars exceeds limit=%d; excerpt_length=%d",
             client.name,
             len(content),
-            MAX_RESPONSE_CHARS,
+            effective_limit,
             len(excerpt),
         )
 
         message = (
             f"CLI '{client.name}' produced {len(content)} characters, exceeding the configured clink limit "
-            f"({MAX_RESPONSE_CHARS} characters). The full output was suppressed to stay within MCP response caps. "
+            f"({effective_limit} characters). The full output was suppressed to stay within MCP response caps. "
             "Please narrow the request (review fewer files, summarize results) or run the CLI directly for the full log.\n\n"
             f"--- Begin excerpt ({len(excerpt)} of {len(content)} chars) ---\n{excerpt}\n--- End excerpt ---"
         )
@@ -1115,11 +1314,12 @@ class CLinkTool(SimpleTool):
 
         return metadata
 
-    def _raise_tool_error(self, message: str, metadata: dict[str, Any] | None = None) -> None:
+    def _raise_tool_error(self, message: str, metadata: dict[str, Any] | None = None, limit: int | None = None) -> None:
         # Apply size limits even to errors to prevent crashing MCP client
-        if len(message) > MAX_RESPONSE_CHARS:
+        effective_limit = limit or MAX_RESPONSE_CHARS
+        if len(message) > effective_limit:
             original_len = len(message)
-            message = message[:MAX_RESPONSE_CHARS] + f"\n\n... (error message truncated, original length: {original_len} chars)"
+            message = message[:effective_limit] + f"\n\n... (error message truncated, original length: {original_len} chars)"
             
         error_output = ToolOutput(status="error", content=message, content_type="text", metadata=metadata)
         raise ToolExecutionError(error_output.model_dump_json())
@@ -1169,6 +1369,8 @@ class CLinkTool(SimpleTool):
             model_response = model_info.get("model_response")
             if model_response:
                 model_metadata = {"usage": model_response.usage, "metadata": model_response.metadata}
+            elif "model_metadata" in model_info:
+                model_metadata = model_info["model_metadata"]
 
         update_current_turn(
             continuation_id,

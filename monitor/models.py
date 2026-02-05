@@ -162,6 +162,7 @@ class EventResponse(BaseModel):
 
     status: str = Field(default="ok")
     interrupted: bool = Field(default=False)
+    should_summarize: bool = Field(default=False)
     message: Optional[str] = Field(default=None)
 
     def to_json(self) -> str:
@@ -175,6 +176,7 @@ class AggregatedState(BaseModel):
     type: str = Field(default="state_update", description="Message type identifier")
     timestamp: datetime = Field(default_factory=utc_now, description="State snapshot timestamp")
     instances: List[InstanceStatus] = Field(default_factory=list, description="Status of all known instances")
+    should_summarize: bool = False # Global flag for summarization
     
     # Aggregated metrics
     total_calls: int = 0
@@ -197,6 +199,7 @@ class AggregatedState(BaseModel):
             "type": self.type,
             "timestamp": format_dt_iso(self.timestamp),
             "instances": [inst.to_dict() for inst in self.instances],
+            "should_summarize": self.should_summarize,
             "total_calls": self.total_calls,
             "total_errors": self.total_errors,
             "total_input_tokens": self.total_input_tokens,
@@ -213,10 +216,11 @@ class AggregatedState(BaseModel):
         return json.dumps(data)
 
     @classmethod
-    def from_instances(cls, instances: List[InstanceStatus], stats_reset_at: float = 0.0) -> "AggregatedState":
+    def from_instances(cls, instances: List[InstanceStatus], stats_reset_at: float = 0.0, should_summarize: bool = False) -> "AggregatedState":
         """Create aggregated state from list of instance statuses."""
         return cls(
             instances=instances,
+            should_summarize=should_summarize,
             total_calls=sum((i.total_calls or 0) for i in instances),
             total_errors=sum((i.total_errors or 0) for i in instances),
             total_input_tokens=sum((i.input_tokens or 0) for i in instances),

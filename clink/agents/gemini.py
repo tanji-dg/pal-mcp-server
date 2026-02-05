@@ -27,9 +27,11 @@ class GeminiAgent(BaseCLIAgent):
         else:
             super().__init__(client)
 
-    def _build_command(self, *, role: ResolvedCLIRole, system_prompt: str | None) -> list[str]:
+    def _build_command(
+        self, *, role: ResolvedCLIRole, system_prompt: str | None, native_session_id: str | None = None
+    ) -> list[str]:
         """Prioritize certain flags like --model for Gemini CLI."""
-        base = super()._build_command(role=role, system_prompt=system_prompt)
+        base = super()._build_command(role=role, system_prompt=system_prompt, native_session_id=native_session_id)
 
         # Reorder to put --model or -m first if present
         model_flag = None

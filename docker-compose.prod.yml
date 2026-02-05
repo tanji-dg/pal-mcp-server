@@ -1,0 +1,44 @@
+services:
+  pal-mcp-server:
+    build:
+      context: .
+      dockerfile: Dockerfile.minimal
+    image: pal-mcp-server:minimal
+    container_name: pal-mcp-server
+    user: "1000:1000"
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
+    
+    # 起動時に npm ツールをインストールしてからモニターを起動
+    # gemini-cli はカスタム版をインストールするように指定
+    command: >
+      sh -c "npm install -g @anthropic-ai/claude-code @openai/codex https://github.com/tanji-dg/gemini-cli/archive/2d7e9a2c9cd4c5211a490dbc7bd828931e149e03.tar.gz && 
+             pip install -r requirements.txt -r requirements-monitor.txt &&
+             python monitor/run_coordinator.py --dual"
+    
+    ports:
+      - "9876:9876"
+    
+    env_file:
+      - .env
+    
+    environment:
+      - TZ=${TZ:-Asia/Tokyo}
+      - MONITOR_ENABLED=true
+      - MONITOR_COORDINATOR_URL=http://localhost:9876
+      - HTTP_PROXY
+      - HTTPS_PROXY
+      - NO_PROXY=localhost,127.0.0.1,pal-mcp-server
+      - PATH=/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin:/home/paluser/.local/bin:/home/paluser/.npm-global/bin
+      
+    volumes:
+      - ./logs:/app/logs
+      # ホストのホームディレクトリをマウント。書き込み権限が必要
+      - ${HOME}:/home/paluser
+    
+    restart: unless-stopped
+
+networks:
+  default:
+    driver: bridge

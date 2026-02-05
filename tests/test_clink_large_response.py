@@ -71,16 +71,16 @@ async def test_large_response_with_loop_detection_offloading():
          patch.object(tool, "_record_assistant_turn"), \
          patch.object(tool, "handle_prompt_file_with_fallback", return_value="prompt"):
         
-        from tools.shared.exceptions import ToolExecutionError
-        with pytest.raises(ToolExecutionError) as excinfo:
-            await tool.execute({
-                "prompt": "test",
-                "cli_name": "gemini",
-                "_request_context": {"session_id": "test-session"}
-            })
+        # Execute tool
+        result = await tool.execute({
+            "prompt": "test",
+            "cli_name": "gemini",
+            "_request_context": {"session_id": "test-session"}
+        })
         
         # 5. Verify the error payload
-        error_json = json.loads(str(excinfo.value))
+        error_json = json.loads(result[0].text)
+        assert error_json["status"] == "error"
         content = error_json["content"]
         
         # Check for critical warnings
@@ -109,10 +109,12 @@ async def test_large_success_response_offloading():
     Verify that a huge SUCCESS response is also offloaded correctly.
     """
     tool = CLinkTool()
-    huge_content = "SUCCESS CONTENT " * 2000 # ~30,000 chars
+    huge_content = "SUCCESS CONTENT " * 5000 # ~75,000 chars (exceeds new 40k limit)
+    huge_thinking = "I am thinking about the success."
     
     mock_parsed = ParsedCLIResponse(
         content=huge_content,
+        thinking=huge_thinking,
         metadata={"is_error": False}
     )
     mock_result = AgentOutput(
@@ -142,6 +144,8 @@ async def test_large_success_response_offloading():
         
         assert payload["metadata"]["output_offloaded"] is True
         assert "huge response" in payload["content"]
+        assert "<thinking>" in payload["content"]
+        assert huge_thinking in payload["content"]
         
         # Cleanup
         Path(payload["metadata"]["output_file_path"]).unlink()

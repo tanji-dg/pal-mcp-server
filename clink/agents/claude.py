@@ -11,7 +11,9 @@ from .base import AgentOutput, BaseCLIAgent
 class ClaudeAgent(BaseCLIAgent):
     """Claude CLI agent with system-prompt injection support."""
 
-    def _build_command(self, *, role: ResolvedCLIRole, system_prompt: str | None) -> list[str]:
+    def _build_command(
+        self, *, role: ResolvedCLIRole, system_prompt: str | None, native_session_id: str | None = None
+    ) -> list[str]:
         command = list(self.client.executable)
         command.extend(self.client.internal_args)
         command.extend(self.client.config_args)

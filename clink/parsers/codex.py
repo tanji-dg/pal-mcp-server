@@ -19,6 +19,7 @@ class CodexJSONLParser(BaseParser):
         agent_messages: list[str] = []
         errors: list[str] = []
         usage: dict[str, Any] | None = None
+        metadata: dict[str, Any] = {}
 
         for line in lines:
             if not line.startswith("{"):
@@ -30,12 +31,24 @@ class CodexJSONLParser(BaseParser):
 
             events.append(event)
             event_type = event.get("type")
-            if event_type == "item.completed":
+            if event_type == "init":
+                native_session_id = event.get("session_id")
+                if native_session_id:
+                    metadata["native_session_id"] = native_session_id
+            elif event_type == "item.completed":
                 item = event.get("item") or {}
-                if item.get("type") == "agent_message":
+                item_type = item.get("type")
+                if item_type == "agent_message":
                     text = item.get("text")
                     if isinstance(text, str) and text.strip():
                         agent_messages.append(text.strip())
+                elif item_type == "reasoning":
+                    text = item.get("text")
+                    if isinstance(text, str) and text.strip():
+                        # Use a list to keep track of thinking for the response object
+                        if "thinking_parts" not in locals():
+                            thinking_parts = []
+                        thinking_parts.append(text.strip())
             elif event_type == "error" or event_type == "turn.failed":
                 err_obj = event.get("error") if event_type == "turn.failed" else event
                 if isinstance(err_obj, dict):
@@ -54,7 +67,9 @@ class CodexJSONLParser(BaseParser):
             raise ParserError("Codex CLI JSONL output did not include an agent_message item")
 
         content = "\n\n".join(agent_messages).strip()
-        metadata: dict[str, Any] = {"events": events}
+        thinking = "\n\n".join(locals().get("thinking_parts", [])).strip() or None
+        
+        metadata["events"] = events
         if errors:
             metadata["errors"] = errors
         if usage:
@@ -62,4 +77,4 @@ class CodexJSONLParser(BaseParser):
         if stderr and stderr.strip():
             metadata["stderr"] = stderr.strip()
 
-        return ParsedCLIResponse(content=content, metadata=metadata)
+        return ParsedCLIResponse(content=content, metadata=metadata, thinking=thinking)

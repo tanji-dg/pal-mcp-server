@@ -100,6 +100,7 @@ class MonitorPublisher:
         self._connection_error_logged = False
         self._last_error = None
         self._interrupted = False
+        self._should_summarize = False
         self._last_contact_time = 0.0
 
     @property
@@ -110,6 +111,10 @@ class MonitorPublisher:
     def is_interrupted(self) -> bool:
         """Check if an interruption has been requested by the coordinator."""
         return self._interrupted
+
+    def should_summarize(self) -> bool:
+        """Check if thinking summarization is enabled by the coordinator."""
+        return self._should_summarize
 
     async def check_interruption(self) -> bool:
         """Force a status check with the coordinator if we've been silent."""
@@ -126,6 +131,15 @@ class MonitorPublisher:
                 pass # Heartbeat loop will handle reconnection
                 
         return self._interrupted
+
+    async def _send_heartbeat(self):
+        """Send a heartbeat event directly to poll for control signals."""
+        event = ToolEvent(
+            event_type=ToolEventType.HEARTBEAT,
+            instance_id=self.instance_id,
+            uptime_seconds=self.uptime_seconds,
+        )
+        await self._send_event_directly(event)
 
     def reset_interruption(self):
         """Reset the interruption flag (e.g. before starting a new tool)."""
@@ -397,13 +411,20 @@ class MonitorPublisher:
             
             self._last_contact_time = time.time()
             
-            # Check for interruption signal in response
+            # Check for control signals in response
             try:
                 data = response.json()
-                if isinstance(data, dict) and data.get("interrupted"):
-                    if not self._interrupted:
-                        logger.warning(f"Interruption signal detected for {self.instance_id}")
-                    self._interrupted = True
+                if isinstance(data, dict):
+                    if data.get("interrupted"):
+                        if not self._interrupted:
+                            logger.warning(f"Interruption signal detected for {self.instance_id}")
+                        self._interrupted = True
+                    
+                    # Update summarization flag
+                    new_summarize = bool(data.get("should_summarize"))
+                    if new_summarize != self._should_summarize:
+                        logger.info(f"Summarization state changed: {self._should_summarize} -> {new_summarize}")
+                        self._should_summarize = new_summarize
             except Exception:
                 pass
 
@@ -456,13 +477,20 @@ class MonitorPublisher:
                             )
                             response.raise_for_status()
                             
-                            # Check for interruption signal in batch response
+                            # Check for control signals in batch response
                             try:
                                 data = response.json()
-                                if isinstance(data, dict) and data.get("interrupted"):
-                                    if not self._interrupted:
-                                        logger.warning("Interruption signal received from coordinator (batch)")
-                                    self._interrupted = True
+                                if isinstance(data, dict):
+                                    if data.get("interrupted"):
+                                        if not self._interrupted:
+                                            logger.warning("Interruption signal received from coordinator (batch)")
+                                        self._interrupted = True
+                                    
+                                    # Update summarization flag
+                                    new_summarize = bool(data.get("should_summarize"))
+                                    if new_summarize != self._should_summarize:
+                                        logger.info(f"Summarization state changed (batch): {self._should_summarize} -> {new_summarize}")
+                                        self._should_summarize = new_summarize
                             except Exception:
                                 pass
 
@@ -498,14 +526,7 @@ class MonitorPublisher:
         while self._running:
             try:
                 await asyncio.sleep(HEARTBEAT_INTERVAL)
-
-                event = ToolEvent(
-                    event_type=ToolEventType.HEARTBEAT,
-                    instance_id=self.instance_id,
-                    uptime_seconds=self.uptime_seconds,
-                )
-                await self._publish_event(event)
-
+                await self._send_heartbeat()
             except asyncio.CancelledError:
                 break
             except Exception:
