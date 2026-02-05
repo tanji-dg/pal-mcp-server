@@ -1,0 +1,95 @@
+# ===========================================
+# STAGE 1: Build gemini-cli (Node.js)
+# ===========================================
+FROM node:20-slim AS gemini-builder
+
+ARG HTTP_PROXY
+ARG HTTPS_PROXY
+ARG NO_PROXY
+ARG http_proxy
+ARG https_proxy
+ARG no_proxy
+
+WORKDIR /app
+
+# Install build dependencies
+RUN apt-get update && apt-get install -y python3 make g++ git && rm -rf /var/lib/apt/lists/*
+
+# Clone gemini-cli from GitHub and checkout specific hash
+RUN git clone https://github.com/tanji-dg/gemini-cli.git gemini-cli && \
+    cd gemini-cli && \
+    git checkout 2d7e9a2c9cd4c5211a490dbc7bd828931e149e03
+
+WORKDIR /app/gemini-cli
+
+# Install dependencies and build
+# Since it's a fresh clone, npm install and bundle should work correctly
+RUN npm install && npm run bundle
+
+# ===========================================
+# STAGE 2: Build Python dependencies
+# ===========================================
+FROM python:3.11-slim AS python-builder
+
+ARG HTTP_PROXY
+ARG HTTPS_PROXY
+ARG NO_PROXY
+ARG http_proxy
+ARG https_proxy
+ARG no_proxy
+
+WORKDIR /app
+RUN apt-get update && apt-get install -y build-essential && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt ./
+COPY requirements-monitor.txt ./
+
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r requirements-monitor.txt
+
+# ===========================================
+# STAGE 3: Minimal Runtime
+# ===========================================
+FROM python:3.11-slim
+
+ARG HTTP_PROXY
+ARG HTTPS_PROXY
+ARG NO_PROXY
+ARG http_proxy
+ARG https_proxy
+ARG no_proxy
+
+LABEL maintainer="PAL MCP Server Team"
+LABEL version="1.0.0-minimal"
+
+RUN apt-get update && apt-get install -y curl ca-certificates && \
+    curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
+    apt-get install -y nodejs && rm -rf /var/lib/apt/lists/*
+
+# Install CLI Tools via npm
+RUN npm install -g @anthropic-ai/claude-code @openai/codex @google/gemini-cli
+
+# Create non-root user
+RUN groupadd -r paluser && useradd -m -r -g paluser paluser
+
+COPY --from=python-builder /opt/venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+ENV HOME=/home/paluser
+
+WORKDIR /app
+COPY --chown=paluser:paluser . .
+
+# Copy built gemini-cli bundle from Stage 1
+COPY --from=gemini-builder /app/gemini-cli/bundle /app/gemini-cli/bundle
+RUN ln -sf /app/gemini-cli/bundle/gemini.js /usr/local/bin/gemini && chmod +x /app/gemini-cli/bundle/gemini.js
+
+RUN mkdir -p logs tmp && chown -R paluser:paluser logs tmp
+
+USER paluser
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONPATH=/app
+ENV TZ=Asia/Tokyo
+
+CMD ["python", "server.py"]
