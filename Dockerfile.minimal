@@ -1,25 +1,33 @@
 # ===========================================
-# STAGE 1: Dependency image (Local copy strategy)
+# STAGE 1: Extract Node.js Runtime (Alpine)
 # ===========================================
-FROM node:20-slim AS node-runtime
+FROM node:20-alpine AS node-env
 
 # ===========================================
-# STAGE 2: Final Integrated Image
+# STAGE 2: Python Build Environment (Alpine)
 # ===========================================
-FROM python:3.11-slim
-LABEL version="1.0.0-integrated-user1000"
+FROM python:3.11-alpine AS python-env
 
-# Create user with UID 1000 to match host
-RUN groupadd -g 1000 paluser && useradd -u 1000 -g 1000 -m -r paluser
+# ===========================================
+# STAGE 3: Final Integrated Alpine Image
+# ===========================================
+# Use node:20-alpine as base because it includes Node.js and its C++ dependencies (libstdc++)
+FROM node:20-alpine
+LABEL version="1.0.0-integrated-alpine-v3"
+
+# Create user
+RUN addgroup -S paluser && adduser -S paluser -G paluser
 WORKDIR /app
 
-# Copy Node.js binary and modules
-COPY --from=node-runtime /usr/local/bin/node /usr/local/bin/
-COPY --from=node-runtime /usr/local/lib/node_modules /usr/local/lib/node_modules
-RUN ln -s /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm && \
-    ln -s /usr/local/lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx
+# 1. Copy Python from python-env
+# This includes the Python binary and its standard library
+COPY --from=python-env /usr/local /usr/local
 
-# Copy source files
+# 2. Add dependencies for both (Mostly symlinks and essentials)
+# Note: libsqlite3.so.0 is in /usr/lib in python-alpine, so we must copy it too
+COPY --from=python-env /usr/lib/libsqlite3.so.0* /usr/lib/
+
+# 3. Copy source files
 COPY --chown=paluser:paluser server.py config.py requirements.txt requirements-monitor.txt ./
 COPY --chown=paluser:paluser clink/ ./clink/
 COPY --chown=paluser:paluser providers/ ./providers/
@@ -29,7 +37,7 @@ COPY --chown=paluser:paluser monitor/ ./monitor/
 COPY --chown=paluser:paluser conf/ ./conf/
 COPY --chown=paluser:paluser systemprompts/ ./systemprompts/
 
-# Environment
+# 実行環境設定
 ENV NPM_CONFIG_PREFIX=/home/paluser/.npm-global
 ENV PATH=/home/paluser/.npm-global/bin:$PATH
 ENV PYTHONUNBUFFERED=1 PYTHONPATH=/app TZ=Asia/Tokyo
@@ -37,4 +45,4 @@ ENV PYTHONUNBUFFERED=1 PYTHONPATH=/app TZ=Asia/Tokyo
 RUN mkdir -p logs tmp && chown -R paluser:paluser logs tmp /home/paluser
 
 USER paluser
-CMD ["python", "server.py"]
+CMD ["python3", "server.py"]

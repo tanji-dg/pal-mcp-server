@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import json
+import shlex
 from typing import Any
 
 from clink.models import ResolvedCLIClient, ResolvedCLIRole
 from clink.parsers.base import ParsedCLIResponse
+from config import PROJECT_ROOT
+from utils.env import get_env
 
 from .base import AgentOutput, BaseCLIAgent
 
@@ -15,17 +18,18 @@ class GeminiAgent(BaseCLIAgent):
     """Gemini-specific behaviour."""
 
     def __init__(self, client: ResolvedCLIClient):
-        # Prefer the local built version if it exists in the source tree
-        from config import PROJECT_ROOT
+        super().__init__(client)
+
+        # Handle local built script fallback (submodule development)
+        # We only apply this if the executable wasn't already overridden by PAL_GEMINI_EXECUTABLE
+        # which is handled in BaseCLIAgent.__init__.
+        if get_env("PAL_GEMINI_EXECUTABLE"):
+            return
 
         local_built_script = PROJECT_ROOT / "gemini-cli" / "gemini-built.sh"
-        if local_built_script.exists() and client.executable == ["gemini"]:
-            # Create a modified client with the local path
-            # We use model_copy to keep the original client object immutable where possible
-            modified_client = client.model_copy(update={"executable": [str(local_built_script)]})
-            super().__init__(modified_client)
-        else:
-            super().__init__(client)
+        if local_built_script.exists() and self.client.executable == ["gemini"]:
+            # Update self.client with the local path
+            self.client = self.client.model_copy(update={"executable": [str(local_built_script)]})
 
     def _build_command(
         self, *, role: ResolvedCLIRole, system_prompt: str | None, native_session_id: str | None = None

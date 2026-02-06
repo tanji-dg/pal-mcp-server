@@ -53,6 +53,13 @@ class BaseCLIAgent:
     """Execute a configured CLI command and parse its output."""
 
     def __init__(self, client: ResolvedCLIClient):
+        # Allow environment variable override: PAL_<NAME>_EXECUTABLE
+        from utils.env import get_env
+        env_key = f"PAL_{client.name.upper()}_EXECUTABLE"
+        env_executable = get_env(env_key)
+        if env_executable:
+            client = client.model_copy(update={"executable": shlex.split(env_executable)})
+        
         self.client = client
         self._parser: BaseParser = get_parser(client.parser)
         self._logger = logging.getLogger(f"clink.runner.{client.name}")

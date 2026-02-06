@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import re
+import shlex
 import time
 import uuid
 import httpx
@@ -99,6 +100,10 @@ class CLinkRequest(BaseModel):
     client_context_budget: int | None = Field(
         default=None,
         description="Optional: Hint about your remaining context window (in characters). PAL will adjust its response size and offloading threshold to fit within this budget if possible. Use this if you are running out of space to prevent being overwhelmed by large outputs.",
+    )
+    executable_path: str | None = Field(
+        default=None,
+        description="Optional: Override the executable path for the selected CLI. Use with caution.",
     )
 
 
@@ -273,6 +278,11 @@ class CLinkTool(SimpleTool):
 
         try:
             client_config = self._registry.get_client(selected_cli)
+            # Apply per-call executable override if requested
+            if request.executable_path:
+                client_config = client_config.model_copy(
+                    update={"executable": shlex.split(request.executable_path)}
+                )
         except KeyError as exc:
             self._raise_tool_error(str(exc))
 
