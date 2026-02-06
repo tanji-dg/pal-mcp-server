@@ -85,3 +85,31 @@ pal-mcp-server --help
 
 In your MCP-enabled chat client, try:
 `"Use pal to list available models"`
+
+## Option B: Run via Docker (Offline Image)
+
+For environments where you prefer Docker or cannot use Python directly, you can import the pre-built minimal image.
+
+### 1. Import the Image
+```bash
+# Load the image (approx. 180MB)
+docker load < pal-mcp-server-minimal.tar.gz
+```
+
+### 2. Run with Docker Compose
+Use the provided `docker-compose.prod.yml` to start the server. This configuration:
+- Persists data to your home directory (`~/.pal/`).
+- Installs necessary AI tools (Claude Code, Gemini CLI, etc.) on first run.
+- Starts the monitoring dashboard on port 9876.
+
+```bash
+# Create configuration file
+cp .env.example .env
+# Edit .env with your API keys (GEMINI_API_KEY, etc.)
+
+# Start the server
+docker-compose -f docker-compose.prod.yml up -d
+```
+
+### 3. Verification
+Access the monitoring dashboard at: `http://localhost:9876/dashboard`
