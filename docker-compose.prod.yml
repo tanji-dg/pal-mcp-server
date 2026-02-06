@@ -10,10 +10,9 @@ services:
       - 8.8.8.8
       - 8.8.4.4
     
-    # 起動時に npm ツールをインストールしてからモニターを起動
-    # gemini-cli はカスタム版をインストールするように指定
+    # 起動時に pip install を実行してからモニターを起動 (gemini-cli は /app/packages からインストール)
     command: >
-      sh -c "npm install -g @anthropic-ai/claude-code @openai/codex https://github.com/tanji-dg/gemini-cli/archive/2d7e9a2c9cd4c5211a490dbc7bd828931e149e03.tar.gz && 
+      sh -c "npm install -g /app/packages/gemini-core.tgz /app/packages/gemini-cli.tgz @anthropic-ai/claude-code @openai/codex && 
              python3 -m pip install -r requirements.txt -r requirements-monitor.txt &&
              python3 monitor/run_coordinator.py --dual"
     
@@ -30,12 +29,16 @@ services:
       - HTTP_PROXY
       - HTTPS_PROXY
       - NO_PROXY=localhost,127.0.0.1,pal-mcp-server
-      - PATH=/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin:/home/paluser/.local/bin:/home/paluser/.npm-global/bin
+      # Ensure PATH includes the new /app based installation directories defined in Dockerfile
+      - PATH=/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin:/app/.npm-global/bin:/app/.pylibs/bin:/home/paluser/.local/bin
+      - NPM_CONFIG_PREFIX=/app/.npm-global
+      - PYTHONUSERBASE=/app/.pylibs
       
     volumes:
       - ./logs:/app/logs
       # ホストのホームディレクトリをマウント。書き込み権限が必要
       - ${HOME}:/home/paluser
+      - ${HOME}:/home/${USER}
     
     restart: unless-stopped
 

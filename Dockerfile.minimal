@@ -2,6 +2,7 @@
 # STAGE 1: Extract Node.js Runtime (Alpine)
 # ===========================================
 FROM node:20-alpine AS node-env
+# No pre-installation here. We only need the base Node.js and npm.
 
 # ===========================================
 # STAGE 2: Python Build Environment (Alpine)
@@ -13,10 +14,9 @@ FROM python:3.11-alpine AS python-env
 # ===========================================
 # Use python:3.11-alpine as base to ensure full Python compatibility (headers, libs)
 FROM python:3.11-alpine
-LABEL version="1.0.0-integrated-alpine-v4"
+LABEL version="1.0.0-integrated-alpine-v5-minimal"
 
 # Create user (Ensure UID 1000 match to fix permission issues with host volumes)
-# Alpine python image doesn't have 'node' user, so we just create paluser
 RUN addgroup -g 1000 -S paluser && \
     adduser -u 1000 -S paluser -G paluser
 
@@ -29,11 +29,14 @@ RUN ln -s /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm && \
     ln -s /usr/local/lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx
 
 # 2. Add C++ libs required by Node.js (libstdc++, libgcc_s) from node image
-#    Python alpine image is minimal and lacks these by default.
 COPY --from=node-env /usr/lib/libstdc++.so.6 /usr/lib/
 COPY --from=node-env /usr/lib/libgcc_s.so.1 /usr/lib/
 
-# 3. Copy source files
+# 3. Copy local packages for runtime installation
+COPY --chown=paluser:paluser gemini-core.tgz /app/packages/gemini-core.tgz
+COPY --chown=paluser:paluser gemini-cli.tgz /app/packages/gemini-cli.tgz
+
+# 4. Copy source files
 COPY --chown=paluser:paluser server.py config.py requirements.txt requirements-monitor.txt ./
 COPY --chown=paluser:paluser clink/ ./clink/
 COPY --chown=paluser:paluser providers/ ./providers/
