@@ -11,21 +11,27 @@ FROM python:3.11-alpine AS python-env
 # ===========================================
 # STAGE 3: Final Integrated Alpine Image
 # ===========================================
-# Use node:20-alpine as base because it includes Node.js and its C++ dependencies (libstdc++)
-FROM node:20-alpine
-LABEL version="1.0.0-integrated-alpine-v3"
+# Use python:3.11-alpine as base to ensure full Python compatibility (headers, libs)
+FROM python:3.11-alpine
+LABEL version="1.0.0-integrated-alpine-v4"
 
-# Create user
-RUN addgroup -S paluser && adduser -S paluser -G paluser
+# Create user (Ensure UID 1000 match to fix permission issues with host volumes)
+# Alpine python image doesn't have 'node' user, so we just create paluser
+RUN addgroup -g 1000 -S paluser && \
+    adduser -u 1000 -S paluser -G paluser
+
 WORKDIR /app
 
-# 1. Copy Python from python-env
-# This includes the Python binary and its standard library
-COPY --from=python-env /usr/local /usr/local
+# 1. Copy Node.js binary and core libs from Node image
+COPY --from=node-env /usr/local/bin/node /usr/local/bin/
+COPY --from=node-env /usr/local/lib/node_modules /usr/local/lib/node_modules
+RUN ln -s /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm && \
+    ln -s /usr/local/lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx
 
-# 2. Add dependencies for both (Mostly symlinks and essentials)
-# Note: libsqlite3.so.0 is in /usr/lib in python-alpine, so we must copy it too
-COPY --from=python-env /usr/lib/libsqlite3.so.0* /usr/lib/
+# 2. Add C++ libs required by Node.js (libstdc++, libgcc_s) from node image
+#    Python alpine image is minimal and lacks these by default.
+COPY --from=node-env /usr/lib/libstdc++.so.6 /usr/lib/
+COPY --from=node-env /usr/lib/libgcc_s.so.1 /usr/lib/
 
 # 3. Copy source files
 COPY --chown=paluser:paluser server.py config.py requirements.txt requirements-monitor.txt ./
@@ -38,11 +44,14 @@ COPY --chown=paluser:paluser conf/ ./conf/
 COPY --chown=paluser:paluser systemprompts/ ./systemprompts/
 
 # 実行環境設定
-ENV NPM_CONFIG_PREFIX=/home/paluser/.npm-global
-ENV PATH=/home/paluser/.npm-global/bin:$PATH
+# Install libraries to /app to avoid conflicts with host volume mounts
+ENV NPM_CONFIG_PREFIX=/app/.npm-global
+ENV PYTHONUSERBASE=/app/.pylibs
+ENV PATH=/app/.npm-global/bin:/app/.pylibs/bin:$PATH
 ENV PYTHONUNBUFFERED=1 PYTHONPATH=/app TZ=Asia/Tokyo
 
-RUN mkdir -p logs tmp && chown -R paluser:paluser logs tmp /home/paluser
+RUN mkdir -p logs tmp .npm-global .pylibs && \
+    chown -R paluser:paluser logs tmp .npm-global .pylibs /home/paluser
 
 USER paluser
 CMD ["python3", "server.py"]
